@@ -6,13 +6,12 @@ import {
   isAiCommandError,
   type AgentConfig,
   type AgentEvent,
+  type AiProviderProfile,
+  type AiProviderProfileInput,
   type Conversation,
   type ConversationMeta,
   type Model,
   type Preset,
-  type ProviderConfig,
-  type ProviderKind,
-  type ProviderStatus,
 } from "@/types/ai";
 
 /**
@@ -81,14 +80,27 @@ function useMountedRef() {
 
 // ─── Provider hooks ────────────────────────────────────────────────────────
 
-/** List all providers and their configuration status. */
+/**
+ * The configured provider profiles, and the CRUD over them.
+ *
+ * Every mutation re-reads the list rather than patching it locally: the backend
+ * normalizes an input (it resolves the protocol's default base URL, and decides
+ * what `hasApiKey` is now), so the stored profile is not necessarily the one
+ * that was sent.
+ */
 export function useAiProviders() {
   const available = isDesktop();
-  const [providers, setProviders] = useState<ProviderStatus[]>([]);
+  const [providers, setProviders] = useState<AiProviderProfile[]>([]);
   const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState<unknown>(null);
   const mountedRef = useMountedRef();
   const refreshVersionRef = useRef(0);
 
+  /**
+   * Resolves even when the read fails: the failure is recorded in `loadError`
+   * for the settings screen to render, so an unreadable list shows a reason and
+   * a retry rather than an empty list that looks like "no providers yet".
+   */
   const refresh = useCallback(async () => {
     if (!available) return;
     const version = ++refreshVersionRef.current;
@@ -97,7 +109,14 @@ export function useAiProviders() {
       const result = await TauriClient.aiListProviders();
       if (mountedRef.current && refreshVersionRef.current === version) {
         setProviders(result);
+        setLoadError(null);
       }
+    } catch (error) {
+      if (mountedRef.current && refreshVersionRef.current === version) {
+        setProviders([]);
+        setLoadError(error);
+      }
+      reportAiFailure(error, "Refresh AI providers");
     } finally {
       if (mountedRef.current && refreshVersionRef.current === version) {
         setLoading(false);
@@ -106,37 +125,51 @@ export function useAiProviders() {
   }, [available, mountedRef]);
 
   useEffect(() => {
-    void refresh().catch((error) =>
-      reportAiFailure(error, "Refresh AI providers"),
-    );
+    void refresh();
   }, [refresh]);
 
   /**
    * Save and verify in one call — the backend health-checks before storing, so
-   * a rejection here means the credentials do not work. The key is held in RAM
+   * a rejection here means the provider does not work. The key is held in RAM
    * only and is gone after a restart.
+   *
+   * Resolves with the stored profile (`null` off desktop) so a caller can seed
+   * its form from what was actually kept rather than from what it sent.
    */
   const configure = useCallback(
-    async (config: ProviderConfig) => {
+    async (
+      profile: AiProviderProfileInput,
+    ): Promise<AiProviderProfile | null> => {
+      if (!available) return null;
+      const stored = await TauriClient.aiConfigureProvider(profile);
+      await refresh();
+      return stored;
+    },
+    [available, refresh],
+  );
+
+  /** Forget a profile and its stored key. Rejects on refusal. */
+  const remove = useCallback(
+    async (id: string) => {
       if (!available) return;
-      await TauriClient.aiConfigureProvider(config);
+      await TauriClient.aiDeleteProvider(id);
       await refresh();
     },
     [available, refresh],
   );
 
   const testProvider = useCallback(
-    async (kind: ProviderKind): Promise<Model[]> => {
+    async (id: string): Promise<Model[]> => {
       if (!available) return [];
-      return TauriClient.aiTestProvider(kind);
+      return TauriClient.aiTestProvider(id);
     },
     [available],
   );
 
   const listModels = useCallback(
-    async (kind: ProviderKind): Promise<Model[]> => {
+    async (id: string): Promise<Model[]> => {
       if (!available) return [];
-      return TauriClient.aiListModels(kind);
+      return TauriClient.aiListModels(id);
     },
     [available],
   );
@@ -144,9 +177,11 @@ export function useAiProviders() {
   return {
     providers,
     loading,
+    loadError,
     available,
     refresh,
     configure,
+    remove,
     testProvider,
     listModels,
   };
@@ -220,10 +255,13 @@ export function useAiConversations() {
     );
   }, [refresh]);
 
-  /** Resolves `null` off desktop, where there is no backend to create in. */
+  /**
+   * Resolves `null` off desktop, where there is no backend to create in.
+   * `provider` is an {@link AiProviderProfile.id}.
+   */
   const create = useCallback(
     async (
-      provider: ProviderKind,
+      provider: string,
       model: string,
       title?: string,
       systemPrompt?: string,
@@ -455,8 +493,13 @@ export function useAiChat(
     };
   }, [available, conversationId, armWatchdog, clearWatchdog, settleTurn]);
 
+  /**
+   * `providerId` is optional: omitted, the backend uses the conversation's own
+   * provider and then `AgentConfig.defaultProviderId`. Passing it lets the
+   * caller override for this turn without rewriting the conversation.
+   */
   const sendMessage = useCallback(
-    async (text: string, provider: ProviderKind) => {
+    async (text: string, providerId?: string | null) => {
       if (!available) return;
       if (!conversationId) throw new Error("No conversation selected");
 
@@ -469,7 +512,7 @@ export function useAiChat(
       armWatchdog();
 
       try {
-        await TauriClient.aiSendMessage(conversationId, text, provider);
+        await TauriClient.aiSendMessage(conversationId, text, providerId);
       } catch (sendError) {
         clearWatchdog();
         if (mountedRef.current) {

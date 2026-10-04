@@ -1,4 +1,5 @@
-//! Tool execution: bridges AI tool calls to MCP `execute_tool`.
+//! Tool execution: bridges AI tool calls to MCP `execute_tool_with_grants`,
+//! presenting the application's canonical permission grants on every call.
 
 use std::sync::Arc;
 
@@ -9,12 +10,16 @@ use bc_ai_provider::limits::{
     serialized_len_limited, validate_string, MAX_TOOL_ARGUMENT_BYTES, MAX_TOOL_CALLS_PER_MESSAGE,
     MAX_TOOL_CALL_ID_BYTES, MAX_TOOL_NAME_BYTES, MAX_TOOL_RESULT_BYTES,
 };
-use bc_ai_provider::{AiProviderError, ToolCall, ToolResult};
+use bc_ai_provider::{AiProviderError, ToolCall, ToolDefinition, ToolResult};
 use bc_error::sanitize_error_text;
+use bc_mcp::permissions::{permission_for_invocation, PermissionGrantSet};
 use bc_mcp::tools;
+use bc_mcp::McpGrantHandle;
 
 use crate::error::ToolExecutionError;
-use crate::permissions::{self, AiPermissions, AiToolDescriptor, PermissionDecision};
+use crate::permissions::{
+    self, AiPermissions, AiToolDescriptor, PermissionDecision, RefusalSource, ToolAvailability,
+};
 use crate::registry::ToolRegistry;
 
 const MAX_TOOL_VALUE_DEPTH: usize = 64;
@@ -46,8 +51,22 @@ impl Default for PermissionState {
 /// This is the authoritative permission boundary: every path that can run a
 /// tool goes through [`ToolExecutor::execute`], so a renderer that skips its
 /// own checks — or is bypassed entirely — still cannot run a denied tool.
+///
+/// Two permission layers govern a call, and they compose as an *intersection*:
+///
+/// 1. `grants` — the application's canonical MCP permissions, read live from
+///    [`bc_mcp::McpServerManager`]. This is what the application may do at all.
+/// 2. `state` — the assistant's own mode plus per-tool overrides. This is what
+///    the assistant may use, and it can only ever narrow layer 1.
+///
+/// Layer 1 is checked first, so an `allow` override or `autonomous` mode cannot
+/// make an ungranted tool run, and the user is never prompted to approve a call
+/// the application could not perform anyway.
 pub struct ToolExecutor {
     registry: Arc<ToolRegistry>,
+    /// Live view of the MCP grants. Default is an empty set: an executor built
+    /// without a handle dispatches nothing, rather than everything.
+    grants: McpGrantHandle,
     state: RwLock<PermissionState>,
 }
 
@@ -74,10 +93,22 @@ pub enum ExecutionResult {
 }
 
 impl ToolExecutor {
-    /// Create an executor that shares the given registry's enabled tool set.
+    /// Create an executor that shares the given registry's enabled tool set
+    /// and holds no MCP grants, so every dispatch is refused by the
+    /// application layer until a grant handle is supplied.
     pub fn with_registry(registry: Arc<ToolRegistry>) -> Self {
+        Self::with_registry_and_grants(registry, McpGrantHandle::default())
+    }
+
+    /// Create an executor governed by a live view of the application's MCP
+    /// grants, obtained from `McpServerManager::grant_handle`.
+    ///
+    /// The handle is read-only, so the executor can observe the user's grants
+    /// but never widen them.
+    pub fn with_registry_and_grants(registry: Arc<ToolRegistry>, grants: McpGrantHandle) -> Self {
         Self {
             registry,
+            grants,
             state: RwLock::new(PermissionState::default()),
         }
     }
@@ -124,6 +155,63 @@ impl ToolExecutor {
         permissions::resolve(state.tools_enabled, &state.permissions, tool_name)
     }
 
+    /// What the assistant can actually dispatch right now, across both layers.
+    ///
+    /// A renderer needs this to stop advertising tool use when the answer is
+    /// "nothing": the assistant's own permissions alone cannot tell it,
+    /// because dispatch is also gated on the application's MCP grants.
+    ///
+    /// Resolving availability dispatches nothing: it reads the registry, the
+    /// grant set and the stored policy only.
+    pub async fn availability(&self) -> ToolAvailability {
+        let grants = self.grants.snapshot().await;
+        let descriptors = self.registry.available_descriptors();
+        let mut granted_tool_count = 0usize;
+        let mut usable_tool_count = 0usize;
+        for descriptor in &descriptors {
+            if granted(&grants, &descriptor.name).is_err() {
+                continue;
+            }
+            granted_tool_count = granted_tool_count.saturating_add(1);
+            if !matches!(
+                self.decision(&descriptor.name).await,
+                PermissionDecision::Deny { .. }
+            ) {
+                usable_tool_count = usable_tool_count.saturating_add(1);
+            }
+        }
+        ToolAvailability {
+            dispatch_available: usable_tool_count > 0,
+            granted_tool_count,
+            usable_tool_count,
+            registered_tool_count: descriptors.len(),
+        }
+    }
+
+    /// Narrow a provider tool list to the tools that could actually run.
+    ///
+    /// Advertising a tool both layers would refuse only buys a refused round:
+    /// the model calls it, is told no, and spends a turn on nothing. This is a
+    /// presentation filter — enforcement still happens in [`Self::execute`].
+    pub async fn usable_definitions(
+        &self,
+        definitions: Vec<ToolDefinition>,
+    ) -> Vec<ToolDefinition> {
+        let grants = self.grants.snapshot().await;
+        let mut usable = Vec::with_capacity(definitions.len());
+        for definition in definitions {
+            if granted(&grants, &definition.name).is_ok()
+                && !matches!(
+                    self.decision(&definition.name).await,
+                    PermissionDecision::Deny { .. }
+                )
+            {
+                usable.push(definition);
+            }
+        }
+        usable
+    }
+
     /// Every registered tool with its effective permission resolved.
     pub async fn catalog(&self) -> Vec<AiToolDescriptor> {
         let mut catalog = Vec::new();
@@ -141,13 +229,26 @@ impl ToolExecutor {
 
     /// Execute a single tool call. Returns `NeedsApproval` for calls the
     /// policy wants confirmed unless `force` is true, and `Denied` for calls
-    /// the policy refuses — `force` cannot override a denial.
+    /// either permission layer refuses — `force` cannot override a denial.
     pub async fn execute(&self, tool_call: &ToolCall, force: bool) -> ExecutionResult {
         if let Err(error) = validate_tool_call(tool_call) {
             return ExecutionResult::Rejected(error);
         }
 
-        // Authoritative permission gate, applied at the dispatch boundary.
+        // Layer 1: the application's MCP grants, read live. Checked first so a
+        // tool the application cannot perform is refused outright rather than
+        // offered to the user for approval. The same snapshot is handed to the
+        // dispatcher below, which re-checks it authoritatively.
+        let grants = self.grants.snapshot().await;
+        if let Err(reason) = granted(&grants, &tool_call.name) {
+            return ExecutionResult::Denied(ToolResult {
+                tool_call_id: tool_call.id.clone(),
+                content: permissions::refusal_text_from(RefusalSource::McpGrants, &reason),
+                is_error: true,
+            });
+        }
+
+        // Layer 2: the assistant's own policy, which may only narrow layer 1.
         match self.decision(&tool_call.name).await {
             PermissionDecision::Deny { reason } => {
                 return ExecutionResult::Denied(ToolResult {
@@ -165,8 +266,11 @@ impl ToolExecutor {
             PermissionDecision::Ask { .. } | PermissionDecision::Allow => {}
         }
 
-        // Execute via MCP
-        match tools::execute_tool(&tool_call.name, &tool_call.arguments).await {
+        // Dispatch through the single MCP boundary that enforces the grant,
+        // the argument bounds and the high-risk acknowledgement. Presenting
+        // the grants is the only way in; there is no ungated variant.
+        match tools::execute_tool_with_grants(&grants, &tool_call.name, &tool_call.arguments).await
+        {
             Ok(value) => match format_tool_output(&value) {
                 Ok(content) => ExecutionResult::Success(ToolResult {
                     tool_call_id: tool_call.id.clone(),
@@ -212,6 +316,21 @@ impl ToolExecutor {
             results.push(self.execute(tc, false).await);
         }
         Ok(results)
+    }
+}
+
+/// Resolve one tool name against the application's MCP grants.
+///
+/// Fail-closed in both directions: a name the MCP registry does not define is
+/// refused, and so is a registered tool the grant set does not cover. The
+/// returned string is the reason, for the refusal the model is told about.
+fn granted(grants: &PermissionGrantSet, tool_name: &str) -> Result<(), String> {
+    match permission_for_invocation(tool_name) {
+        None => Err(permissions::unregistered_reason(tool_name)),
+        Some(permission) if !grants.allows(permission) => {
+            Err(permissions::ungranted_reason(tool_name))
+        }
+        Some(_) => Ok(()),
     }
 }
 
@@ -352,7 +471,10 @@ mod tests {
 
     use serde_json::{json, Map};
 
-    use crate::permissions::{AiPermissionMode, AiToolPermission, PERMISSION_REFUSAL_PREFIX};
+    use crate::permissions::{
+        AiPermissionMode, AiToolPermission, ASSISTANT_POLICY_REFUSAL_MARKER,
+        MCP_GRANT_REFUSAL_MARKER, PERMISSION_REFUSAL_PREFIX,
+    };
 
     use super::*;
 
@@ -367,10 +489,30 @@ mod tests {
         }
     }
 
+    /// A grant handle standing in for a user who enabled everything in the MCP
+    /// tool permissions UI. Tests of the *assistant* layer need the outer layer
+    /// open, or they would all be measuring the same MCP refusal.
+    fn all_granted() -> McpGrantHandle {
+        McpGrantHandle::new(PermissionGrantSet::all())
+    }
+
+    fn granting(names: &[&str]) -> McpGrantHandle {
+        McpGrantHandle::new(PermissionGrantSet::from_requested(
+            &names
+                .iter()
+                .map(|name| (*name).to_string())
+                .collect::<Vec<_>>(),
+        ))
+    }
+
     async fn executor_with(mode: AiPermissionMode) -> ToolExecutor {
+        executor_with_grants(mode, all_granted()).await
+    }
+
+    async fn executor_with_grants(mode: AiPermissionMode, grants: McpGrantHandle) -> ToolExecutor {
         let registry = Arc::new(ToolRegistry::default());
         registry.init_all().await;
-        let executor = ToolExecutor::with_registry(registry);
+        let executor = ToolExecutor::with_registry_and_grants(registry, grants);
         executor
             .try_set_permissions(AiPermissions {
                 mode,
@@ -388,10 +530,10 @@ mod tests {
         }
     }
 
-    /// In-process MCP dispatch is itself denied without canonical grants, so a
-    /// permitted call cannot be observed as `Success` here. What it *can* be
-    /// observed as is "not refused by us" — the permission gate let it reach
-    /// the dispatch boundary.
+    /// A permitted call reaches the MCP dispatcher. The tools used here are
+    /// called with empty arguments, so dispatch fails fast on a missing
+    /// argument instead of touching the network — what this pins is that both
+    /// permission layers passed the call through.
     fn assert_reached_dispatch(result: &ExecutionResult) {
         match result {
             ExecutionResult::Success(result) | ExecutionResult::Error(result) => assert!(
@@ -465,7 +607,7 @@ mod tests {
         registry
             .set_enabled(HashSet::from([READ_TOOL.to_string()]))
             .await;
-        let executor = ToolExecutor::with_registry(registry);
+        let executor = ToolExecutor::with_registry_and_grants(registry, all_granted());
         executor
             .try_set_permissions(AiPermissions {
                 mode: AiPermissionMode::Autonomous,
@@ -476,6 +618,175 @@ mod tests {
 
         assert_reached_dispatch(&executor.execute(&call(READ_TOOL), false).await);
         assert!(refusal(&executor.execute(&call(WRITE_TOOL), false).await).contains("enabled"));
+    }
+
+    /// The single most important property of the two-layer composition: the
+    /// assistant's permissions can only *narrow* the application's MCP grants.
+    /// The most permissive assistant configuration there is — `allow` override
+    /// in `autonomous` mode — must not run a tool MCP has not granted.
+    #[tokio::test]
+    async fn an_allow_override_in_autonomous_mode_cannot_run_an_ungranted_tool() {
+        let executor = executor_with_grants(
+            AiPermissionMode::Autonomous,
+            // The user granted one unrelated read tool, and nothing else.
+            granting(&[READ_TOOL]),
+        )
+        .await;
+        executor
+            .try_set_permissions(AiPermissions {
+                mode: AiPermissionMode::Autonomous,
+                tools: BTreeMap::from([(WRITE_TOOL.to_string(), AiToolPermission::Allow)]),
+            })
+            .await
+            .expect("valid permissions");
+
+        assert_eq!(
+            executor.decision(WRITE_TOOL).await,
+            PermissionDecision::Allow,
+            "the assistant layer must really be saying allow, or this proves nothing"
+        );
+
+        let denied = executor.execute(&call(WRITE_TOOL), false).await;
+        let content = refusal(&denied);
+        assert!(content.starts_with(PERMISSION_REFUSAL_PREFIX));
+        assert!(
+            content.contains(MCP_GRANT_REFUSAL_MARKER),
+            "the refusal must name the MCP grants as the layer that refused: {content}"
+        );
+        // Approval cannot buy it either.
+        assert!(refusal(&executor.execute_approved(&call(WRITE_TOOL)).await)
+            .contains(MCP_GRANT_REFUSAL_MARKER));
+        // The granted tool still runs, so the executor is not refusing wholesale.
+        assert_reached_dispatch(&executor.execute(&call(READ_TOOL), false).await);
+    }
+
+    /// An executor with no grant handle at all holds an empty grant set, and
+    /// an empty set grants nothing — the fail-closed default.
+    #[tokio::test]
+    async fn an_executor_without_a_grant_handle_dispatches_nothing() {
+        let registry = Arc::new(ToolRegistry::default());
+        registry.init_all().await;
+        let executor = ToolExecutor::with_registry(registry);
+        executor
+            .try_set_permissions(AiPermissions {
+                mode: AiPermissionMode::Autonomous,
+                tools: BTreeMap::new(),
+            })
+            .await
+            .expect("valid permissions");
+
+        assert!(refusal(&executor.execute(&call(READ_TOOL), false).await)
+            .contains(MCP_GRANT_REFUSAL_MARKER));
+        let availability = executor.availability().await;
+        assert!(!availability.dispatch_available);
+        assert_eq!(availability.granted_tool_count, 0);
+        assert_eq!(availability.usable_tool_count, 0);
+    }
+
+    /// A user who sees "refused" has to know which of the two permission lists
+    /// to go and change.
+    #[tokio::test]
+    async fn a_refusal_names_the_layer_that_refused_it() {
+        let executor =
+            executor_with_grants(AiPermissionMode::ReadOnly, granting(&[WRITE_TOOL])).await;
+
+        let own_policy = refusal(&executor.execute(&call(WRITE_TOOL), false).await).to_string();
+        assert!(own_policy.contains("read-only"));
+        assert!(own_policy.contains(ASSISTANT_POLICY_REFUSAL_MARKER));
+        assert!(!own_policy.contains(MCP_GRANT_REFUSAL_MARKER));
+
+        // The same tool, refused by the other layer instead.
+        let ungranted = executor_with_grants(AiPermissionMode::Autonomous, granting(&[])).await;
+        let mcp = refusal(&ungranted.execute(&call(WRITE_TOOL), false).await).to_string();
+        assert!(mcp.contains(MCP_GRANT_REFUSAL_MARKER));
+        assert!(!mcp.contains(ASSISTANT_POLICY_REFUSAL_MARKER));
+    }
+
+    /// A name no MCP permission defines is refused before anything else looks
+    /// at it, even in the most permissive assistant configuration.
+    #[tokio::test]
+    async fn an_unregistered_tool_name_is_refused_by_the_mcp_layer() {
+        let executor = executor_with(AiPermissionMode::Autonomous).await;
+        let denied = executor.execute(&call("cf_not_a_tool_at_all"), false).await;
+        let content = refusal(&denied);
+        assert!(content.contains("not a registered MCP tool"));
+        assert!(content.contains(MCP_GRANT_REFUSAL_MARKER));
+    }
+
+    /// An assistant-originated call is not a way around the argument bounds or
+    /// the high-risk acknowledgement the MCP boundary enforces.
+    #[tokio::test]
+    async fn assistant_calls_still_face_mcp_argument_and_acknowledgement_checks() {
+        let executor = executor_with(AiPermissionMode::Autonomous).await;
+
+        let unacknowledged = executor.execute(&call(WRITE_TOOL), false).await;
+        match &unacknowledged {
+            ExecutionResult::Error(result) => assert!(
+                result.content.contains("confirmHighRisk: true"),
+                "a destructive tool must still demand acknowledgement: {}",
+                result.content
+            ),
+            other => panic!("expected the acknowledgement error, got {other:?}"),
+        }
+
+        let oversized = ToolCall {
+            id: "call-2".into(),
+            name: "cf_bulk_delete_dns_records".into(),
+            arguments: json!({
+                "confirmHighRisk": true,
+                "record_ids": (0..101).map(|index| format!("id-{index}")).collect::<Vec<_>>(),
+            }),
+        };
+        match &executor.execute(&oversized, false).await {
+            ExecutionResult::Error(result) => assert!(
+                result.content.contains("100 item"),
+                "the MCP argument profile must still bound the call: {}",
+                result.content
+            ),
+            other => panic!("expected the argument-bound error, got {other:?}"),
+        }
+    }
+
+    /// Availability is the intersection too, and reading it runs nothing.
+    #[tokio::test]
+    async fn availability_counts_both_layers() {
+        let executor = executor_with_grants(
+            AiPermissionMode::ReadOnly,
+            granting(&[READ_TOOL, WRITE_TOOL]),
+        )
+        .await;
+        let availability = executor.availability().await;
+        assert_eq!(availability.granted_tool_count, 2);
+        assert_eq!(
+            availability.usable_tool_count, 1,
+            "read-only mode denies the write, so only the read is usable"
+        );
+        assert!(availability.dispatch_available);
+        assert_eq!(
+            availability.registered_tool_count,
+            bc_mcp::available_tool_definitions().len()
+        );
+
+        let definitions = executor
+            .usable_definitions(
+                [READ_TOOL, WRITE_TOOL, "dns_parse_spf"]
+                    .into_iter()
+                    .map(|name| ToolDefinition {
+                        name: name.to_string(),
+                        description: String::new(),
+                        input_schema: json!({}),
+                    })
+                    .collect(),
+            )
+            .await;
+        assert_eq!(
+            definitions
+                .iter()
+                .map(|definition| definition.name.as_str())
+                .collect::<Vec<_>>(),
+            vec![READ_TOOL],
+            "only the granted, non-denied tool is worth advertising"
+        );
     }
 
     #[tokio::test]

@@ -13,6 +13,8 @@ import { TauriClient } from "../src/lib/api/tauri-client";
 import type {
   AgentEvent,
   AiCommandError,
+  AiProviderProfile,
+  AiProviderProfileInput,
   Conversation,
   ConversationMeta,
 } from "../src/types/ai";
@@ -495,36 +497,87 @@ test("does not subscribe when there is no conversation selected", async () => {
 
 test("configuring a provider refreshes the provider list", async () => {
   const calls: string[] = [];
-  let configured = false;
+  const store: AiProviderProfile[] = [];
   mock.method(TauriClient, "aiListProviders", async () => {
     calls.push("list");
-    return [
-      { kind: "openai" as const, configured },
-      { kind: "anthropic" as const, configured: false },
-      { kind: "ollama" as const, configured: false },
-    ];
+    return [...store];
   });
-  mock.method(TauriClient, "aiConfigureProvider", async () => {
-    calls.push("configure");
-    configured = true;
+  mock.method(
+    TauriClient,
+    "aiConfigureProvider",
+    async (profile: AiProviderProfileInput) => {
+      calls.push("configure");
+      // The backend resolves what the input left out: the protocol's default
+      // endpoint, and whether a key is now stored.
+      const stored: AiProviderProfile = {
+        id: profile.id ?? "openai-main",
+        label: profile.label,
+        protocol: profile.protocol,
+        baseUrl: profile.baseUrl ?? "https://resolved.test/v1",
+        model: profile.model,
+        temperature: profile.temperature,
+        maxTokens: profile.maxTokens,
+        hasApiKey: typeof profile.apiKey === "string",
+      };
+      store.push(stored);
+      return stored;
+    },
+  );
+  mock.method(TauriClient, "aiDeleteProvider", async (id: string) => {
+    calls.push("delete");
+    const index = store.findIndex((entry) => entry.id === id);
+    if (index >= 0) store.splice(index, 1);
+    return index >= 0;
   });
 
   const { result } = renderHook(() => useAiProviders());
-  await waitFor(() => assert.equal(result.current.providers.length, 3));
-  assert.equal(result.current.providers[0].configured, false);
+  await waitFor(() => assert.deepEqual(calls, ["list"]));
+  assert.equal(result.current.providers.length, 0);
 
+  const saved: (AiProviderProfile | null)[] = [];
   await act(async () => {
-    await result.current.configure({
-      kind: "openai",
+    const stored = await result.current.configure({
+      id: "openai-main",
+      label: "OpenAI",
+      protocol: "openai",
       apiKey: "sk-test",
       model: "gpt-4o",
       temperature: 0.2,
       maxTokens: 1024,
     });
+    saved.push(stored);
   });
 
   assert.deepEqual(calls, ["list", "configure", "list"]);
-  assert.equal(result.current.providers[0].configured, true);
+  // The stored profile is returned, so a caller reads the resolved base URL and
+  // `hasApiKey` from the answer rather than from its own input.
+  assert.equal(saved[0]?.baseUrl, "https://resolved.test/v1");
+  assert.equal(saved[0]?.hasApiKey, true);
+  await waitFor(() => assert.equal(result.current.providers.length, 1));
+  assert.equal(result.current.providers[0].id, "openai-main");
+  assert.equal(result.current.providers[0].hasApiKey, true);
+  // The profile the renderer holds carries no key material of any kind.
+  assert.ok(!("apiKey" in result.current.providers[0]));
+
+  await act(async () => {
+    await result.current.remove("openai-main");
+  });
+  assert.deepEqual(calls, ["list", "configure", "list", "delete", "list"]);
+  await waitFor(() => assert.equal(result.current.providers.length, 0));
+});
+
+test("an unreadable provider list reports why instead of looking empty", async () => {
+  mock.method(TauriClient, "aiListProviders", async () => {
+    throw new Error("the provider store could not be opened");
+  });
+
+  const { result } = renderHook(() => useAiProviders());
+  await waitFor(() => assert.ok(result.current.loadError !== null));
+  assert.deepEqual(result.current.providers, []);
+  assert.equal(
+    (result.current.loadError as Error).message,
+    "the provider store could not be opened",
+  );
 });
 
 test("creating a conversation refreshes the list and returns the new meta", async () => {

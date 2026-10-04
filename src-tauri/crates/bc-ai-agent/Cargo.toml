@@ -7,6 +7,7 @@ edition = "2021"
 bc-ai-provider = { path = "../bc-ai-provider" }
 bc-ai-chat = { path = "../bc-ai-chat" }
 bc-ai-tools = { path = "../bc-ai-tools" }
+bc-mcp = { path = "../bc-mcp" }
 async-trait = "0.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

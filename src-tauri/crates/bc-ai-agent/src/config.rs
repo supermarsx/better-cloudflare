@@ -44,6 +44,14 @@ pub struct AgentConfig {
     pub temperature: f32,
     /// Nucleus sampling probability mass (0.0–1.0).
     pub top_p: f32,
+    /// Provider profile a send uses when it names none.
+    ///
+    /// Only the *shape* of the id is validated here, because a configuration
+    /// may legitimately name a profile that has not been configured yet. An id
+    /// that resolves to nothing fails the send with
+    /// `AI_NOT_CONFIGURED` rather than quietly picking another provider, and
+    /// deleting the named profile clears this field.
+    pub default_provider_id: Option<String>,
 }
 
 /// Wire/stored shape of [`AgentConfig`], used for backward-compatible reads.
@@ -69,6 +77,9 @@ struct StoredAgentConfig {
     temperature: f32,
     #[serde(default = "default_top_p")]
     top_p: f32,
+    /// Absent in every configuration stored before provider profiles existed.
+    #[serde(default)]
+    default_provider_id: Option<String>,
 }
 
 impl From<StoredAgentConfig> for AgentConfig {
@@ -84,6 +95,9 @@ impl From<StoredAgentConfig> for AgentConfig {
                 .unwrap_or_else(|| DEFAULT_PERSONA_ID.to_string()),
             temperature: stored.temperature,
             top_p: stored.top_p,
+            default_provider_id: stored
+                .default_provider_id
+                .filter(|id| !id.trim().is_empty()),
         }
     }
 }
@@ -98,6 +112,7 @@ impl Default for AgentConfig {
             persona_id: DEFAULT_PERSONA_ID.into(),
             temperature: DEFAULT_TEMPERATURE,
             top_p: DEFAULT_TOP_P,
+            default_provider_id: None,
         }
     }
 }
@@ -151,6 +166,19 @@ impl AgentConfig {
                 message: format!("must be between 0.0 and {MAX_TOP_P}"),
             });
         }
+        if let Some(id) = &self.default_provider_id {
+            // Shape only: the store, not the configuration, knows which ids
+            // exist. A well-formed id that names nothing is caught at send.
+            bc_ai_provider::validate_provider_id(id).map_err(|error| {
+                AgentError::InvalidConfig {
+                    field: "defaultProviderId",
+                    message: match error {
+                        bc_ai_provider::AiProviderError::InvalidRequest { message, .. } => message,
+                        other => other.to_string(),
+                    },
+                }
+            })?;
+        }
         Ok(())
     }
 }
@@ -169,6 +197,7 @@ mod tests {
             persona_id: "p".repeat(MAX_PRESET_BYTES),
             temperature: MAX_TEMPERATURE,
             top_p: MAX_TOP_P,
+            default_provider_id: Some("groq-prod".into()),
         };
         config.validate().expect("exact boundaries");
 
@@ -202,12 +231,52 @@ mod tests {
             })
         ));
 
-        let mut invalid = config;
+        let mut invalid = config.clone();
         invalid.top_p = MAX_TOP_P + 0.1;
         assert!(matches!(
             invalid.validate(),
             Err(AgentError::InvalidConfig { field: "topP", .. })
         ));
+
+        let mut invalid = config;
+        invalid.default_provider_id = Some("../../etc/passwd".into());
+        assert!(matches!(
+            invalid.validate(),
+            Err(AgentError::InvalidConfig {
+                field: "defaultProviderId",
+                ..
+            })
+        ));
+    }
+
+    /// The default selection is user-supplied text that later becomes a map
+    /// key, so an id that could not have come from the store is refused here.
+    #[test]
+    fn a_malformed_default_provider_id_is_rejected_but_an_unknown_one_is_not() {
+        for refused in ["", "   ", "my provider", "openai/v1", &"i".repeat(65)] {
+            let config = AgentConfig {
+                default_provider_id: Some(refused.into()),
+                ..AgentConfig::default()
+            };
+            assert!(
+                matches!(
+                    config.validate(),
+                    Err(AgentError::InvalidConfig {
+                        field: "defaultProviderId",
+                        ..
+                    })
+                ),
+                "default provider id {refused:?} must be rejected"
+            );
+        }
+
+        // Well-formed but not configured: the send resolves it, not the
+        // configuration, so storing the selection first must stay legal.
+        let config = AgentConfig {
+            default_provider_id: Some("not-configured-yet".into()),
+            ..AgentConfig::default()
+        };
+        config.validate().expect("an unknown id is a valid shape");
     }
 
     #[test]
@@ -285,6 +354,10 @@ mod tests {
         assert!(!config.stream);
         assert_eq!(config.temperature, DEFAULT_TEMPERATURE);
         assert_eq!(config.top_p, DEFAULT_TOP_P);
+        assert_eq!(
+            config.default_provider_id, None,
+            "a configuration stored before profiles existed names no default"
+        );
         config.validate().expect("migrated config is valid");
     }
 
@@ -352,10 +425,17 @@ mod tests {
             "personaId",
             "temperature",
             "topP",
+            "defaultProviderId",
         ] {
             assert!(json.contains(expected), "missing {expected} in {json}");
         }
-        for forbidden in ["persona_id", "top_p", "max_tool_rounds", "\"preset\""] {
+        for forbidden in [
+            "persona_id",
+            "top_p",
+            "max_tool_rounds",
+            "default_provider_id",
+            "\"preset\"",
+        ] {
             assert!(!json.contains(forbidden), "leaked {forbidden} in {json}");
         }
 
@@ -363,5 +443,19 @@ mod tests {
         assert_eq!(decoded.persona_id, config.persona_id);
         assert_eq!(decoded.temperature, config.temperature);
         assert_eq!(decoded.top_p, config.top_p);
+        assert_eq!(decoded.default_provider_id, config.default_provider_id);
+
+        // The renderer reads this field to show a selection, so an absent
+        // default is an explicit null rather than a missing key.
+        let selected = AgentConfig {
+            default_provider_id: Some("groq-prod".into()),
+            ..AgentConfig::default()
+        };
+        let value = serde_json::to_value(&selected).expect("serializes");
+        assert_eq!(value["defaultProviderId"], "groq-prod");
+        assert_eq!(
+            serde_json::to_value(AgentConfig::default()).expect("serializes")["defaultProviderId"],
+            serde_json::Value::Null
+        );
     }
 }

@@ -14,9 +14,11 @@ use uuid::Uuid;
 use bc_ai_agent::personas::{AiPersona, AiPersonaInput, MAX_PERSONA_ID_BYTES};
 use bc_ai_agent::{AgentConfig, AgentError, AgentEvent, AgentManager};
 use bc_ai_chat::{ChatError, ChatMessage, ConversationMeta};
-use bc_ai_provider::{AiProviderError, Model, ProviderConfig, ProviderKind};
+use bc_ai_provider::{
+    AiProviderError, AiProviderProfile, AiProviderProfileInput, Model, MAX_PROVIDER_ID_BYTES,
+};
 use bc_ai_tools::permissions::{
-    AiPermissionMode, AiPermissions, AiToolDescriptor, AiToolPermission,
+    AiPermissionMode, AiPermissions, AiToolDescriptor, AiToolPermission, ToolAvailability,
 };
 use bc_ai_tools::ToolExecutionError;
 use bc_error::sanitize_error_text;
@@ -25,9 +27,10 @@ use bc_error::sanitize_error_text;
 /// `main.rs`. A command the renderer is written against but that was never
 /// registered fails only at runtime, so the list is asserted at build time.
 #[cfg(test)]
-pub const COMMAND_NAMES: [&str; 23] = [
+pub const COMMAND_NAMES: [&str; 24] = [
     "ai_list_providers",
     "ai_configure_provider",
+    "ai_delete_provider",
     "ai_test_provider",
     "ai_list_models",
     "ai_get_config",
@@ -444,45 +447,30 @@ impl Write for BoundedExportWriter {
 
 // ─── Provider Management ───────────────────────────────────────────────────
 
-/// List all supported provider kinds and which ones are configured.
+/// Every configured provider profile, in id order.
+///
+/// The returned [`AiProviderProfile`] has no key field of any kind, so this
+/// cannot echo a credential back even for a profile that holds one — only
+/// `hasApiKey`.
 #[tauri::command]
 pub async fn ai_list_providers(
     agent: State<'_, AgentManager>,
-) -> Result<Vec<ProviderStatus>, AiCommandError> {
-    let configured = agent.configured_providers().await;
-    let all = vec![
-        ProviderKind::OpenAi,
-        ProviderKind::Anthropic,
-        ProviderKind::Ollama,
-    ];
-    let statuses = all
-        .into_iter()
-        .map(|kind| ProviderStatus {
-            kind: kind.clone(),
-            configured: configured.contains(&kind),
-        })
-        .collect();
-    Ok(statuses)
+) -> Result<Vec<AiProviderProfile>, AiCommandError> {
+    Ok(agent.list_provider_profiles().await)
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ProviderStatus {
-    pub kind: ProviderKind,
-    pub configured: bool,
-}
-
-/// Configure (or reconfigure) a provider with the given settings.
+/// Create or update a provider profile, and verify it in the same call.
+///
+/// An input with no `id` creates a profile under a generated id; an input
+/// naming an `id` updates that profile. `apiKey` is three-state: absent keeps
+/// the stored key, `null` clears it, a string replaces it.
 #[tauri::command]
 pub async fn ai_configure_provider(
     agent: State<'_, AgentManager>,
-    config: ProviderConfig,
-) -> Result<(), AiCommandError> {
-    config
-        .validate()
-        .map_err(|error| map_provider_error(error, "ai:configure_provider"))?;
+    profile: AiProviderProfileInput,
+) -> Result<AiProviderProfile, AiCommandError> {
     run_bounded_command(
-        agent.configure_provider(config),
+        agent.configure_provider_profile(profile),
         PROVIDER_COMMAND_TIMEOUT,
         "ai:configure_provider",
         |error| map_agent_error(error, "ai:configure_provider"),
@@ -490,18 +478,51 @@ pub async fn ai_configure_provider(
     .await
 }
 
-/// Test a provider connection (health check + list models).
+/// Delete a provider profile. Resolves `false` when no such profile exists.
+///
+/// The selection and any live generation are cleaned up with it; see
+/// `AgentManager::delete_provider_profile`.
+#[tauri::command]
+pub async fn ai_delete_provider(
+    agent: State<'_, AgentManager>,
+    id: String,
+) -> Result<bool, AiCommandError> {
+    delete_provider_inner(&agent, id).await
+}
+
+async fn delete_provider_inner(agent: &AgentManager, id: String) -> Result<bool, AiCommandError> {
+    validate_provider_id_bounds(&id, "ai:delete_provider")?;
+    agent
+        .delete_provider_profile(&id)
+        .await
+        .map_err(|error| map_agent_error(error, "ai:delete_provider"))
+}
+
+/// Reject an oversized id before it is used as a lookup key, so the limit is
+/// reported as a limit rather than as a validation failure deeper in.
+fn validate_provider_id_bounds(id: &str, operation: &'static str) -> Result<(), AiCommandError> {
+    bc_ai_provider::limits::validate_string("provider id", id, MAX_PROVIDER_ID_BYTES)
+        .map_err(|error| map_provider_error(error, operation))
+}
+
+async fn provider_for_id(
+    agent: &AgentManager,
+    id: &str,
+    operation: &'static str,
+) -> Result<std::sync::Arc<dyn bc_ai_provider::AiProvider + Send + Sync>, AiCommandError> {
+    validate_provider_id_bounds(id, operation)?;
+    agent.provider(id).await.ok_or_else(|| {
+        map_provider_error(AiProviderError::NotConfigured(id.to_string()), operation)
+    })
+}
+
+/// Test one profile's connection (health check + list models).
 #[tauri::command]
 pub async fn ai_test_provider(
     agent: State<'_, AgentManager>,
-    kind: ProviderKind,
+    id: String,
 ) -> Result<Vec<Model>, AiCommandError> {
-    let provider = agent.provider(&kind).await.ok_or_else(|| {
-        map_provider_error(
-            AiProviderError::NotConfigured(kind.to_string()),
-            "ai:test_provider",
-        )
-    })?;
+    let provider = provider_for_id(&agent, &id, "ai:test_provider").await?;
 
     run_bounded_command(
         provider.health_check(),
@@ -522,18 +543,13 @@ pub async fn ai_test_provider(
     Ok(models)
 }
 
-/// List available models for a configured provider.
+/// List available models for one configured profile.
 #[tauri::command]
 pub async fn ai_list_models(
     agent: State<'_, AgentManager>,
-    kind: ProviderKind,
+    id: String,
 ) -> Result<Vec<Model>, AiCommandError> {
-    let provider = agent.provider(&kind).await.ok_or_else(|| {
-        map_provider_error(
-            AiProviderError::NotConfigured(kind.to_string()),
-            "ai:list_models",
-        )
-    })?;
+    let provider = provider_for_id(&agent, &id, "ai:list_models").await?;
 
     let models = run_bounded_command(
         provider.list_models(),
@@ -574,7 +590,7 @@ pub async fn ai_set_config(
 
 async fn create_conversation_inner(
     agent: &AgentManager,
-    provider: ProviderKind,
+    provider: String,
     model: String,
     title: Option<String>,
     system_prompt: Option<String>,
@@ -587,10 +603,15 @@ async fn create_conversation_inner(
 }
 
 /// Create a new conversation.
+///
+/// `provider` is a provider profile id: the transcript records which
+/// connection it belongs to, and a send with no `providerId` prefers it. A
+/// conversation may name a profile that is not configured (or no longer is);
+/// that is reported at send time, not here.
 #[tauri::command]
 pub async fn ai_create_conversation(
     agent: State<'_, AgentManager>,
-    provider: ProviderKind,
+    provider: String,
     model: String,
     title: Option<String>,
     system_prompt: Option<String>,
@@ -663,7 +684,7 @@ async fn start_message_inner(
     agent: &AgentManager,
     conversation_id: Uuid,
     text: String,
-    provider: ProviderKind,
+    provider_id: Option<String>,
 ) -> Result<(Uuid, mpsc::Receiver<AgentEvent>), AiCommandError> {
     bc_ai_provider::limits::validate_string(
         "user message",
@@ -671,9 +692,18 @@ async fn start_message_inner(
         bc_ai_provider::limits::MAX_MESSAGE_BYTES,
     )
     .map_err(|error| map_provider_error(error, "ai:send_message"))?;
-    if agent.provider(&provider).await.is_none() {
+    if let Some(id) = &provider_id {
+        validate_provider_id_bounds(id, "ai:send_message")?;
+    }
+    // An absent id means "use the configured default"; nothing here falls
+    // through to an arbitrary configured provider.
+    let provider_id = agent
+        .resolve_provider_id(Some(conversation_id), provider_id)
+        .await
+        .map_err(|error| map_agent_error(error, "ai:send_message"))?;
+    if agent.provider(&provider_id).await.is_none() {
         return Err(map_provider_error(
-            AiProviderError::NotConfigured(provider.to_string()),
+            AiProviderError::NotConfigured(provider_id),
             "ai:send_message",
         ));
     }
@@ -691,7 +721,7 @@ async fn start_message_inner(
         .await
         .map_err(|error| map_chat_error(error, "ai:send_message"))?;
     let receiver = agent
-        .send_message(conversation_id, provider)
+        .send_message(conversation_id, &provider_id)
         .await
         .map_err(|error| map_agent_error(error, "ai:send_message"))?;
     Ok((user_msg_id, receiver))
@@ -699,17 +729,19 @@ async fn start_message_inner(
 
 /// Send a user message and start the agent loop.
 ///
-/// The response streams back via Tauri events on channel `ai:event`.
+/// `providerId` names the profile to send through; omitting it uses the
+/// configured `defaultProviderId`, and failing both is an error rather than a
+/// guess. The response streams back via Tauri events on channel `ai:event`.
 #[tauri::command]
 pub async fn ai_send_message(
     app: AppHandle,
     agent: State<'_, AgentManager>,
     conversation_id: Uuid,
     text: String,
-    provider: ProviderKind,
+    provider_id: Option<String>,
 ) -> Result<Uuid, AiCommandError> {
     let (user_msg_id, mut rx) =
-        start_message_inner(&agent, conversation_id, text, provider).await?;
+        start_message_inner(&agent, conversation_id, text, provider_id).await?;
 
     // Spawn a task to forward events to the frontend
     let app_clone = app.clone();
@@ -799,6 +831,11 @@ pub struct AiPermissionsView {
     pub tools: std::collections::BTreeMap<String, AiToolPermission>,
     /// Every registered tool with its *effective* permission already resolved.
     pub catalog: Vec<AiToolDescriptor>,
+    /// Whether tool dispatch is possible at all right now, and over how many
+    /// tools. The catalogue describes the assistant's own permissions; dispatch
+    /// is also gated on the application's MCP grants, which the renderer cannot
+    /// resolve for itself.
+    pub availability: ToolAvailability,
 }
 
 async fn get_permissions_inner(agent: &AgentManager) -> AiPermissionsView {
@@ -807,6 +844,7 @@ async fn get_permissions_inner(agent: &AgentManager) -> AiPermissionsView {
         mode: permissions.mode,
         tools: permissions.tools,
         catalog: agent.tool_catalog().await,
+        availability: agent.tool_availability().await,
     }
 }
 
@@ -894,10 +932,7 @@ pub async fn ai_update_persona(
     update_persona_inner(&agent, id, persona).await
 }
 
-async fn delete_persona_inner(
-    agent: &AgentManager,
-    id: String,
-) -> Result<bool, AiCommandError> {
+async fn delete_persona_inner(agent: &AgentManager, id: String) -> Result<bool, AiCommandError> {
     validate_persona_id(&id, "ai:delete_persona")?;
     agent
         .delete_persona(&id)
@@ -967,7 +1002,7 @@ mod tests {
     async fn create_valid_conversation(agent: &AgentManager) -> Uuid {
         create_conversation_inner(
             agent,
-            ProviderKind::Ollama,
+            "ollama".into(),
             "bounded-model".into(),
             Some("Bounded conversation".into()),
             None,
@@ -1016,7 +1051,7 @@ mod tests {
         let agent = AgentManager::default();
         let error = create_conversation_inner(
             &agent,
-            ProviderKind::Ollama,
+            "ollama".into(),
             "m".repeat(bc_ai_provider::limits::MAX_MODEL_BYTES + 1),
             None,
             None,
@@ -1037,7 +1072,7 @@ mod tests {
             &agent,
             conversation_id,
             "x".repeat(bc_ai_provider::limits::MAX_MESSAGE_BYTES + 1),
-            ProviderKind::Ollama,
+            Some("ollama".into()),
         )
         .await
         .expect_err("oversized message must fail before provider lookup");
@@ -1211,9 +1246,59 @@ mod tests {
         assert!(value["tools"].is_object());
         let first = &value["catalog"][0];
         for key in ["name", "classification", "description", "permission"] {
-            assert!(first.get(key).is_some(), "catalog entry missing {key}: {first}");
+            assert!(
+                first.get(key).is_some(),
+                "catalog entry missing {key}: {first}"
+            );
         }
         assert!(first.get("system_prompt").is_none());
+
+        let availability = &value["availability"];
+        for key in [
+            "dispatchAvailable",
+            "grantedToolCount",
+            "usableToolCount",
+            "registeredToolCount",
+        ] {
+            assert!(
+                availability.get(key).is_some(),
+                "availability missing {key}: {availability}"
+            );
+        }
+    }
+
+    /// What the renderer needs to stop guessing: whether tool dispatch is
+    /// possible at all, resolved from the application's MCP grants rather than
+    /// from the assistant's own permissions.
+    #[tokio::test]
+    async fn the_permissions_view_reports_availability_from_the_mcp_grants() {
+        let mcp = bc_mcp::McpServerManager::default();
+        let agent = AgentManager::with_mcp_grants(mcp.grant_handle());
+
+        let before = get_permissions_inner(&agent).await;
+        assert!(
+            !before.availability.dispatch_available,
+            "no grants means no tools, and the UI must be told so"
+        );
+        assert_eq!(before.availability.granted_tool_count, 0);
+        assert!(before.availability.registered_tool_count > 0);
+        assert!(
+            before
+                .catalog
+                .iter()
+                .any(|descriptor| descriptor.permission != AiToolPermission::Deny),
+            "the catalogue still describes the assistant's own permissions, \
+             which is why availability has to be reported separately"
+        );
+
+        mcp.set_enabled_tools(vec!["cf_list_zones".to_string()])
+            .await
+            .expect("grants stored");
+
+        let after = get_permissions_inner(&agent).await;
+        assert!(after.availability.dispatch_available);
+        assert_eq!(after.availability.granted_tool_count, 1);
+        assert_eq!(after.availability.usable_tool_count, 1);
     }
 
     #[tokio::test]
@@ -1221,7 +1306,9 @@ mod tests {
         let agent = AgentManager::default();
         let mut config = agent.agent_config().await;
         config.tools_enabled = false;
-        set_config_inner(&agent, config).await.expect("valid config");
+        set_config_inner(&agent, config)
+            .await
+            .expect("valid config");
 
         let view = get_permissions_inner(&agent).await;
         assert!(
@@ -1316,7 +1403,12 @@ mod tests {
     #[tokio::test]
     async fn builtin_personas_are_immutable_through_the_commands() {
         let agent = AgentManager::default();
-        for id in ["default", "dns-expert", "security-auditor", "migration-helper"] {
+        for id in [
+            "default",
+            "dns-expert",
+            "security-auditor",
+            "migration-helper",
+        ] {
             let error = update_persona_inner(&agent, id.into(), persona_input("Hijacked"))
                 .await
                 .expect_err("builtins must not be editable");
@@ -1354,9 +1446,8 @@ mod tests {
             (
                 "systemPrompt",
                 AiPersonaInput {
-                    system_prompt: "s".repeat(
-                        bc_ai_agent::personas::MAX_PERSONA_SYSTEM_PROMPT_BYTES + 1,
-                    ),
+                    system_prompt: "s"
+                        .repeat(bc_ai_agent::personas::MAX_PERSONA_SYSTEM_PROMPT_BYTES + 1),
                     ..persona_input("x")
                 },
             ),
@@ -1400,14 +1491,190 @@ mod tests {
     fn a_denied_tool_call_maps_to_a_structured_permission_error() {
         let error = map_agent_error(
             AgentError::ToolDenied {
-                reason: "tool 'cf_delete_dns_record' writes, and the assistant is in read-only mode"
-                    .into(),
+                reason:
+                    "tool 'cf_delete_dns_record' writes, and the assistant is in read-only mode"
+                        .into(),
             },
             "ai:approve_tool_call",
         );
         assert_eq!(error.code, "AI_TOOL_DENIED");
         assert_eq!(error.details.kind, Some("permission_denied"));
         assert!(error.message.contains("cf_delete_dns_record"));
+    }
+
+    fn profile_input(value: serde_json::Value) -> AiProviderProfileInput {
+        serde_json::from_value(value).expect("valid input shape")
+    }
+
+    /// The renderer-facing shape of a profile has no key field, so the list
+    /// command cannot echo a credential even for a profile that holds one.
+    #[tokio::test]
+    async fn listing_providers_has_no_field_that_could_carry_a_key() {
+        let agent = AgentManager::default();
+        assert!(agent.list_provider_profiles().await.is_empty());
+
+        let listed = vec![bc_ai_provider::ProviderProfile::apply(
+            "groq-prod".into(),
+            None,
+            profile_input(serde_json::json!({
+                "label": "Groq",
+                "protocol": "openai",
+                "baseUrl": "https://api.groq.com/openai/v1",
+                "model": "llama-3.3-70b-versatile",
+                "temperature": 0.7,
+                "maxTokens": 1024,
+                "apiKey": "gsk-live-SECRET",
+            })),
+        )
+        .expect("valid profile")
+        .view()];
+        let serialized = serde_json::to_string(&listed).expect("serializes");
+        assert!(!serialized.contains("SECRET"), "{serialized}");
+        assert!(!serialized.contains("apiKey"), "{serialized}");
+        assert!(serialized.contains("\"hasApiKey\":true"), "{serialized}");
+    }
+
+    /// A base URL is attacker-influenced input that the backend then sends a
+    /// credential to. A refused one must not reach the network or the store.
+    #[tokio::test]
+    async fn a_profile_pointing_at_a_non_http_scheme_is_refused_and_not_stored() {
+        let agent = AgentManager::default();
+        for refused in ["file:///etc/passwd", "ftp://example.com", "javascript:x"] {
+            let error = agent
+                .configure_provider_profile(profile_input(serde_json::json!({
+                    "label": "Hostile",
+                    "protocol": "openai",
+                    "baseUrl": refused,
+                    "model": "gpt-4o",
+                    "temperature": 0.7,
+                    "maxTokens": 1024,
+                    "apiKey": "sk-test",
+                })))
+                .await
+                .map_err(|error| map_agent_error(error, "ai:configure_provider"))
+                .expect_err("a non-HTTP base URL must be refused");
+            assert_eq!(error.code, "AI_VALIDATION");
+            assert_eq!(error.details.field, Some("baseUrl"));
+        }
+        assert!(agent.list_provider_profiles().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn deleting_an_unknown_provider_is_false_and_a_malformed_id_is_an_error() {
+        let agent = AgentManager::default();
+        assert!(!delete_provider_inner(&agent, "not-configured".into())
+            .await
+            .expect("an unknown id resolves false"),);
+
+        let error = delete_provider_inner(&agent, "i".repeat(MAX_PROVIDER_ID_BYTES + 1))
+            .await
+            .expect_err("an oversized id must fail");
+        assert_eq!(error.code, "AI_LIMIT_EXCEEDED");
+        assert_eq!(error.details.resource, Some("provider id"));
+
+        let error = delete_provider_inner(&agent, "../../etc/passwd".into())
+            .await
+            .expect_err("a malformed id must fail");
+        assert_eq!(error.code, "AI_VALIDATION");
+        assert_eq!(error.details.field, Some("id"));
+    }
+
+    /// With no provider named and no default selected, the send must fail —
+    /// not fall through to whatever provider happens to be configured — and it
+    /// must fail before the user's message is retained.
+    #[tokio::test]
+    async fn a_send_without_a_provider_or_a_default_is_refused_before_retention() {
+        let agent = AgentManager::default();
+        let conversation_id = create_valid_conversation(&agent).await;
+
+        let error = start_message_inner(&agent, conversation_id, "hello".into(), None)
+            .await
+            .expect_err("no provider and no default must fail");
+        assert_eq!(error.code, "AI_NOT_CONFIGURED");
+
+        let error = start_message_inner(
+            &agent,
+            conversation_id,
+            "hello".into(),
+            Some("not-configured".into()),
+        )
+        .await
+        .expect_err("an unknown profile must fail");
+        assert_eq!(error.code, "AI_NOT_CONFIGURED");
+
+        let error = start_message_inner(
+            &agent,
+            conversation_id,
+            "hello".into(),
+            Some("i".repeat(MAX_PROVIDER_ID_BYTES + 1)),
+        )
+        .await
+        .expect_err("an oversized provider id must fail");
+        assert_eq!(error.code, "AI_LIMIT_EXCEEDED");
+        assert_eq!(error.details.resource, Some("provider id"));
+
+        assert!(agent
+            .chat
+            .get_conversation(conversation_id)
+            .await
+            .expect("conversation")
+            .messages
+            .is_empty());
+    }
+
+    /// A conversation's `provider` is a user-supplied profile id now, so it is
+    /// bounded text rather than a closed enum the deserializer could vet.
+    #[tokio::test]
+    async fn a_conversation_cannot_name_a_malformed_provider_profile() {
+        let agent = AgentManager::default();
+        for refused in ["", "my provider", "../../etc/passwd", &"i".repeat(65)] {
+            let error = create_conversation_inner(
+                &agent,
+                refused.into(),
+                "bounded-model".into(),
+                None,
+                None,
+            )
+            .await
+            .expect_err("a malformed provider id must fail");
+            assert_eq!(error.code, "AI_VALIDATION");
+            assert_eq!(error.details.field, Some("provider"));
+        }
+        assert_eq!(agent.chat.count().await, 0);
+
+        // A profile that is not configured is still a legal selection; that is
+        // reported when the message is sent, not when the thread is opened.
+        create_conversation_inner(
+            &agent,
+            "not-configured-yet".into(),
+            "bounded-model".into(),
+            None,
+            None,
+        )
+        .await
+        .expect("a well-formed id opens a conversation");
+    }
+
+    #[tokio::test]
+    async fn the_default_provider_selection_is_validated_and_stored() {
+        let agent = AgentManager::default();
+        let mut config = agent.agent_config().await;
+        assert_eq!(config.default_provider_id, None);
+
+        config.default_provider_id = Some("my provider".into());
+        let error = set_config_inner(&agent, config.clone())
+            .await
+            .expect_err("a malformed default must fail");
+        assert_eq!(error.code, "AI_VALIDATION");
+        assert_eq!(error.details.field, Some("defaultProviderId"));
+        assert_eq!(agent.agent_config().await.default_provider_id, None);
+
+        config.default_provider_id = Some("groq-prod".into());
+        set_config_inner(&agent, config).await.expect("valid");
+        assert_eq!(
+            agent.agent_config().await.default_provider_id.as_deref(),
+            Some("groq-prod")
+        );
     }
 
     #[test]

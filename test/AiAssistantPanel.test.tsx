@@ -27,11 +27,11 @@ import { TauriClient } from "../src/lib/api/tauri-client";
 import type {
   AgentConfig,
   AgentEvent,
+  AiProviderProfile,
+  AiProviderProfileInput,
   ChatMessage,
   Conversation,
   ConversationMeta,
-  ProviderConfig,
-  ProviderStatus,
 } from "../src/types/ai";
 
 const CREATED = "2026-08-25T10:00:00Z";
@@ -85,9 +85,26 @@ interface BackendCall {
 
 interface BackendOptions {
   config?: Partial<AgentConfig>;
-  providers?: ProviderStatus[];
+  providers?: AiProviderProfile[];
   conversations?: ConversationMeta[];
   conversation?: Conversation | null;
+}
+
+/** A provider profile as `ai_list_providers` reports one — never with a key. */
+function providerProfile(
+  overrides: Partial<AiProviderProfile> = {},
+): AiProviderProfile {
+  return {
+    id: "openai-main",
+    label: "OpenAI",
+    protocol: "openai",
+    baseUrl: "https://proxy.test/v1",
+    model: "gpt-4o-mini",
+    temperature: 0.7,
+    maxTokens: 4096,
+    hasApiKey: true,
+    ...overrides,
+  };
 }
 
 interface Backend {
@@ -96,6 +113,8 @@ interface Backend {
   emit: (event: AgentEvent) => void;
   /** Mutable, so a refresh after `turnComplete` can return new messages. */
   state: { conversation: Conversation | null };
+  /** The provider store, so CRUD is observable across a refresh. */
+  providers: AiProviderProfile[];
   failures: Map<string, unknown>;
 }
 
@@ -108,6 +127,7 @@ function installBackend(options: BackendOptions = {}): Backend {
         ? conversation()
         : options.conversation,
   };
+  const providers: AiProviderProfile[] = [...(options.providers ?? [])];
   let handler: ((event: AgentEvent) => void) | null = null;
 
   const config: AgentConfig = {
@@ -119,6 +139,7 @@ function installBackend(options: BackendOptions = {}): Backend {
     temperature: 0.7,
     topP: 1,
     personaId: null,
+    defaultProviderId: null,
     ...options.config,
   };
 
@@ -133,7 +154,7 @@ function installBackend(options: BackendOptions = {}): Backend {
   mock.method(
     TauriClient,
     "aiListProviders",
-    record("aiListProviders", () => options.providers ?? []),
+    record("aiListProviders", () => providers.map((entry) => ({ ...entry }))),
   );
   mock.method(
     TauriClient,
@@ -148,7 +169,38 @@ function installBackend(options: BackendOptions = {}): Backend {
   mock.method(
     TauriClient,
     "aiConfigureProvider",
-    record("aiConfigureProvider", () => undefined),
+    record("aiConfigureProvider", (args) => {
+      const input = args[0] as AiProviderProfileInput;
+      const existing = providers.findIndex((entry) => entry.id === input.id);
+      // What the backend stores: the protocol default fills in a missing base
+      // URL, and `hasApiKey` is decided by the three-valued `apiKey`.
+      const previous = existing >= 0 ? providers[existing] : null;
+      const stored: AiProviderProfile = {
+        id: input.id ?? "assigned-id",
+        label: input.label,
+        protocol: input.protocol,
+        baseUrl: input.baseUrl ?? "https://resolved.test/v1",
+        model: input.model,
+        temperature: input.temperature,
+        maxTokens: input.maxTokens,
+        hasApiKey:
+          input.apiKey === undefined
+            ? (previous?.hasApiKey ?? false)
+            : input.apiKey !== null,
+      };
+      if (existing >= 0) providers[existing] = stored;
+      else providers.push(stored);
+      return stored;
+    }),
+  );
+  mock.method(
+    TauriClient,
+    "aiDeleteProvider",
+    record("aiDeleteProvider", (args) => {
+      const index = providers.findIndex((entry) => entry.id === args[0]);
+      if (index >= 0) providers.splice(index, 1);
+      return index >= 0;
+    }),
   );
   mock.method(
     TauriClient,
@@ -205,6 +257,7 @@ function installBackend(options: BackendOptions = {}): Backend {
   return {
     calls,
     state,
+    providers,
     failures,
     emit: (event) => {
       act(() => {
@@ -343,6 +396,16 @@ test("an approval request is read-only and offers no way to approve it", async (
 test("the tool-use toggle is present, disabled, and reports the real state", async () => {
   installBackend();
   render(<AiAssistantPanel initialView="settings" />);
+
+  // The toggle lives in Tools & permissions, next to the policy it governs,
+  // rather than being duplicated into the Providers section.
+  fireEvent.click(
+    within(
+      await screen.findByRole("toolbar", {
+        name: "Assistant settings sections",
+      }),
+    ).getByRole("button", { name: "Tools & permissions" }),
+  );
 
   const toggle = await screen.findByRole("switch", { name: "Tool use" });
   assert.equal((toggle as HTMLButtonElement).disabled, true);
@@ -552,6 +615,10 @@ test("the provider form states the session-only rule and never reveals the key",
   render(<AiAssistantPanel initialView="settings" />);
   await screen.findByTestId("ai-settings");
 
+  fireEvent.click(
+    await screen.findByRole("button", { name: "Add a provider" }),
+  );
+
   // Required copy from the plan; the only mitigation for a key that silently
   // vanishes on restart.
   assert.ok(
@@ -569,6 +636,9 @@ test("the provider form states the session-only rule and never reveals the key",
   }
 
   fireEvent.change(key, { target: { value: "sk-secret-value" } });
+  fireEvent.change(screen.getByLabelText("Name"), {
+    target: { value: "OpenAI" },
+  });
   fireEvent.change(screen.getByLabelText("Model"), {
     target: { value: "gpt-4o-mini" },
   });
@@ -578,16 +648,19 @@ test("the provider form states the session-only rule and never reveals the key",
     assert.equal(named(backend, "aiConfigureProvider").length, 1),
   );
   const [sent] = named(backend, "aiConfigureProvider")[0].args as [
-    ProviderConfig,
+    AiProviderProfileInput,
   ];
-  // The shape Rust actually deserializes: lowercase kind, required model /
-  // temperature / maxTokens, and no invented `orgId`.
-  assert.equal(sent.kind, "openai");
+  // The shape Rust actually deserializes: a lowercase protocol, a label, and
+  // required model / temperature / maxTokens. No `kind`, and no invented
+  // `orgId`.
+  assert.equal(sent.protocol, "openai");
+  assert.equal(sent.label, "OpenAI");
   assert.equal(sent.model, "gpt-4o-mini");
   assert.equal(typeof sent.temperature, "number");
   assert.equal(typeof sent.maxTokens, "number");
   assert.equal(sent.apiKey, "sk-secret-value");
   assert.ok(!("orgId" in sent));
+  assert.ok(!("kind" in sent));
 
   // Saving is also the verification, so there is no separate Test button.
   assertAbsent(
@@ -595,14 +668,15 @@ test("the provider form states the session-only rule and never reveals the key",
     "separate Test button",
   );
 
-  // The key is dropped from component state once it has been handed over.
+  // The key is gone from the page once it has been handed over: the editor
+  // closes, and the only thing shown about the credential is that one exists.
   await waitFor(() =>
-    assert.equal(
-      (screen.getByLabelText("API key") as HTMLInputElement).value,
-      "",
-    ),
+    assertAbsent(screen.queryByTestId("ai-provider-editor"), "provider editor"),
   );
   assert.doesNotMatch(document.body.textContent ?? "", /sk-secret-value/);
+  const row = await screen.findByTestId("ai-provider-row");
+  assert.equal(row.getAttribute("data-has-key"), "true");
+  assert.match(row.textContent ?? "", /Key set/);
 });
 
 test("a rejected provider config surfaces the backend message and remediation", async () => {
@@ -618,8 +692,14 @@ test("a rejected provider config surfaces the backend message and remediation", 
   render(<AiAssistantPanel initialView="settings" />);
   await screen.findByTestId("ai-settings");
 
+  fireEvent.click(
+    await screen.findByRole("button", { name: "Add a provider" }),
+  );
   fireEvent.change(screen.getByLabelText("API key"), {
     target: { value: "sk-wrong" },
+  });
+  fireEvent.change(screen.getByLabelText("Name"), {
+    target: { value: "OpenAI" },
   });
   fireEvent.change(screen.getByLabelText("Model"), {
     target: { value: "gpt-4o-mini" },
@@ -639,7 +719,7 @@ test("a rejected provider config surfaces the backend message and remediation", 
 
 test("a conversation can be created from a configured provider and deleted", async () => {
   const backend = installBackend({
-    providers: [{ kind: "openai", configured: true }],
+    providers: [providerProfile()],
     conversations: [conversationMeta()],
   });
   render(<AiAssistantPanel />);
@@ -652,7 +732,7 @@ test("a conversation can be created from a configured provider and deleted", asy
 
   await waitFor(() =>
     assert.deepEqual(named(backend, "aiCreateConversation")[0]?.args, [
-      "openai",
+      "openai-main",
       "gpt-4o-mini",
       undefined,
       undefined,
@@ -721,7 +801,7 @@ test("export offers the conversation as a file and reports the size ceiling", as
 
 test("every icon-only control in the panel is announced by name", async () => {
   installBackend({
-    providers: [{ kind: "openai", configured: true }],
+    providers: [providerProfile()],
     conversations: [conversationMeta()],
   });
   render(<AiAssistantPanel />);

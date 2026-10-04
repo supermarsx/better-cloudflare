@@ -2,9 +2,14 @@
  * Conversation picker plus the new-conversation row.
  *
  * A conversation is created against a provider and a model, so the row carries
- * both. The model defaults to whatever was last configured for that provider in
- * this session — provider config is RAM-only (see `AiProviderSettings`), so
- * there is nothing more durable to read it from.
+ * both. The provider is a profile id, which is why the picker shows the
+ * profile's *label* and the list resolves ids back to labels: `groq-fast` is
+ * not a name anyone chose to read.
+ *
+ * An id that no longer resolves is shown as the raw id rather than hidden or
+ * guessed at. Profiles can be deleted while conversations created with them
+ * survive, and claiming such a conversation belongs to some other provider
+ * would be a lie about which endpoint saw the transcript.
  */
 import { Plus, Trash2 } from "lucide-react";
 
@@ -19,18 +24,19 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useI18n } from "@/hooks/use-i18n";
-import type { ConversationMeta, ProviderKind } from "@/types/ai";
+import type { AiProviderProfile, ConversationMeta } from "@/types/ai";
 
 export interface AiConversationListProps {
   conversations: ConversationMeta[];
   selectedId: string | null;
   loading: boolean;
-  /** Provider kinds that have been configured this session. */
-  configuredProviders: readonly ProviderKind[];
-  provider: ProviderKind | null;
+  /** Provider profiles that are configured right now. */
+  configuredProviders: readonly AiProviderProfile[];
+  /** The selected profile id, or `null` when none is configured. */
+  provider: string | null;
   model: string;
   creating: boolean;
-  onProviderChange: (kind: ProviderKind) => void;
+  onProviderChange: (id: string) => void;
   onModelChange: (model: string) => void;
   onCreate: () => void;
   onSelect: (id: string) => void;
@@ -55,6 +61,10 @@ export function AiConversationList({
   const canCreate =
     !creating && provider !== null && model.trim().length > 0 && !loading;
 
+  /** The profile's label, or the bare id when it no longer resolves. */
+  const providerLabel = (id: string): string =>
+    configuredProviders.find((entry) => entry.id === id)?.label ?? id;
+
   return (
     <div className="space-y-3" data-testid="ai-conversations">
       {configuredProviders.length === 0 ? (
@@ -72,7 +82,7 @@ export function AiConversationList({
             </Label>
             <Select
               value={provider ?? undefined}
-              onValueChange={(value) => onProviderChange(value as ProviderKind)}
+              onValueChange={(value) => onProviderChange(value)}
             >
               <SelectTrigger
                 id="ai-new-provider"
@@ -82,9 +92,9 @@ export function AiConversationList({
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                {configuredProviders.map((kind) => (
-                  <SelectItem key={kind} value={kind}>
-                    {kind}
+                {configuredProviders.map((profile) => (
+                  <SelectItem key={profile.id} value={profile.id}>
+                    {profile.label}
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -135,7 +145,7 @@ export function AiConversationList({
               >
                 <span className="block truncate font-medium">{meta.title}</span>
                 <span className="block truncate text-muted-foreground">
-                  {meta.provider} · {meta.model} ·{" "}
+                  {providerLabel(meta.provider)} · {meta.model} ·{" "}
                   {t("{{count}} messages", {
                     count: meta.messageCount,
                     defaultValue: `${meta.messageCount} messages`,

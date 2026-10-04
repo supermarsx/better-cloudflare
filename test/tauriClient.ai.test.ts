@@ -15,7 +15,7 @@ import type {
   AiPermissionsSnapshot,
   AiPersona,
   AiPersonaInput,
-  ProviderConfig,
+  AiProviderProfileInput,
 } from "../src/types/ai";
 
 type Call = { command: string; payload: Record<string, unknown> | undefined };
@@ -49,6 +49,7 @@ const AGENT_CONFIG: AgentConfig = {
   temperature: 0.7,
   topP: 1,
   personaId: null,
+  defaultProviderId: null,
 };
 
 afterEach(() => {
@@ -65,13 +66,15 @@ test("every AI method throws a clear error off desktop", async () => {
     () => TauriClient.aiListProviders(),
     () =>
       TauriClient.aiConfigureProvider({
-        kind: "openai",
+        label: "OpenAI",
+        protocol: "openai",
         model: "gpt-4o",
         temperature: 0.2,
         maxTokens: 1024,
       }),
-    () => TauriClient.aiTestProvider("openai"),
-    () => TauriClient.aiListModels("openai"),
+    () => TauriClient.aiDeleteProvider("openai-main"),
+    () => TauriClient.aiTestProvider("openai-main"),
+    () => TauriClient.aiListModels("openai-main"),
     () => TauriClient.aiGetConfig(),
     () => TauriClient.aiSetConfig(AGENT_CONFIG),
     () => TauriClient.aiCreateConversation("anthropic", "claude"),
@@ -79,7 +82,7 @@ test("every AI method throws a clear error off desktop", async () => {
     () => TauriClient.aiGetConversation("c1"),
     () => TauriClient.aiDeleteConversation("c1"),
     () => TauriClient.aiSetConversationTitle("c1", "t"),
-    () => TauriClient.aiSendMessage("c1", "hi", "openai"),
+    () => TauriClient.aiSendMessage("c1", "hi", "openai-main"),
     () => TauriClient.aiApproveToolCall("c1", "tc1"),
     () => TauriClient.aiCancelGeneration("c1"),
     () => TauriClient.aiListPresets(),
@@ -103,19 +106,30 @@ test("every AI method throws a clear error off desktop", async () => {
     () => TauriClient.aiDeletePersona("p1"),
     () => TauriClient.onAiEvent(() => {}),
   ];
-  // Twenty-three commands plus the event subscription.
-  assert.equal(attempts.length, 24);
+  // Twenty-four commands plus the event subscription.
+  assert.equal(attempts.length, 25);
   for (const attempt of attempts) {
     await assert.rejects(attempt, { message: AI_DESKTOP_ONLY });
   }
 });
 
-test("all seventeen commands use the camelCase Tauri contract", async () => {
+test("all eighteen commands use the camelCase Tauri contract", async () => {
   desktop();
   const calls = recordCalls((command) => {
     switch (command) {
       case "ai_list_providers":
-        return [{ kind: "openai", configured: true }];
+        return [
+          {
+            id: "openai-main",
+            label: "OpenAI",
+            protocol: "openai",
+            baseUrl: "https://proxy.test/v1",
+            model: "gpt-4o",
+            temperature: 0.7,
+            maxTokens: 2048,
+            hasApiKey: true,
+          },
+        ];
       case "ai_test_provider":
       case "ai_list_models":
         return [{ id: "m", name: "M", supportsTools: true }];
@@ -128,6 +142,7 @@ test("all seventeen commands use the camelCase Tauri contract", async () => {
       case "ai_get_conversation":
         return { id: "c1", messages: [] };
       case "ai_delete_conversation":
+      case "ai_delete_provider":
       case "ai_set_conversation_title":
       case "ai_cancel_generation":
         return true;
@@ -140,6 +155,16 @@ test("all seventeen commands use the camelCase Tauri contract", async () => {
       case "ai_export_conversation":
         return '{"id":"c1"}';
       case "ai_configure_provider":
+        return {
+          id: "anthropic-proxy",
+          label: "Anthropic via proxy",
+          protocol: "anthropic",
+          baseUrl: "https://proxy.test/v1",
+          model: "claude-sonnet-4-20250514",
+          temperature: 0.7,
+          maxTokens: 2048,
+          hasApiKey: true,
+        };
       case "ai_set_config":
       case "ai_approve_tool_call":
         return undefined;
@@ -150,24 +175,33 @@ test("all seventeen commands use the camelCase Tauri contract", async () => {
 
   await TauriClient.aiListProviders();
   await TauriClient.aiConfigureProvider({
-    kind: "anthropic",
+    id: "anthropic-proxy",
+    label: "Anthropic via proxy",
+    protocol: "anthropic",
     apiKey: "secret",
     baseUrl: "https://proxy.test/v1",
     model: "claude-sonnet-4-20250514",
     temperature: 0.7,
     maxTokens: 2048,
   });
-  await TauriClient.aiTestProvider("ollama");
-  await TauriClient.aiListModels("ollama");
+  await TauriClient.aiDeleteProvider("anthropic-proxy");
+  await TauriClient.aiTestProvider("ollama-local");
+  await TauriClient.aiListModels("ollama-local");
   await TauriClient.aiGetConfig();
   await TauriClient.aiSetConfig(AGENT_CONFIG);
-  await TauriClient.aiCreateConversation("openai", "gpt-4o", "Title", "Sys");
-  await TauriClient.aiCreateConversation("openai", "gpt-4o");
+  await TauriClient.aiCreateConversation(
+    "openai-main",
+    "gpt-4o",
+    "Title",
+    "Sys",
+  );
+  await TauriClient.aiCreateConversation("openai-main", "gpt-4o");
   await TauriClient.aiListConversations();
   await TauriClient.aiGetConversation("c1");
   await TauriClient.aiDeleteConversation("c1");
   await TauriClient.aiSetConversationTitle("c1", "Renamed");
-  await TauriClient.aiSendMessage("c1", "hello", "openai");
+  await TauriClient.aiSendMessage("c1", "hello", "openai-main");
+  await TauriClient.aiSendMessage("c1", "hello again");
   await TauriClient.aiApproveToolCall("c1", "tc1");
   await TauriClient.aiCancelGeneration("c1");
   await TauriClient.aiListPresets();
@@ -179,6 +213,7 @@ test("all seventeen commands use the camelCase Tauri contract", async () => {
     [
       "ai_list_providers",
       "ai_configure_provider",
+      "ai_delete_provider",
       "ai_test_provider",
       "ai_list_models",
       "ai_get_config",
@@ -189,6 +224,7 @@ test("all seventeen commands use the camelCase Tauri contract", async () => {
       "ai_get_conversation",
       "ai_delete_conversation",
       "ai_set_conversation_title",
+      "ai_send_message",
       "ai_send_message",
       "ai_approve_tool_call",
       "ai_cancel_generation",
@@ -202,11 +238,28 @@ test("all seventeen commands use the camelCase Tauri contract", async () => {
     calls.filter((call) => call.command === command);
 
   // Rust takes `conversation_id` / `tool_call_id` / `system_prompt`; Tauri
-  // expects the camelCase spelling from JS.
+  // expects the camelCase spelling from JS. The provider argument is an
+  // optional profile id named `providerId`, and is sent as an explicit null
+  // when omitted rather than as an absent key.
   assert.deepEqual(byCommand("ai_send_message")[0].payload, {
     conversationId: "c1",
     text: "hello",
-    provider: "openai",
+    providerId: "openai-main",
+  });
+  assert.deepEqual(byCommand("ai_send_message")[1].payload, {
+    conversationId: "c1",
+    text: "hello again",
+    providerId: null,
+  });
+  // The provider commands are keyed by profile id, not by protocol.
+  assert.deepEqual(byCommand("ai_delete_provider")[0].payload, {
+    id: "anthropic-proxy",
+  });
+  assert.deepEqual(byCommand("ai_test_provider")[0].payload, {
+    id: "ollama-local",
+  });
+  assert.deepEqual(byCommand("ai_list_models")[0].payload, {
+    id: "ollama-local",
   });
   assert.deepEqual(byCommand("ai_approve_tool_call")[0].payload, {
     conversationId: "c1",
@@ -231,13 +284,13 @@ test("all seventeen commands use the camelCase Tauri contract", async () => {
   // Optional conversation fields are sent as explicit nulls, matching the
   // `Option<String>` parameters rather than relying on absent keys.
   assert.deepEqual(byCommand("ai_create_conversation")[0].payload, {
-    provider: "openai",
+    provider: "openai-main",
     model: "gpt-4o",
     title: "Title",
     systemPrompt: "Sys",
   });
   assert.deepEqual(byCommand("ai_create_conversation")[1].payload, {
-    provider: "openai",
+    provider: "openai-main",
     model: "gpt-4o",
     title: null,
     systemPrompt: null,
@@ -347,50 +400,111 @@ test("permission and persona commands use the camelCase Tauri contract", async (
   });
 });
 
-test("provider kinds cross the wire in Rust's lowercase spelling", async () => {
+test("provider protocols cross the wire in Rust's lowercase spelling", async () => {
   desktop();
-  const calls = recordCalls(() => []);
-  await TauriClient.aiTestProvider("openai");
-  await TauriClient.aiTestProvider("anthropic");
-  await TauriClient.aiTestProvider("ollama");
+  const calls = recordCalls(() => ({
+    id: "p",
+    label: "P",
+    protocol: "openai",
+    baseUrl: "https://proxy.test/v1",
+    model: "m",
+    temperature: 0.5,
+    maxTokens: 1024,
+    hasApiKey: false,
+  }));
+  for (const protocol of ["openai", "anthropic", "ollama"] as const) {
+    await TauriClient.aiConfigureProvider({
+      label: protocol,
+      protocol,
+      model: "m",
+      temperature: 0.5,
+      maxTokens: 1024,
+    });
+  }
 
-  // `#[serde(rename_all = "lowercase")]` on `ProviderKind` means `OpenAi` is
+  // `#[serde(rename_all = "lowercase")]` on the protocol enum means `OpenAi` is
   // `"openai"`. The old TS spelling `"openAi"` failed deserialization.
   assert.deepEqual(
-    calls.map((call) => call.payload?.kind),
+    calls.map(
+      (call) => (call.payload?.profile as Record<string, unknown>).protocol,
+    ),
     ["openai", "anthropic", "ollama"],
   );
-  assert.ok(!calls.some((call) => call.payload?.kind === "openAi"));
+  assert.ok(
+    !calls.some(
+      (call) =>
+        (call.payload?.profile as Record<string, unknown>).protocol ===
+        "openAi",
+    ),
+  );
 });
 
-test("provider config forwards exactly the fields Rust requires", async () => {
+test("a provider profile forwards exactly the fields Rust requires", async () => {
   desktop();
   const calls = recordCalls(() => undefined);
-  const config: ProviderConfig = {
-    kind: "openai",
+  const profile: AiProviderProfileInput = {
+    id: "groq-fast",
+    label: "Groq (fast)",
+    protocol: "openai",
     apiKey: "sk-test",
-    baseUrl: "https://api.openai.com/v1",
-    model: "gpt-4o",
+    baseUrl: "https://gateway.test/openai/v1",
+    model: "llama-3.3-70b",
     temperature: 0.5,
     maxTokens: 4096,
   };
-  await TauriClient.aiConfigureProvider(config);
+  await TauriClient.aiConfigureProvider(profile);
 
-  const sent = calls[0].payload?.config as Record<string, unknown>;
+  const sent = calls[0].payload?.profile as Record<string, unknown>;
   assert.deepEqual(sent, {
-    kind: "openai",
+    id: "groq-fast",
+    label: "Groq (fast)",
+    protocol: "openai",
     apiKey: "sk-test",
-    baseUrl: "https://api.openai.com/v1",
-    model: "gpt-4o",
+    baseUrl: "https://gateway.test/openai/v1",
+    model: "llama-3.3-70b",
     temperature: 0.5,
     maxTokens: 4096,
   });
-  // `model`, `temperature` and `maxTokens` are non-`Option` on the Rust side.
-  for (const required of ["model", "temperature", "maxTokens"]) {
+  // `label`, `protocol`, `model`, `temperature` and `maxTokens` are non-`Option`
+  // on the Rust side.
+  for (const required of [
+    "label",
+    "protocol",
+    "model",
+    "temperature",
+    "maxTokens",
+  ]) {
     assert.ok(required in sent, `${required} must be sent`);
   }
-  // There is no `orgId` field in `bc-ai-provider::ProviderConfig`.
-  assert.ok(!("orgId" in sent));
+  // The argument is named `profile`, not `config`, and there is no `kind`.
+  assert.ok(!("config" in (calls[0].payload ?? {})));
+  assert.ok(!("kind" in sent));
+});
+
+test("an omitted apiKey stays omitted, and null is sent as null", async () => {
+  desktop();
+  const calls = recordCalls(() => undefined);
+  const base: AiProviderProfileInput = {
+    id: "groq-fast",
+    label: "Groq (fast)",
+    protocol: "openai",
+    model: "llama-3.3-70b",
+    temperature: 0.5,
+    maxTokens: 4096,
+  };
+  // An edit that does not touch the key must not carry an `apiKey` key at all:
+  // `null` means "clear it", so serializing an absent field as null would wipe
+  // the credential of anyone who renamed a provider.
+  await TauriClient.aiConfigureProvider(base);
+  await TauriClient.aiConfigureProvider({ ...base, apiKey: null });
+  await TauriClient.aiConfigureProvider({ ...base, apiKey: "sk-new" });
+
+  const sent = calls.map(
+    (call) => call.payload?.profile as Record<string, unknown>,
+  );
+  assert.ok(!("apiKey" in sent[0]), "an untouched key must not be sent");
+  assert.equal(sent[1].apiKey, null);
+  assert.equal(sent[2].apiKey, "sk-new");
 });
 
 test("onAiEvent subscribes to the one global channel and unwraps payloads", async () => {
@@ -436,6 +550,8 @@ test("slow AI commands get a deadline above their native bound", () => {
   assert.equal(getTauriInvokeTimeoutMs("ai_test_provider"), 60_000);
   assert.equal(getTauriInvokeTimeoutMs("ai_list_models"), 60_000);
   assert.equal(getTauriInvokeTimeoutMs("ai_export_conversation"), 60_000);
-  // Starting a turn returns immediately; it keeps the default.
+  // Starting a turn returns immediately; it keeps the default. So does
+  // forgetting a profile, which touches no network at all.
   assert.equal(getTauriInvokeTimeoutMs("ai_send_message"), 15_000);
+  assert.equal(getTauriInvokeTimeoutMs("ai_delete_provider"), 15_000);
 });

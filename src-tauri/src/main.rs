@@ -189,15 +189,23 @@ fn main() {
     // portable executable is started from Explorer.
     startup_guard::require_webview_runtime();
 
+    // The MCP permission grants are one piece of state with two consumers: the
+    // MCP server itself, and the AI assistant, whose tool dispatch is gated on
+    // them. The agent gets a read-only handle to the manager's grants, so the
+    // tools the user enables in the MCP tool permissions are exactly the tools
+    // the assistant can reach — and it cannot widen them.
+    let mcp = McpServerManager::default();
+    let agent = AgentManager::with_mcp_grants(mcp.grant_handle());
+
     let run_result = tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_notification::init())
         .manage(Storage::default())
         // `PasskeyState` is managed in `initialize_app` instead: it needs an
         // `AppHandle` to reach the window whose origin scopes the relying party.
-        .manage(McpServerManager::default())
+        .manage(mcp)
         .manage(SessionManager::default())
-        .manage(AgentManager::default())
+        .manage(agent)
         .setup(initialize_app)
         .invoke_handler(tauri::generate_handler![
             // App lifecycle
@@ -330,6 +338,7 @@ fn main() {
             // AI Assistant
             ai_commands::ai_list_providers,
             ai_commands::ai_configure_provider,
+            ai_commands::ai_delete_provider,
             ai_commands::ai_test_provider,
             ai_commands::ai_list_models,
             ai_commands::ai_get_config,

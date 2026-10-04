@@ -254,8 +254,15 @@ pub async fn run_turn(
         .model(conversation_id)
         .await
         .ok_or(bc_ai_chat::ChatError::ConversationNotFound(conversation_id))?;
+    // Advertise only the tools that could actually run: granted by the
+    // application's MCP permissions and not denied by the assistant's own
+    // policy. Offering the rest buys a refused round, and offering an empty
+    // list tells the model it has tools when it has none.
     let tools = if config.tools_enabled {
-        Some(registry.definitions().await)
+        let usable = executor
+            .usable_definitions(registry.definitions().await)
+            .await;
+        (!usable.is_empty()).then_some(usable)
     } else {
         None
     };
@@ -377,8 +384,10 @@ mod tests {
     use async_trait::async_trait;
     use bc_ai_provider::{AiProviderError, Model, Role};
     use bc_ai_tools::permissions::{
-        AiPermissionMode, AiPermissions, AiToolPermission, PERMISSION_REFUSAL_PREFIX,
+        AiPermissionMode, AiPermissions, AiToolPermission, MCP_GRANT_REFUSAL_MARKER,
+        PERMISSION_REFUSAL_PREFIX,
     };
+    use bc_mcp::{McpGrantHandle, McpGrantSet};
 
     use super::*;
 
@@ -500,15 +509,17 @@ mod tests {
     }
 
     impl Harness {
+        /// Grants everything, standing in for a user who enabled every tool in
+        /// the MCP tool permissions UI. Tests that need the MCP layer to be the
+        /// one refusing pass their own handle to [`Harness::with_grants`].
         async fn new(permissions: AiPermissions) -> Self {
+            Self::with_grants(permissions, McpGrantHandle::new(McpGrantSet::all())).await
+        }
+
+        async fn with_grants(permissions: AiPermissions, grants: McpGrantHandle) -> Self {
             let chat = ChatManager::default();
             let conversation_id = chat
-                .try_create_conversation(
-                    bc_ai_provider::ProviderKind::Ollama,
-                    "mock".into(),
-                    None,
-                    None,
-                )
+                .try_create_conversation("ollama".into(), "mock".into(), None, None)
                 .await
                 .expect("conversation")
                 .id;
@@ -518,7 +529,7 @@ mod tests {
 
             let registry = Arc::new(ToolRegistry::default());
             registry.init_all().await;
-            let executor = ToolExecutor::with_registry(Arc::clone(&registry));
+            let executor = ToolExecutor::with_registry_and_grants(Arc::clone(&registry), grants);
             executor
                 .try_set_permissions(permissions)
                 .await
@@ -641,11 +652,10 @@ mod tests {
         assert!(is_error);
     }
 
-    /// The counterpart: a permitted call is *not* refused by us. In-process MCP
-    /// dispatch is denied without canonical grants, so what this pins is that
-    /// the permission gate passed the call through to the dispatch boundary.
+    /// The counterpart, and the reason this change exists: a call both layers
+    /// permit actually runs, and its real output comes back to the model.
     #[tokio::test]
-    async fn a_permitted_tool_call_reaches_dispatch() {
+    async fn a_permitted_tool_call_executes_and_returns_its_output() {
         let harness = Harness::new(AiPermissions {
             mode: AiPermissionMode::Ask,
             tools: BTreeMap::new(),
@@ -658,7 +668,7 @@ mod tests {
             .await
             .expect_err("round limit");
         assert!(matches!(error, AgentError::ToolRoundLimit(1)));
-        let (content, _) = harness
+        let (content, is_error) = harness
             .tool_results()
             .await
             .pop()
@@ -667,6 +677,86 @@ mod tests {
             !content.starts_with(PERMISSION_REFUSAL_PREFIX),
             "a permitted read tool must not be refused: {content}"
         );
+        assert!(!is_error, "the tool really ran: {content}");
+        assert!(
+            content.contains("v=spf1"),
+            "the parsed SPF record must come back to the model: {content}"
+        );
+    }
+
+    /// A tool the application's MCP permissions do not grant is refused the
+    /// same way: fed back to the model, counted against the round limit, and
+    /// named as the application's grants rather than the assistant's policy.
+    #[tokio::test]
+    async fn an_ungranted_tool_is_refused_by_the_mcp_layer_and_consumes_rounds() {
+        let harness = Harness::with_grants(
+            AiPermissions {
+                mode: AiPermissionMode::Autonomous,
+                tools: BTreeMap::from([(READ_TOOL.to_string(), AiToolPermission::Allow)]),
+            },
+            McpGrantHandle::default(),
+        )
+        .await;
+        let provider = ToolLoopProvider::new(READ_TOOL);
+        let rounds = 2;
+
+        let error = harness
+            .run(&provider, &config(rounds), None)
+            .await
+            .expect_err("a model calling an ungranted tool must hit the round limit");
+        assert!(matches!(error, AgentError::ToolRoundLimit(limit) if limit == rounds));
+
+        let results = harness.tool_results().await;
+        assert_eq!(results.len(), rounds as usize);
+        for (content, is_error) in results {
+            assert!(content.starts_with(PERMISSION_REFUSAL_PREFIX));
+            assert!(
+                content.contains(MCP_GRANT_REFUSAL_MARKER),
+                "the user must be told which permission list refused: {content}"
+            );
+            assert!(is_error);
+        }
+    }
+
+    /// With nothing granted there is nothing to advertise, so the model is
+    /// offered no tools at all rather than a list it cannot use.
+    #[tokio::test]
+    async fn no_granted_tools_means_no_tool_list_is_sent_to_the_provider() {
+        let ungranted =
+            Harness::with_grants(AiPermissions::default(), McpGrantHandle::default()).await;
+        let provider = CapturingProvider::default();
+        ungranted
+            .run(&provider, &config(2), None)
+            .await
+            .expect("plain text turn completes");
+        assert!(
+            provider
+                .request
+                .lock()
+                .expect("request")
+                .as_ref()
+                .expect("the provider was called")
+                .tools
+                .is_none(),
+            "an empty tool list must not be advertised as tool support"
+        );
+
+        let granted = Harness::new(AiPermissions::default()).await;
+        let provider = CapturingProvider::default();
+        granted
+            .run(&provider, &config(2), None)
+            .await
+            .expect("plain text turn completes");
+        let advertised = provider
+            .request
+            .lock()
+            .expect("request")
+            .as_ref()
+            .expect("the provider was called")
+            .tools
+            .clone()
+            .expect("granted tools are advertised");
+        assert!(advertised.iter().any(|tool| tool.name == READ_TOOL));
     }
 
     #[tokio::test]
@@ -743,7 +833,7 @@ mod tests {
         let conversation_id = harness
             .chat
             .try_create_conversation(
-                bc_ai_provider::ProviderKind::Ollama,
+                "ollama".into(),
                 "mock".into(),
                 None,
                 Some("Conversation prompt.".into()),

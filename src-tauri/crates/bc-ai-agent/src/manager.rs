@@ -10,10 +10,15 @@ use bc_ai_chat::ChatManager;
 use bc_ai_provider::anthropic::AnthropicProvider;
 use bc_ai_provider::ollama::OllamaProvider;
 use bc_ai_provider::openai::OpenAiProvider;
-use bc_ai_provider::{AiProvider, ProviderConfig, ProviderKind};
+use bc_ai_provider::profile::MAX_PROVIDER_PROFILES;
+use bc_ai_provider::{
+    validate_provider_id, AiProvider, AiProviderError, AiProviderProfile, AiProviderProfileInput,
+    ProviderProfile, ProviderProtocol,
+};
 use bc_ai_tools::executor::ToolExecutor;
-use bc_ai_tools::permissions::{AiPermissions, AiToolDescriptor};
+use bc_ai_tools::permissions::{AiPermissions, AiToolDescriptor, ToolAvailability};
 use bc_ai_tools::ToolRegistry;
+use bc_mcp::McpGrantHandle;
 
 use crate::agent;
 use crate::config::{AgentConfig, AGENT_EVENT_CHANNEL_CAPACITY, DEFAULT_PERSONA_ID};
@@ -27,6 +32,9 @@ struct ActiveTurn {
     generation: Uuid,
     cancellation: watch::Sender<bool>,
     abort_handle: tokio::task::AbortHandle,
+    /// Which provider profile this turn is generating against, so deleting a
+    /// profile can stop exactly the turns still using it.
+    provider_id: String,
 }
 
 struct ActiveApproval {
@@ -54,9 +62,13 @@ impl Drop for ApprovalGuard {
 }
 
 /// Central AI agent manager, registered via `.manage()` in Tauri.
+///
+/// Both provider registries are keyed by a user-defined profile id, not by a
+/// protocol: keying them by protocol gave an install exactly one OpenAI slot,
+/// so configuring Groq evicted OpenAI and then displayed itself as OpenAI.
 pub struct AgentManager {
-    providers: RwLock<HashMap<ProviderKind, Arc<dyn AiProvider + Send + Sync>>>,
-    configs: RwLock<HashMap<ProviderKind, ProviderConfig>>,
+    providers: RwLock<HashMap<String, Arc<dyn AiProvider + Send + Sync>>>,
+    profiles: RwLock<HashMap<String, ProviderProfile>>,
     agent_config: RwLock<AgentConfig>,
     pub registry: Arc<ToolRegistry>,
     pub executor: Arc<ToolExecutor>,
@@ -67,15 +79,32 @@ pub struct AgentManager {
 }
 
 impl Default for AgentManager {
+    /// An agent with no MCP grant handle. Its executor holds an empty grant
+    /// set, so every tool call is refused by the application layer — use
+    /// [`AgentManager::with_mcp_grants`] to govern it by the grants the user
+    /// actually configured.
     fn default() -> Self {
+        Self::with_mcp_grants(McpGrantHandle::default())
+    }
+}
+
+impl AgentManager {
+    /// Build an agent governed by the application's live MCP grants.
+    ///
+    /// The handle is read-only: the agent observes what the user enabled in the
+    /// MCP tool permissions and can narrow it, never widen it.
+    pub fn with_mcp_grants(grants: McpGrantHandle) -> Self {
         // One enabled-tool set: the executor resolves permissions against the
         // same registry the provider tool list is built from.
         let registry = Arc::new(ToolRegistry::default());
         Self {
             providers: RwLock::new(HashMap::new()),
-            configs: RwLock::new(HashMap::new()),
+            profiles: RwLock::new(HashMap::new()),
             agent_config: RwLock::new(AgentConfig::default()),
-            executor: Arc::new(ToolExecutor::with_registry(Arc::clone(&registry))),
+            executor: Arc::new(ToolExecutor::with_registry_and_grants(
+                Arc::clone(&registry),
+                grants,
+            )),
             registry,
             chat: Arc::new(ChatManager::default()),
             personas: Arc::new(PersonaStore::default()),
@@ -85,32 +114,225 @@ impl Default for AgentManager {
     }
 }
 
+/// Build the client for one profile. The protocol selects the implementation;
+/// everything else about the endpoint comes from the profile.
+fn build_provider(
+    profile: &ProviderProfile,
+) -> Result<Arc<dyn AiProvider + Send + Sync>, AgentError> {
+    let config = profile.to_config();
+    Ok(match profile.protocol {
+        ProviderProtocol::OpenAi => Arc::new(OpenAiProvider::new(config)?),
+        ProviderProtocol::Anthropic => Arc::new(AnthropicProvider::new(config)?),
+        ProviderProtocol::Ollama => Arc::new(OllamaProvider::new(config)?),
+    })
+}
+
+/// Pick an id for a profile the caller did not name.
+///
+/// The protocol's own name is used while it is free, so a first OpenAI profile
+/// is `openai` — the same id a pre-profile payload migrates to. After that the
+/// smallest free numeric suffix wins, and a profile is never given an id that
+/// is already taken, which is the whole bug this change exists to fix.
+fn generate_provider_id(
+    taken: &HashMap<String, ProviderProfile>,
+    protocol: ProviderProtocol,
+) -> String {
+    let base = protocol.as_str();
+    if !taken.contains_key(base) {
+        return base.to_string();
+    }
+    for suffix in 2..=(MAX_PROVIDER_PROFILES + 2) {
+        let candidate = format!("{base}-{suffix}");
+        if !taken.contains_key(&candidate) {
+            return candidate;
+        }
+    }
+    // Unreachable while the profile cap holds, but a collision here would
+    // silently overwrite a stored credential, so fall back to a unique id.
+    format!("{base}-{}", Uuid::new_v4().simple())
+}
+
+fn profile_limit(actual: usize) -> AgentError {
+    AgentError::Provider(AiProviderError::LimitExceeded {
+        resource: "provider profiles",
+        limit: MAX_PROVIDER_PROFILES,
+        actual,
+    })
+}
+
 impl AgentManager {
-    /// Configure a provider. Creates (or replaces) the provider instance.
-    pub async fn configure_provider(&self, config: ProviderConfig) -> Result<(), AgentError> {
-        config.validate()?;
-        let kind = config.kind.clone();
-        let provider: Arc<dyn AiProvider + Send + Sync> = match kind {
-            ProviderKind::OpenAi => Arc::new(OpenAiProvider::new(config.clone())?),
-            ProviderKind::Anthropic => Arc::new(AnthropicProvider::new(config.clone())?),
-            ProviderKind::Ollama => Arc::new(OllamaProvider::new(config.clone())?),
-        };
-
+    /// Create or update a provider profile, then store it with a live client.
+    ///
+    /// An input with no `id` creates; an input naming an id updates that
+    /// profile, or creates it under exactly that id. Either way the write
+    /// happens only after `health_check` succeeds, so a stored profile is one
+    /// that answered.
+    pub async fn configure_provider_profile(
+        &self,
+        input: AiProviderProfileInput,
+    ) -> Result<AiProviderProfile, AgentError> {
+        let profile = self.prepare_profile(input).await?;
+        let provider = build_provider(&profile)?;
         provider.health_check().await?;
-
-        self.providers.write().await.insert(kind.clone(), provider);
-        self.configs.write().await.insert(kind, config);
-        Ok(())
+        self.store_profile(profile, provider).await
     }
 
-    pub async fn provider(&self, kind: &ProviderKind) -> Option<Arc<dyn AiProvider + Send + Sync>> {
-        self.providers.read().await.get(kind).cloned()
+    /// Decide the id and merge the input onto whatever is stored, without
+    /// touching either registry.
+    ///
+    /// Split out from the write so the id, key-retention and cap rules can be
+    /// exercised without a live endpoint to health-check against.
+    async fn prepare_profile(
+        &self,
+        input: AiProviderProfileInput,
+    ) -> Result<ProviderProfile, AgentError> {
+        if let Some(id) = &input.id {
+            validate_provider_id(id)?;
+        }
+        let profiles = self.profiles.read().await;
+        let (id, existing) = match &input.id {
+            Some(id) => (id.clone(), profiles.get(id).cloned()),
+            None => (generate_provider_id(&profiles, input.protocol), None),
+        };
+        // Check the cap before the network call, so a refused create costs
+        // nothing.
+        if !profiles.contains_key(&id) && profiles.len() >= MAX_PROVIDER_PROFILES {
+            return Err(profile_limit(profiles.len().saturating_add(1)));
+        }
+        drop(profiles);
+        Ok(ProviderProfile::apply(id, existing.as_ref(), input)?)
     }
 
-    pub async fn configured_providers(&self) -> Vec<ProviderKind> {
-        let mut providers: Vec<_> = self.configs.read().await.keys().cloned().collect();
-        providers.sort_by_key(ProviderKind::as_str);
-        providers
+    /// Install a prepared profile together with its client, so the two
+    /// registries cannot disagree about what is configured.
+    async fn store_profile(
+        &self,
+        profile: ProviderProfile,
+        provider: Arc<dyn AiProvider + Send + Sync>,
+    ) -> Result<AiProviderProfile, AgentError> {
+        let view = profile.view();
+        let mut providers = self.providers.write().await;
+        let mut profiles = self.profiles.write().await;
+        if !profiles.contains_key(&profile.id) && profiles.len() >= MAX_PROVIDER_PROFILES {
+            return Err(profile_limit(profiles.len().saturating_add(1)));
+        }
+        providers.insert(profile.id.clone(), provider);
+        profiles.insert(profile.id.clone(), profile);
+        Ok(view)
+    }
+
+    /// Remove a profile and every reference to it.
+    ///
+    /// Three things would otherwise dangle, so all three are handled here: the
+    /// client instance, a `defaultProviderId` naming the profile, and any turn
+    /// still generating against it. Returns whether a profile was removed.
+    pub async fn delete_provider_profile(&self, id: &str) -> Result<bool, AgentError> {
+        validate_provider_id(id)?;
+        let removed = {
+            let mut providers = self.providers.write().await;
+            let mut profiles = self.profiles.write().await;
+            providers.remove(id);
+            profiles.remove(id).is_some()
+        };
+        if !removed {
+            return Ok(false);
+        }
+
+        // A deletion must not leave the default pointing at nothing: a send
+        // that silently fell through to another provider would ship the user's
+        // prompt to an endpoint they did not choose.
+        {
+            let mut config = self.agent_config.write().await;
+            if config.default_provider_id.as_deref() == Some(id) {
+                config.default_provider_id = None;
+            }
+        }
+
+        // A live turn holds its own `Arc` to the client, so it cannot dangle —
+        // but it would keep streaming through a credential the user just
+        // removed. Cancel it; the turn reports `Cancelled` to the renderer.
+        let affected: Vec<Uuid> = self
+            .active_turns
+            .lock()
+            .map_err(|_| AgentError::StateUnavailable)?
+            .iter()
+            .filter(|(_, turn)| turn.provider_id == id)
+            .map(|(conversation_id, _)| *conversation_id)
+            .collect();
+        for conversation_id in affected {
+            self.cancel(conversation_id).await?;
+        }
+        Ok(true)
+    }
+
+    pub async fn provider(&self, id: &str) -> Option<Arc<dyn AiProvider + Send + Sync>> {
+        self.providers.read().await.get(id).cloned()
+    }
+
+    /// Every configured profile, in id order. Key-free by construction.
+    pub async fn list_provider_profiles(&self) -> Vec<AiProviderProfile> {
+        let mut profiles: Vec<AiProviderProfile> = self
+            .profiles
+            .read()
+            .await
+            .values()
+            .map(ProviderProfile::view)
+            .collect();
+        profiles.sort_by(|left, right| left.id.cmp(&right.id));
+        profiles
+    }
+
+    /// One configured profile, or `None`. Key-free by construction.
+    pub async fn provider_profile(&self, id: &str) -> Option<AiProviderProfile> {
+        self.profiles
+            .read()
+            .await
+            .get(id)
+            .map(ProviderProfile::view)
+    }
+
+    /// The profile a send should use.
+    ///
+    /// An explicit choice always wins. Otherwise the conversation's own
+    /// profile is preferred — a transcript should keep talking to the
+    /// connection it belongs to — and the configured default is the last
+    /// resort. Resolving to nothing is an error: there is no "pick whatever is
+    /// configured" case, because that would ship a prompt and a key to an
+    /// endpoint the user did not choose.
+    pub async fn resolve_provider_id(
+        &self,
+        conversation_id: Option<Uuid>,
+        requested: Option<String>,
+    ) -> Result<String, AgentError> {
+        if let Some(id) = requested {
+            validate_provider_id(&id)?;
+            return Ok(id);
+        }
+
+        if let Some(conversation_id) = conversation_id {
+            if let Some(id) = self.chat.provider(conversation_id).await {
+                // Only when it still names something configured: an id left
+                // over from a deleted profile must fall through rather than
+                // fail a send the default could have served.
+                if validate_provider_id(&id).is_ok() && self.provider(&id).await.is_some() {
+                    return Ok(id);
+                }
+            }
+        }
+
+        let id = self
+            .agent_config
+            .read()
+            .await
+            .default_provider_id
+            .clone()
+            .ok_or_else(|| {
+                AgentError::Provider(AiProviderError::NotConfigured(
+                    "no default AI provider is selected".into(),
+                ))
+            })?;
+        validate_provider_id(&id)?;
+        Ok(id)
     }
 
     pub async fn agent_config(&self) -> AgentConfig {
@@ -148,6 +370,12 @@ impl AgentManager {
         self.executor.catalog().await
     }
 
+    /// Whether tool dispatch is actually possible right now, and over how many
+    /// tools. Resolving this runs no tool.
+    pub async fn tool_availability(&self) -> ToolAvailability {
+        self.executor.availability().await
+    }
+
     pub async fn list_personas(&self) -> Vec<AiPersona> {
         self.personas.list().await
     }
@@ -175,20 +403,16 @@ impl AgentManager {
         Ok(())
     }
 
-    pub async fn provider_config(&self, kind: &ProviderKind) -> Option<ProviderConfig> {
-        self.configs.read().await.get(kind).cloned()
-    }
-
-    /// Start a turn and return its bounded event receiver immediately.
+    /// Start a turn against one provider profile and return its bounded event
+    /// receiver immediately.
     pub async fn send_message(
         &self,
         conversation_id: Uuid,
-        provider_kind: ProviderKind,
+        provider_id: &str,
     ) -> Result<mpsc::Receiver<AgentEvent>, AgentError> {
-        let provider = self.provider(&provider_kind).await.ok_or_else(|| {
-            AgentError::Provider(bc_ai_provider::AiProviderError::NotConfigured(
-                provider_kind.to_string(),
-            ))
+        validate_provider_id(provider_id)?;
+        let provider = self.provider(provider_id).await.ok_or_else(|| {
+            AgentError::Provider(AiProviderError::NotConfigured(provider_id.to_string()))
         })?;
         let config = self.agent_config.read().await.clone();
         config.validate()?;
@@ -275,6 +499,7 @@ impl AgentManager {
                 generation,
                 cancellation: cancellation_tx,
                 abort_handle,
+                provider_id: provider_id.to_string(),
             },
         );
         let _ = start_tx.send(());
@@ -569,30 +794,61 @@ mod tests {
         }
     }
 
+    /// A user-chosen id, deliberately not a protocol name: every lookup in
+    /// this module must go through the profile id.
+    const MOCK_PROVIDER_ID: &str = "mock-lab";
+
+    fn mock_provider(
+        mode: MockMode,
+    ) -> (
+        Arc<dyn AiProvider + Send + Sync>,
+        Arc<AtomicUsize>,
+        Arc<AtomicBool>,
+    ) {
+        let produced = Arc::new(AtomicUsize::new(0));
+        let stream_dropped = Arc::new(AtomicBool::new(false));
+        let provider: Arc<dyn AiProvider + Send + Sync> = Arc::new(MockProvider {
+            mode,
+            produced: Arc::clone(&produced),
+            stream_dropped: Arc::clone(&stream_dropped),
+        });
+        (provider, produced, stream_dropped)
+    }
+
     async fn manager_with_provider(
         mode: MockMode,
     ) -> (AgentManager, Arc<AtomicUsize>, Arc<AtomicBool>) {
         let manager = AgentManager::default();
-        let produced = Arc::new(AtomicUsize::new(0));
-        let stream_dropped = Arc::new(AtomicBool::new(false));
-        manager.providers.write().await.insert(
-            ProviderKind::Ollama,
-            Arc::new(MockProvider {
-                mode,
-                produced: Arc::clone(&produced),
-                stream_dropped: Arc::clone(&stream_dropped),
-            }),
-        );
+        let (provider, produced, stream_dropped) = mock_provider(mode);
+        manager
+            .store_profile(
+                ProviderProfile::seed(MOCK_PROVIDER_ID, ProviderProtocol::Ollama),
+                provider,
+            )
+            .await
+            .expect("store the mock profile");
         (manager, produced, stream_dropped)
     }
 
     async fn create_conversation(manager: &AgentManager) -> Uuid {
         manager
             .chat
-            .try_create_conversation(ProviderKind::Ollama, "mock".into(), None, None)
+            .try_create_conversation(MOCK_PROVIDER_ID.into(), "mock".into(), None, None)
             .await
             .expect("conversation")
             .id
+    }
+
+    fn profile_input(protocol: ProviderProtocol, label: &str) -> AiProviderProfileInput {
+        serde_json::from_value(serde_json::json!({
+            "label": label,
+            "protocol": protocol.as_str(),
+            "model": "bounded-model",
+            "temperature": 0.7,
+            "maxTokens": 1024,
+            "apiKey": "sk-secret-value",
+        }))
+        .expect("valid input")
     }
 
     async fn wait_for_flag(flag: &AtomicBool) {
@@ -631,7 +887,7 @@ mod tests {
         let (manager, produced, _) = manager_with_provider(MockMode::Finite(total)).await;
         let conversation_id = create_conversation(&manager).await;
         let mut events = manager
-            .send_message(conversation_id, ProviderKind::Ollama)
+            .send_message(conversation_id, MOCK_PROVIDER_ID)
             .await
             .expect("start turn");
 
@@ -664,7 +920,7 @@ mod tests {
         let (manager, _, stream_dropped) = manager_with_provider(MockMode::Endless).await;
         let conversation_id = create_conversation(&manager).await;
         let mut events = manager
-            .send_message(conversation_id, ProviderKind::Ollama)
+            .send_message(conversation_id, MOCK_PROVIDER_ID)
             .await
             .expect("start turn");
         events.recv().await.expect("first event");
@@ -679,7 +935,7 @@ mod tests {
         let (manager, _, stream_dropped) = manager_with_provider(MockMode::Endless).await;
         let conversation_id = create_conversation(&manager).await;
         let mut events = manager
-            .send_message(conversation_id, ProviderKind::Ollama)
+            .send_message(conversation_id, MOCK_PROVIDER_ID)
             .await
             .expect("start turn");
         events.recv().await.expect("first event");
@@ -694,7 +950,7 @@ mod tests {
         let (manager, _, stream_dropped) = manager_with_provider(MockMode::Endless).await;
         let conversation_id = create_conversation(&manager).await;
         let mut events = manager
-            .send_message(conversation_id, ProviderKind::Ollama)
+            .send_message(conversation_id, MOCK_PROVIDER_ID)
             .await
             .expect("start turn");
         events.recv().await.expect("first event");
@@ -712,7 +968,7 @@ mod tests {
         let (manager, _, stream_dropped) = manager_with_provider(MockMode::Endless).await;
         let conversation_id = create_conversation(&manager).await;
         let mut events = manager
-            .send_message(conversation_id, ProviderKind::Ollama)
+            .send_message(conversation_id, MOCK_PROVIDER_ID)
             .await
             .expect("start turn");
         events.recv().await.expect("first event");
@@ -917,6 +1173,48 @@ mod tests {
         assert_eq!(manager.agent_config().await.persona_id, DEFAULT_PERSONA_ID);
     }
 
+    /// Where the grants come from: the live MCP state, not a copy taken at
+    /// construction. Editing the MCP tool permissions has to move the agent's
+    /// availability, or the assistant would be governed by stale grants.
+    #[tokio::test]
+    async fn tool_availability_tracks_the_live_mcp_grants() {
+        let mcp = bc_mcp::McpServerManager::default();
+        let manager = AgentManager::with_mcp_grants(mcp.grant_handle());
+        manager.registry.init_all().await;
+
+        let before = manager.tool_availability().await;
+        assert!(
+            !before.dispatch_available,
+            "nothing is granted until the user enables something"
+        );
+        assert_eq!(before.granted_tool_count, 0);
+        assert_eq!(
+            before.registered_tool_count,
+            manager.registry.available_descriptors().len()
+        );
+
+        mcp.set_enabled_tools(vec!["dns_parse_spf".to_string()])
+            .await
+            .expect("grants stored");
+
+        let after = manager.tool_availability().await;
+        assert!(after.dispatch_available);
+        assert_eq!(after.granted_tool_count, 1);
+        assert_eq!(after.usable_tool_count, 1);
+    }
+
+    /// An agent built without a grant handle has no tools, rather than all of
+    /// them: the fail-closed default.
+    #[tokio::test]
+    async fn an_agent_without_mcp_grants_reports_no_tools() {
+        let manager = AgentManager::default();
+        manager.registry.init_all().await;
+        let availability = manager.tool_availability().await;
+        assert!(!availability.dispatch_available);
+        assert_eq!(availability.granted_tool_count, 0);
+        assert!(availability.registered_tool_count > 0);
+    }
+
     #[tokio::test]
     async fn the_catalog_covers_every_registered_tool() {
         let manager = AgentManager::default();
@@ -955,5 +1253,408 @@ mod tests {
             })
         ));
         assert_eq!(manager.active_approval_count().await, 0);
+    }
+
+    /// The bug this change exists to fix: with one slot per protocol,
+    /// configuring a second OpenAI-compatible endpoint evicted the first and
+    /// then answered to its name.
+    #[tokio::test]
+    async fn two_profiles_can_share_one_protocol_without_evicting_each_other() {
+        let manager = AgentManager::default();
+
+        let official = manager
+            .prepare_profile(profile_input(ProviderProtocol::OpenAi, "OpenAI"))
+            .await
+            .expect("prepare");
+        manager
+            .store_profile(official, mock_provider(MockMode::Finite(1)).0)
+            .await
+            .expect("store");
+
+        let groq_input = AiProviderProfileInput {
+            base_url: Some("https://api.groq.com/openai/v1".into()),
+            model: "llama-3.3-70b-versatile".into(),
+            ..profile_input(ProviderProtocol::OpenAi, "Groq")
+        };
+        let groq = manager.prepare_profile(groq_input).await.expect("prepare");
+        assert_eq!(groq.id, "openai-2", "a generated id must not collide");
+        manager
+            .store_profile(groq, mock_provider(MockMode::Finite(1)).0)
+            .await
+            .expect("store");
+
+        let profiles = manager.list_provider_profiles().await;
+        assert_eq!(profiles.len(), 2);
+        assert_eq!(profiles[0].id, "openai");
+        assert_eq!(profiles[0].label, "OpenAI");
+        assert_eq!(profiles[0].base_url, "https://api.openai.com/v1");
+        assert_eq!(profiles[1].id, "openai-2");
+        assert_eq!(profiles[1].label, "Groq");
+        assert_eq!(profiles[1].base_url, "https://api.groq.com/openai/v1");
+        assert_eq!(profiles[1].model, "llama-3.3-70b-versatile");
+        assert!(profiles.iter().all(|profile| profile.has_api_key));
+        assert!(manager.provider("openai").await.is_some());
+        assert!(manager.provider("openai-2").await.is_some());
+
+        // And no list the renderer receives can carry a key.
+        let serialized = serde_json::to_string(&profiles).expect("serializes");
+        assert!(!serialized.contains("sk-secret-value"), "{serialized}");
+        assert!(!serialized.contains("apiKey"), "{serialized}");
+    }
+
+    #[tokio::test]
+    async fn an_update_under_a_known_id_replaces_it_and_keeps_the_key() {
+        let manager = AgentManager::default();
+        let created = manager
+            .prepare_profile(profile_input(ProviderProtocol::OpenAi, "First"))
+            .await
+            .expect("prepare");
+        manager
+            .store_profile(created, mock_provider(MockMode::Finite(1)).0)
+            .await
+            .expect("store");
+
+        let update: AiProviderProfileInput = serde_json::from_value(serde_json::json!({
+            "id": "openai",
+            "label": "Renamed",
+            "protocol": "openai",
+            "model": "gpt-4o-mini",
+            "temperature": 0.2,
+            "maxTokens": 512,
+        }))
+        .expect("valid input");
+        let updated = manager.prepare_profile(update).await.expect("prepare");
+        assert_eq!(updated.id, "openai");
+        assert_eq!(updated.label, "Renamed");
+        assert_eq!(
+            updated.api_key.as_deref(),
+            Some("sk-secret-value"),
+            "an absent apiKey must not wipe the stored credential"
+        );
+        manager
+            .store_profile(updated, mock_provider(MockMode::Finite(1)).0)
+            .await
+            .expect("store");
+        assert_eq!(
+            manager.list_provider_profiles().await.len(),
+            1,
+            "an update must not add a second profile"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_profile_count_is_capped() {
+        let manager = AgentManager::default();
+        for index in 0..MAX_PROVIDER_PROFILES {
+            let profile = manager
+                .prepare_profile(profile_input(
+                    ProviderProtocol::OpenAi,
+                    &format!("P{index}"),
+                ))
+                .await
+                .expect("within the cap");
+            manager
+                .store_profile(profile, mock_provider(MockMode::Finite(1)).0)
+                .await
+                .expect("store");
+        }
+        let error = manager
+            .prepare_profile(profile_input(ProviderProtocol::OpenAi, "one too many"))
+            .await
+            .expect_err("the cap must hold");
+        assert!(matches!(
+            error,
+            AgentError::Provider(AiProviderError::LimitExceeded {
+                resource: "provider profiles",
+                limit: MAX_PROVIDER_PROFILES,
+                ..
+            })
+        ));
+        assert_eq!(
+            manager.list_provider_profiles().await.len(),
+            MAX_PROVIDER_PROFILES
+        );
+
+        // An update is not a create, so the cap must not block an edit.
+        let update = AiProviderProfileInput {
+            id: Some("openai".into()),
+            ..profile_input(ProviderProtocol::OpenAi, "Edited at the cap")
+        };
+        let updated = manager.prepare_profile(update).await.expect("edit at cap");
+        assert_eq!(updated.label, "Edited at the cap");
+    }
+
+    #[tokio::test]
+    async fn a_malformed_id_is_refused_rather_than_rewritten() {
+        let manager = AgentManager::default();
+        for refused in ["my profile", "../../etc/passwd", "", &"i".repeat(65)] {
+            let input = AiProviderProfileInput {
+                id: Some(refused.into()),
+                ..profile_input(ProviderProtocol::Ollama, "Bad id")
+            };
+            let error = manager
+                .prepare_profile(input)
+                .await
+                .expect_err("a malformed id must be refused");
+            assert!(
+                matches!(
+                    error,
+                    AgentError::Provider(AiProviderError::InvalidRequest { field: "id", .. })
+                ),
+                "id {refused:?} produced {error:?}"
+            );
+        }
+        assert!(manager.list_provider_profiles().await.is_empty());
+        assert!(matches!(
+            manager.delete_provider_profile("my profile").await,
+            Err(AgentError::Provider(AiProviderError::InvalidRequest {
+                field: "id",
+                ..
+            }))
+        ));
+    }
+
+    /// A profile pointing at a non-HTTP scheme must be impossible to store,
+    /// whichever way the write arrives.
+    #[tokio::test]
+    async fn a_profile_cannot_be_pointed_at_a_non_http_scheme() {
+        let manager = AgentManager::default();
+        for refused in ["file:///etc/passwd", "ftp://example.com", "javascript:x"] {
+            let input = AiProviderProfileInput {
+                base_url: Some(refused.into()),
+                ..profile_input(ProviderProtocol::OpenAi, "Hostile")
+            };
+            let error = manager
+                .prepare_profile(input)
+                .await
+                .expect_err("a non-HTTP base URL must be refused");
+            assert!(
+                matches!(
+                    error,
+                    AgentError::Provider(AiProviderError::InvalidRequest {
+                        field: "baseUrl",
+                        ..
+                    })
+                ),
+                "base URL {refused:?} produced {error:?}"
+            );
+        }
+        assert!(manager.list_provider_profiles().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn deleting_the_default_profile_clears_the_selection() {
+        let (manager, _, _) = manager_with_provider(MockMode::Finite(1)).await;
+        let mut config = manager.agent_config().await;
+        config.default_provider_id = Some(MOCK_PROVIDER_ID.into());
+        manager
+            .try_set_agent_config(config)
+            .await
+            .expect("a profile id is a valid selection");
+        assert_eq!(
+            manager
+                .resolve_provider_id(None, None)
+                .await
+                .expect("the default resolves"),
+            MOCK_PROVIDER_ID
+        );
+
+        assert!(manager
+            .delete_provider_profile(MOCK_PROVIDER_ID)
+            .await
+            .expect("delete"));
+        assert_eq!(manager.agent_config().await.default_provider_id, None);
+        assert!(manager.provider(MOCK_PROVIDER_ID).await.is_none());
+        assert!(manager.provider_profile(MOCK_PROVIDER_ID).await.is_none());
+
+        // With nothing selected, a send must fail rather than fall through to
+        // whatever other provider happens to be configured.
+        assert!(matches!(
+            manager.resolve_provider_id(None, None).await,
+            Err(AgentError::Provider(AiProviderError::NotConfigured(_)))
+        ));
+        assert!(!manager
+            .delete_provider_profile(MOCK_PROVIDER_ID)
+            .await
+            .expect("a second delete is not an error"));
+    }
+
+    #[tokio::test]
+    async fn deleting_an_unselected_profile_leaves_the_selection_alone() {
+        let (manager, _, _) = manager_with_provider(MockMode::Finite(1)).await;
+        let other = manager
+            .prepare_profile(profile_input(ProviderProtocol::Ollama, "Other"))
+            .await
+            .expect("prepare");
+        let other_id = other.id.clone();
+        manager
+            .store_profile(other, mock_provider(MockMode::Finite(1)).0)
+            .await
+            .expect("store");
+
+        let mut config = manager.agent_config().await;
+        config.default_provider_id = Some(MOCK_PROVIDER_ID.into());
+        manager.try_set_agent_config(config).await.expect("valid");
+
+        assert!(manager
+            .delete_provider_profile(&other_id)
+            .await
+            .expect("delete"));
+        assert_eq!(
+            manager.agent_config().await.default_provider_id.as_deref(),
+            Some(MOCK_PROVIDER_ID)
+        );
+    }
+
+    /// A turn holds its own `Arc` to the client, so deleting the profile
+    /// cannot dangle — but it would keep streaming through a credential the
+    /// user just removed. The turn using it stops; others carry on.
+    #[tokio::test]
+    async fn deleting_a_profile_stops_only_the_turns_using_it() {
+        let (manager, _, deleted_stream_dropped) = manager_with_provider(MockMode::Endless).await;
+        let survivor = manager
+            .prepare_profile(profile_input(ProviderProtocol::Ollama, "Survivor"))
+            .await
+            .expect("prepare");
+        let survivor_id = survivor.id.clone();
+        let (survivor_provider, _, survivor_stream_dropped) = mock_provider(MockMode::Endless);
+        manager
+            .store_profile(survivor, survivor_provider)
+            .await
+            .expect("store");
+
+        let doomed_conversation = create_conversation(&manager).await;
+        let mut doomed_events = manager
+            .send_message(doomed_conversation, MOCK_PROVIDER_ID)
+            .await
+            .expect("start the doomed turn");
+        doomed_events.recv().await.expect("first event");
+
+        let kept_conversation = create_conversation(&manager).await;
+        let mut kept_events = manager
+            .send_message(kept_conversation, &survivor_id)
+            .await
+            .expect("start the kept turn");
+        kept_events.recv().await.expect("first event");
+
+        assert!(manager
+            .delete_provider_profile(MOCK_PROVIDER_ID)
+            .await
+            .expect("delete"));
+
+        let cancelled = tokio::time::timeout(Duration::from_secs(2), async {
+            while let Some(event) = doomed_events.recv().await {
+                if matches!(event, AgentEvent::Cancelled { conversation_id } if conversation_id == doomed_conversation)
+                {
+                    return true;
+                }
+            }
+            false
+        })
+        .await
+        .expect("the deleted profile's turn must terminate");
+        assert!(cancelled, "the renderer must be told the turn stopped");
+        wait_for_flag(&deleted_stream_dropped).await;
+
+        // The other turn was never touched: still streaming, still live.
+        kept_events.recv().await.expect("the kept turn continues");
+        assert!(!survivor_stream_dropped.load(Ordering::SeqCst));
+        assert!(manager.provider(&survivor_id).await.is_some());
+    }
+
+    #[tokio::test]
+    async fn a_turn_cannot_be_started_against_an_unknown_or_malformed_profile() {
+        let (manager, _, _) = manager_with_provider(MockMode::Finite(1)).await;
+        let conversation_id = create_conversation(&manager).await;
+
+        assert!(matches!(
+            manager
+                .send_message(conversation_id, "not-configured")
+                .await,
+            Err(AgentError::Provider(AiProviderError::NotConfigured(_)))
+        ));
+        assert!(matches!(
+            manager.send_message(conversation_id, "bad id").await,
+            Err(AgentError::Provider(AiProviderError::InvalidRequest {
+                field: "id",
+                ..
+            }))
+        ));
+        assert_eq!(manager.active_count().await, 0);
+    }
+
+    /// A transcript belongs to the connection it was started against, so a
+    /// send that names no profile keeps talking to that one rather than to
+    /// whatever the global default happens to be.
+    #[tokio::test]
+    async fn a_send_prefers_the_conversations_own_profile_over_the_default() {
+        let (manager, _, _) = manager_with_provider(MockMode::Finite(1)).await;
+        let own = manager
+            .prepare_profile(profile_input(ProviderProtocol::Ollama, "Own"))
+            .await
+            .expect("prepare");
+        let own_id = own.id.clone();
+        manager
+            .store_profile(own, mock_provider(MockMode::Finite(1)).0)
+            .await
+            .expect("store");
+
+        let mut config = manager.agent_config().await;
+        config.default_provider_id = Some(MOCK_PROVIDER_ID.into());
+        manager.try_set_agent_config(config).await.expect("valid");
+
+        let conversation_id = manager
+            .chat
+            .try_create_conversation(own_id.clone(), "mock".into(), None, None)
+            .await
+            .expect("conversation")
+            .id;
+        assert_eq!(
+            manager
+                .resolve_provider_id(Some(conversation_id), None)
+                .await
+                .expect("the conversation's own profile resolves"),
+            own_id
+        );
+
+        // Once that profile is gone its id must not fail the send: the
+        // configured default takes over.
+        assert!(manager
+            .delete_provider_profile(&own_id)
+            .await
+            .expect("delete"));
+        assert_eq!(
+            manager
+                .resolve_provider_id(Some(conversation_id), None)
+                .await
+                .expect("the default takes over"),
+            MOCK_PROVIDER_ID
+        );
+    }
+
+    #[tokio::test]
+    async fn an_explicit_provider_id_wins_over_the_default() {
+        let (manager, _, _) = manager_with_provider(MockMode::Finite(1)).await;
+        let mut config = manager.agent_config().await;
+        config.default_provider_id = Some(MOCK_PROVIDER_ID.into());
+        manager.try_set_agent_config(config).await.expect("valid");
+
+        let conversation_id = create_conversation(&manager).await;
+        assert_eq!(
+            manager
+                .resolve_provider_id(Some(conversation_id), Some("chosen-by-hand".into()))
+                .await
+                .expect("an explicit id is used as given"),
+            "chosen-by-hand"
+        );
+        assert!(matches!(
+            manager
+                .resolve_provider_id(None, Some("bad id".into()))
+                .await,
+            Err(AgentError::Provider(AiProviderError::InvalidRequest {
+                field: "id",
+                ..
+            }))
+        ));
     }
 }

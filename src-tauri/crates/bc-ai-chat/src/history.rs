@@ -125,7 +125,6 @@ impl ConversationStore for InMemoryStore {
 
 #[cfg(test)]
 mod tests {
-    use bc_ai_provider::ProviderKind;
 
     use super::*;
     use crate::limits::MAX_CONVERSATIONS;
@@ -135,7 +134,7 @@ mod tests {
         let store = InMemoryStore::default();
         let mut ids = Vec::new();
         for index in 0..=MAX_CONVERSATIONS {
-            let mut conversation = Conversation::new(ProviderKind::Ollama, "test".into())
+            let mut conversation = Conversation::new("ollama", "test".into())
                 .with_title(format!("conversation-{index}"));
             conversation.created_at += chrono::Duration::milliseconds(index as i64);
             conversation.updated_at = conversation.created_at;

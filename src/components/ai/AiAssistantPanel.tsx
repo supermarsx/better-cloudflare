@@ -42,34 +42,18 @@ import { usePrefersReducedMotion } from "@/hooks/use-prefers-reduced-motion";
 import type { AiAssistantPresentation } from "@/lib/ai/presentation";
 import { withObjectUrl } from "@/lib/runtime/resource-scope";
 import { cn } from "@/lib/utils";
-import type { AgentConfig, ProviderKind } from "@/types/ai";
+import type { AgentConfig, AiProviderProfileInput } from "@/types/ai";
 
-import { AiAgentSettings } from "./AiAgentSettings";
 import { AiComposer } from "./AiComposer";
 import { AiConversationList } from "./AiConversationList";
-import { ConnectedAiPermissionSettings } from "./AiPermissionSettings";
-import { ConnectedAiPersonaSettings } from "./AiPersonaSettings";
-import { AiProviderSettings } from "./AiProviderSettings";
+import { AiSettingsPanel, type AiSettingsSection } from "./AiSettingsPanel";
 import { AiToolNotice, type AiToolPosture } from "./AiToolNotice";
 import { AiTranscript } from "./AiTranscript";
 import { describeAiError } from "./ai-error";
 
 export type AiAssistantView = "chat" | "settings";
 
-/**
- * Settings sub-sections. `providers` is first and is the default: it is the
- * only one that can be *required* before the assistant works at all, and
- * landing anywhere else would make an unconfigured install look broken.
- */
-export type AiSettingsSection =
-  "providers" | "permissions" | "personas" | "responses";
-
-const SETTINGS_SECTIONS: readonly AiSettingsSection[] = [
-  "providers",
-  "permissions",
-  "personas",
-  "responses",
-] as const;
+export type { AiSettingsSection };
 
 export interface AiAssistantPanelProps {
   initialView?: AiAssistantView;
@@ -102,20 +86,15 @@ export function AiAssistantPanel({
   /** The tab scrolls with the workspace; the dock and bubble scroll inside. */
   const framed = presentation !== "panel";
 
-  const settingsSectionLabels: Record<AiSettingsSection, string> = {
-    providers: t("Providers", "Providers"),
-    permissions: t("Permissions", "Permissions"),
-    personas: t("Personas", "Personas"),
-    responses: t("Responses", "Responses"),
-  };
-
   const [view, setView] = useState<AiAssistantView>(initialView);
+  // Held here rather than inside the settings panel so that flipping to Chat
+  // and back does not throw away which section the user was reading.
   const [settingsSection, setSettingsSection] =
     useState<AiSettingsSection>("providers");
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [newProvider, setNewProvider] = useState<ProviderKind | null>(null);
+  const [newProvider, setNewProvider] = useState<string | null>(null);
   const [modelByProvider, setModelByProvider] = useState<
-    Partial<Record<ProviderKind, string>>
+    Record<string, string>
   >({});
   const [creating, setCreating] = useState(false);
   const [panelError, setPanelError] = useState<string | null>(null);
@@ -136,23 +115,29 @@ export function AiAssistantPanel({
   const conversations = useAiConversations();
   const chat = useAiChat(selectedId, watchdogMs ? { watchdogMs } : {});
 
-  const configuredProviders = useMemo(
-    () =>
-      providers.providers
-        .filter((entry) => entry.configured)
-        .map((entry) => entry.kind),
-    [providers.providers],
-  );
+  const configuredProviders = providers.providers;
+  const defaultProviderId = agentConfig.config?.defaultProviderId ?? null;
 
-  // Keep the new-conversation provider on something that is actually usable.
+  // Keep the new-conversation provider on something that is actually usable:
+  // a profile can be deleted while this panel is open, and the configured
+  // default can name one that no longer exists.
   useEffect(() => {
     setNewProvider((current) => {
-      if (current !== null && configuredProviders.includes(current)) {
+      if (
+        current !== null &&
+        configuredProviders.some((entry) => entry.id === current)
+      ) {
         return current;
       }
-      return configuredProviders[0] ?? null;
+      if (
+        defaultProviderId !== null &&
+        configuredProviders.some((entry) => entry.id === defaultProviderId)
+      ) {
+        return defaultProviderId;
+      }
+      return configuredProviders[0]?.id ?? null;
     });
-  }, [configuredProviders]);
+  }, [configuredProviders, defaultProviderId]);
 
   // Land on the most recent conversation rather than an empty transcript.
   useEffect(() => {
@@ -161,7 +146,16 @@ export function AiAssistantPanel({
     if (first) setSelectedId(first.id);
   }, [conversations.conversations, selectedId]);
 
-  const newModel = newProvider ? (modelByProvider[newProvider] ?? "") : "";
+  /**
+   * The model for a new conversation defaults to the one the chosen provider
+   * was configured with, and an override is remembered per provider — two
+   * profiles on the same protocol will not serve the same model names.
+   */
+  const newModel = newProvider
+    ? (modelByProvider[newProvider] ??
+      configuredProviders.find((entry) => entry.id === newProvider)?.model ??
+      "")
+    : "";
   const setNewModel = useCallback(
     (value: string) => {
       if (!newProvider) return;
@@ -169,10 +163,6 @@ export function AiAssistantPanel({
     },
     [newProvider],
   );
-
-  const rememberModel = useCallback((kind: ProviderKind, model: string) => {
-    setModelByProvider((prev) => ({ ...prev, [kind]: model }));
-  }, []);
 
   /**
    * Fail closed: until the agent config has actually been read, the posture is
@@ -251,6 +241,36 @@ export function AiAssistantPanel({
     [agentConfig, t],
   );
 
+  /**
+   * The default provider is agent config too, for the same reason the persona
+   * is: exactly one profile can be the default, which a flag per profile could
+   * not guarantee.
+   */
+  const handleDefaultProviderSelect = useCallback(
+    (providerId: string | null) => {
+      const current = agentConfig.config;
+      if (!current) return;
+      if (current.defaultProviderId === providerId) return;
+      setSavingAgentConfig(true);
+      setPanelError(null);
+      void agentConfig
+        .update({ ...current, defaultProviderId: providerId })
+        .catch((error) => {
+          setPanelError(
+            describeAiError(
+              error,
+              t(
+                "The default provider could not be set.",
+                "The default provider could not be set.",
+              ),
+            ).message,
+          );
+        })
+        .finally(() => setSavingAgentConfig(false));
+    },
+    [agentConfig, t],
+  );
+
   /** Rejects on refusal so the form can show the backend's own message. */
   const handleAgentConfigSave = useCallback(
     async (next: AgentConfig) => {
@@ -258,6 +278,23 @@ export function AiAssistantPanel({
     },
     [agentConfig],
   );
+
+  /** Rejects on refusal so the provider form can show the backend's message. */
+  const handleProviderSave = useCallback(
+    (profile: AiProviderProfileInput) => providers.configure(profile),
+    [providers],
+  );
+
+  const handleProviderDelete = useCallback(
+    (id: string) => providers.remove(id),
+    [providers],
+  );
+
+  // `refresh` records its own failure in `providers.loadError`, so the retry
+  // needs no second error channel of its own.
+  const handleRefreshProviders = useCallback(() => {
+    void providers.refresh();
+  }, [providers]);
 
   const handleCreate = useCallback(() => {
     if (!newProvider) return;
@@ -570,61 +607,26 @@ export function AiAssistantPanel({
         ) : null}
 
         {view === "settings" ? (
-          <div className="space-y-4" data-testid="ai-settings-view">
-            <div
-              role="toolbar"
-              aria-label={t("Assistant settings", "Assistant settings")}
-              className="glass-surface glass-sheen glass-fade ui-segment-group scrollbar-themed"
-            >
-              {SETTINGS_SECTIONS.map((section) => (
-                <button
-                  key={section}
-                  type="button"
-                  className="ui-segment"
-                  data-active={settingsSection === section}
-                  aria-pressed={settingsSection === section}
-                  onClick={() => setSettingsSection(section)}
-                >
-                  {settingsSectionLabels[section]}
-                </button>
-              ))}
-            </div>
-
-            {/* Each section is mounted only while it is shown: the permission
-                catalog and the persona list are separate commands, and reading
-                them because a provider form is open would be a round trip the
-                user did not ask for. */}
-            {settingsSection === "providers" ? (
-              <AiProviderSettings
-                providers={providers.providers}
-                loading={providers.loading}
-                toolsEnabled={agentConfig.config?.toolsEnabled ?? false}
-                onConfigure={providers.configure}
-                onConfigured={rememberModel}
-              />
-            ) : null}
-
-            {settingsSection === "permissions" ? (
-              <ConnectedAiPermissionSettings
-                toolsEnabled={agentConfig.config?.toolsEnabled ?? false}
-              />
-            ) : null}
-
-            {settingsSection === "personas" ? (
-              <ConnectedAiPersonaSettings
-                selectedId={agentConfig.config?.personaId ?? null}
-                selectionBusy={savingAgentConfig}
-                onSelect={handlePersonaSelect}
-              />
-            ) : null}
-
-            {settingsSection === "responses" ? (
-              <AiAgentSettings
-                config={agentConfig.config}
-                onSave={handleAgentConfigSave}
-              />
-            ) : null}
-          </div>
+          /* One section is mounted at a time: the permission catalog and the
+             persona list are separate commands, and reading them because a
+             provider form is open would be a round trip the user did not ask
+             for. */
+          <AiSettingsPanel
+            section={settingsSection}
+            onSectionChange={setSettingsSection}
+            compact={framed}
+            providers={providers.providers}
+            providersLoading={providers.loading}
+            providersError={providers.loadError}
+            onRefreshProviders={handleRefreshProviders}
+            onSaveProvider={handleProviderSave}
+            onDeleteProvider={handleProviderDelete}
+            config={agentConfig.config}
+            configBusy={savingAgentConfig}
+            onSaveConfig={handleAgentConfigSave}
+            onSelectPersona={handlePersonaSelect}
+            onSetDefaultProvider={handleDefaultProviderSelect}
+          />
         ) : (
           <div className="space-y-4">
             <AiConversationList

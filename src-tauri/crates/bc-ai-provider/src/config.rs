@@ -1,4 +1,4 @@
-//! Provider configuration and enumeration.
+//! Wire protocol selection and the per-connection client configuration.
 
 use serde::{Deserialize, Serialize};
 
@@ -7,16 +7,22 @@ use crate::limits::{
     validate_string, MAX_API_KEY_BYTES, MAX_BASE_URL_BYTES, MAX_COMPLETION_TOKENS, MAX_MODEL_BYTES,
 };
 
-/// Supported LLM provider backends.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+/// The wire protocol a provider speaks.
+///
+/// This is a closed set because it selects a client implementation, not a
+/// vendor: any OpenAI-compatible endpoint (Groq, Together AI, vLLM, LM Studio,
+/// a local proxy) is reached with [`Self::OpenAi`] and its own base URL.
+/// Provider *identity* is the user-defined id on
+/// [`crate::profile::ProviderProfile`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum ProviderKind {
+pub enum ProviderProtocol {
     OpenAi,
     Anthropic,
     Ollama,
 }
 
-impl ProviderKind {
+impl ProviderProtocol {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::OpenAi => "openai",
@@ -25,7 +31,17 @@ impl ProviderKind {
         }
     }
 
-    /// Default base URL for this provider.
+    /// Human-readable name, used to seed a profile label when a caller (or a
+    /// pre-profile stored payload) supplies none.
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::OpenAi => "OpenAI",
+            Self::Anthropic => "Anthropic",
+            Self::Ollama => "Ollama",
+        }
+    }
+
+    /// Default base URL for this protocol's reference vendor.
     pub fn default_base_url(&self) -> &'static str {
         match self {
             Self::OpenAi => "https://api.openai.com/v1",
@@ -34,7 +50,7 @@ impl ProviderKind {
         }
     }
 
-    /// Default model for this provider.
+    /// Default model for this protocol's reference vendor.
     pub fn default_model(&self) -> &'static str {
         match self {
             Self::OpenAi => "gpt-4o",
@@ -43,7 +59,7 @@ impl ProviderKind {
         }
     }
 
-    /// Whether this provider requires an API key.
+    /// Whether a connection speaking this protocol needs an API key.
     pub fn requires_api_key(&self) -> bool {
         match self {
             Self::OpenAi | Self::Anthropic => true,
@@ -52,22 +68,26 @@ impl ProviderKind {
     }
 }
 
-impl std::fmt::Display for ProviderKind {
+impl std::fmt::Display for ProviderProtocol {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.as_str())
     }
 }
 
-/// Configuration for connecting to an AI provider.
+/// Configuration for one provider connection.
+///
+/// This is the client-facing half of a [`crate::profile::ProviderProfile`]: it
+/// carries no identity, only what a request needs. It is never accepted from
+/// or returned to the renderer.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderConfig {
-    /// Which provider backend to use.
-    pub kind: ProviderKind,
-    /// API key (stored securely via biometric keychain in production).
+    /// Which wire protocol — and therefore which client — to use.
+    pub protocol: ProviderProtocol,
+    /// API key for the endpoint, when it needs one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub api_key: Option<String>,
-    /// Base URL override (for proxies or OpenAI-compatible endpoints).
+    /// Base URL override (for proxies or protocol-compatible endpoints).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub base_url: Option<String>,
     /// Default model to use.
@@ -79,11 +99,11 @@ pub struct ProviderConfig {
 }
 
 impl ProviderConfig {
-    /// Effective base URL (custom or provider default).
+    /// Effective base URL (custom or protocol default).
     pub fn effective_base_url(&self) -> &str {
         self.base_url
             .as_deref()
-            .unwrap_or(self.kind.default_base_url())
+            .unwrap_or(self.protocol.default_base_url())
     }
 
     /// Validate all user-controlled configuration before constructing a client.
@@ -131,10 +151,10 @@ impl ProviderConfig {
 impl Default for ProviderConfig {
     fn default() -> Self {
         Self {
-            kind: ProviderKind::Anthropic,
+            protocol: ProviderProtocol::Anthropic,
             api_key: None,
             base_url: None,
-            model: ProviderKind::Anthropic.default_model().to_string(),
+            model: ProviderProtocol::Anthropic.default_model().to_string(),
             temperature: 0.7,
             max_tokens: 4096,
         }
@@ -148,7 +168,7 @@ mod tests {
     #[test]
     fn config_exact_string_boundary_and_numeric_limits() {
         let mut config = ProviderConfig {
-            kind: ProviderKind::Ollama,
+            protocol: ProviderProtocol::Ollama,
             api_key: None,
             base_url: Some("http://localhost:11434".into()),
             model: "m".repeat(MAX_MODEL_BYTES),
@@ -175,5 +195,62 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    /// The second of the two scheme checks a stored profile passes through
+    /// (see `profile::validate_base_url` for the first). It is the last gate
+    /// before a client is built, so it is pinned here independently.
+    #[test]
+    fn a_non_http_base_url_is_refused_by_the_client_configuration_too() {
+        for refused in [
+            "ftp://example.com",
+            "ws://example.com",
+            "file:///etc/passwd",
+            "data:text/plain,hi",
+        ] {
+            let config = ProviderConfig {
+                protocol: ProviderProtocol::OpenAi,
+                base_url: Some(refused.into()),
+                ..ProviderConfig::default()
+            };
+            assert!(
+                matches!(
+                    config.validate(),
+                    Err(AiProviderError::InvalidRequest {
+                        field: "baseUrl",
+                        ..
+                    })
+                ),
+                "{refused:?} must not reach a client"
+            );
+        }
+    }
+
+    /// The protocol is the renderer's selector for a client and a prefill, so
+    /// its wire spelling and its seeds are part of the contract.
+    #[test]
+    fn protocol_wire_spellings_and_seeds_are_stable() {
+        for (protocol, wire) in [
+            (ProviderProtocol::OpenAi, "openai"),
+            (ProviderProtocol::Anthropic, "anthropic"),
+            (ProviderProtocol::Ollama, "ollama"),
+        ] {
+            assert_eq!(protocol.as_str(), wire);
+            assert_eq!(
+                serde_json::to_value(protocol).expect("serializes"),
+                serde_json::json!(wire)
+            );
+            assert_eq!(
+                serde_json::from_value::<ProviderProtocol>(serde_json::json!(wire))
+                    .expect("deserializes"),
+                protocol
+            );
+            assert!(!protocol.label().is_empty());
+            assert!(!protocol.default_model().is_empty());
+            assert!(protocol.default_base_url().starts_with("http"));
+        }
+        assert!(ProviderProtocol::OpenAi.requires_api_key());
+        assert!(ProviderProtocol::Anthropic.requires_api_key());
+        assert!(!ProviderProtocol::Ollama.requires_api_key());
     }
 }

@@ -5,9 +5,11 @@
 //! exact and fail-closed: unknown values and registry collisions grant nothing.
 
 use std::collections::HashSet;
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use tokio::sync::RwLock;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -776,6 +778,47 @@ impl PermissionGrantSet {
 
     pub fn permission_ids(&self) -> impl Iterator<Item = &'static str> + '_ {
         self.ids.iter().copied()
+    }
+}
+
+/// A cloneable, read-only view of the grants currently in force.
+///
+/// In-process callers that dispatch tools (the AI assistant) must read the
+/// grants the user actually configured, at the moment of dispatch, rather than
+/// caching a snapshot that goes stale on the next permission edit. The write
+/// side is crate-private: [`crate::McpServerManager`] owns it, so holding a
+/// handle lets a caller *see* the grants and never widen them.
+#[derive(Clone, Debug, Default)]
+pub struct PermissionGrantHandle {
+    grants: Arc<RwLock<PermissionGrantSet>>,
+}
+
+impl PermissionGrantHandle {
+    /// A handle over a fixed grant set.
+    ///
+    /// `Default` is an empty set, which grants nothing — an unwired handle
+    /// dispatches no tools rather than all of them.
+    pub fn new(grants: PermissionGrantSet) -> Self {
+        Self {
+            grants: Arc::new(RwLock::new(grants)),
+        }
+    }
+
+    /// The grants in force right now.
+    pub async fn snapshot(&self) -> PermissionGrantSet {
+        self.grants.read().await.clone()
+    }
+
+    /// The shared cell, for the one in-crate consumer that needs a live view
+    /// of its own (the HTTP transport).
+    pub(crate) fn shared(&self) -> Arc<RwLock<PermissionGrantSet>> {
+        Arc::clone(&self.grants)
+    }
+
+    /// Replace the grants in force. Crate-private: the server manager is the
+    /// only writer, so every holder of a handle observes one set of grants.
+    pub(crate) async fn replace(&self, grants: PermissionGrantSet) {
+        *self.grants.write().await = grants;
     }
 }
 

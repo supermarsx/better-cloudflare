@@ -8,48 +8,78 @@
 // ─── Provider Types ────────────────────────────────────────────────────────
 
 /**
- * Supported LLM provider kinds.
+ * The wire format a provider speaks — not the vendor.
  *
- * Rust is `#[serde(rename_all = "lowercase")]` on `ProviderKind`
- * (`bc-ai-provider/src/config.rs:11-17`), so `OpenAi` is `"openai"` on the
- * wire — not `"openAi"`. Five of the seventeen commands take a `kind` (or a
- * `provider`) and reject any other spelling at deserialization time.
+ * Rust is `#[serde(rename_all = "lowercase")]` on the protocol enum
+ * (`bc-ai-provider/src/config.rs`), so `OpenAi` is `"openai"` on the wire, not
+ * `"openAi"`. The protocol also supplies the default base URL and default
+ * model for a profile that does not name its own, which is why one protocol can
+ * back any number of providers: OpenAI, Groq, Together, vLLM and LM Studio all
+ * speak `"openai"`, and each is a separate {@link AiProviderProfile}.
  */
-export type ProviderKind = "openai" | "anthropic" | "ollama";
+export type ProviderProtocol = "openai" | "anthropic" | "ollama";
 
-/** Every provider kind, in the order the backend enumerates them. */
-export const PROVIDER_KINDS: readonly ProviderKind[] = [
+/** Every protocol, in the order the backend enumerates them. */
+export const PROVIDER_PROTOCOLS: readonly ProviderProtocol[] = [
   "openai",
   "anthropic",
   "ollama",
 ] as const;
 
 /**
- * Configuration for a provider connection.
+ * A configured provider, as `ai_list_providers` and `ai_configure_provider`
+ * report it.
  *
- * Mirrors Rust `ProviderConfig` (`bc-ai-provider/src/config.rs:62-79`).
- * `model`, `temperature` and `maxTokens` are **required** — they are plain
- * fields with no `Option` and no `#[serde(default)]`, so omitting any of them
- * fails `ai_configure_provider` before it reaches validation. There is no
- * `orgId` field on the Rust side.
+ * **There is deliberately no `apiKey` field.** The renderer never receives key
+ * material — only {@link hasApiKey}, which says whether one is stored. Adding a
+ * key field here, even optional, would re-open the leak this shape exists to
+ * close; see `AiProviderSettings` for the display rule that follows from it.
+ *
+ * `baseUrl` and `model` are always resolved: a profile saved without a base URL
+ * comes back carrying the protocol's default, so the form can show the endpoint
+ * that will actually be dialled rather than an empty field.
  */
-export interface ProviderConfig {
-  kind: ProviderKind;
-  /** Omitted entirely for providers that need no key (Ollama). Never echoed back by any command. */
-  apiKey?: string;
-  /** Overrides `ProviderKind::default_base_url`; must be http(s). */
-  baseUrl?: string;
+export interface AiProviderProfile {
+  /** User-chosen, `[A-Za-z0-9-_]`, unique. Stable across edits. */
+  id: string;
+  /** Display name. Free text; this is what the chat UI shows. */
+  label: string;
+  protocol: ProviderProtocol;
+  /** Absolute `http:`/`https:` URL. Resolved, never blank. */
+  baseUrl: string;
   model: string;
   /** 0.0–2.0. */
   temperature: number;
   /** Bounded by `MAX_COMPLETION_TOKENS`. */
   maxTokens: number;
+  /** Whether a key is stored. The key itself is never sent to the renderer. */
+  hasApiKey: boolean;
 }
 
-/** Provider availability status. */
-export interface ProviderStatus {
-  kind: ProviderKind;
-  configured: boolean;
+/**
+ * The writable half of a profile — what `ai_configure_provider` accepts.
+ *
+ * `id` absent creates a profile and lets the backend assign the id; `id`
+ * present updates that profile in place, so the same command is both create and
+ * update. `baseUrl` absent means "use the protocol's default".
+ *
+ * {@link apiKey} is three-valued on purpose, and the distinction is the whole
+ * reason this type is separate from {@link AiProviderProfile}:
+ *
+ * - **absent** — leave the stored key exactly as it is. This is what an edit
+ *   that did not touch the key must send; the renderer has no key to resend.
+ * - **`null`** — clear the stored key.
+ * - **a string** — replace the stored key with this one.
+ */
+export interface AiProviderProfileInput {
+  id?: string;
+  label: string;
+  protocol: ProviderProtocol;
+  baseUrl?: string;
+  model: string;
+  temperature: number;
+  maxTokens: number;
+  apiKey?: string | null;
 }
 
 /** Description of an available model. */
@@ -134,11 +164,18 @@ export interface Usage {
 
 // ─── Conversation Types ────────────────────────────────────────────────────
 
-/** Lightweight conversation metadata for listing. */
+/**
+ * Lightweight conversation metadata for listing.
+ *
+ * `provider` is a plain string, not a protocol: since provider identity became
+ * user-defined it is an {@link AiProviderProfile.id}. Older conversations were
+ * stored against a bare protocol name, and both spellings have to render, so
+ * nothing here may assume the value resolves to a profile that still exists.
+ */
 export interface ConversationMeta {
   id: string;
   title: string;
-  provider: ProviderKind;
+  provider: string;
   model: string;
   messageCount: number;
   createdAt: string;
@@ -149,7 +186,7 @@ export interface ConversationMeta {
 export interface Conversation {
   id: string;
   title: string;
-  provider: ProviderKind;
+  provider: string;
   model: string;
   systemPrompt?: string;
   messages: ChatMessage[];
@@ -167,23 +204,45 @@ export interface Conversation {
  * by `AgentConfig::validate` — see `AI_AGENT_LIMITS` for the numbers.
  *
  * `temperature`, `topP` and `personaId` are the three fields the sampling and
- * persona work adds to `ai_get_config` / `ai_set_config`. `preset` is kept
- * because it is still a required field on the Rust struct; a backend that
- * replaces it with `personaId` simply ignores the extra key, whereas omitting a
- * field that is still required would fail deserialization.
+ * persona work added to `ai_get_config` / `ai_set_config`.
+ *
+ * `defaultProviderId` arrives with user-defined providers. It lives in agent
+ * config rather than on the profiles themselves so that exactly one provider
+ * can be the default — a flag per profile could be set on two of them at once.
+ * It may name a profile that has since been deleted; a reader must treat an
+ * unmatched id as "no default" rather than as a usable provider.
  */
 export interface AgentConfig {
   maxToolRounds: number;
   maxTokensPerTurn: number;
   toolsEnabled: boolean;
   stream: boolean;
-  preset: string;
+  /**
+   * The pre-persona spelling of {@link personaId}.
+   *
+   * **Optional, and never present on a read.** Rust's `AgentConfig` no longer
+   * has this field: it deserializes through a compatibility shape that accepts
+   * `preset` as an alias and drops it, and serializes only `personaId`. So a
+   * value read from `ai_get_config` has no `preset` at all, and one sent is
+   * ignored whenever `personaId` is also present. It stays in the type only so
+   * that a config round-tripped through older stored session state still
+   * satisfies it.
+   */
+  preset?: string;
   /** 0.0–2.0. */
   temperature: number;
   /** 0.0–1.0. */
   topP: number;
-  /** The selected {@link AiPersona}, or `null` for the preset system prompt. */
+  /**
+   * The selected {@link AiPersona}.
+   *
+   * A read always carries a string — Rust's field is a plain `String` and
+   * falls back to the `default` persona — so `null` is only ever something the
+   * renderer *sends*, and the backend resolves it to `default` rather than to
+   * "no persona at all". Treat a write of `null` as "use the default persona".
+   */
   personaId: string | null;
+  defaultProviderId: string | null;
 }
 
 // ─── Permissions ───────────────────────────────────────────────────────────

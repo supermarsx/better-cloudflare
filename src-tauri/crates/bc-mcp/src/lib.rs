@@ -24,7 +24,7 @@ use tokio::task::JoinHandle;
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 
-use permissions::PermissionGrantSet;
+use permissions::{PermissionGrantHandle, PermissionGrantSet};
 use resource_limits::{
     bounded_message, RuntimePolicy, MAX_AUTH_TOKEN_BYTES, MAX_CONFIGURED_GRANTS,
 };
@@ -33,6 +33,7 @@ const DEFAULT_MCP_HOST: &str = "127.0.0.1";
 const DEFAULT_MCP_PORT: u16 = 8787;
 const MAX_BIND_HOST_BYTES: usize = 255;
 
+pub use permissions::{PermissionGrantHandle as McpGrantHandle, PermissionGrantSet as McpGrantSet};
 pub use prompts::{McpPrompt, PromptArgument, PromptMessage};
 pub use resources::{McpResource, McpResourceTemplate};
 pub use tools::McpToolDescriptor;
@@ -57,7 +58,6 @@ pub struct McpServerStatus {
 struct RunningMcpServer {
     host: String,
     port: u16,
-    grants: Arc<RwLock<PermissionGrantSet>>,
     #[allow(dead_code)]
     auth_token: Arc<RwLock<Option<String>>>,
     shutdown: CancellationToken,
@@ -68,7 +68,12 @@ pub struct McpServerManager {
     runtime: RwLock<Option<RunningMcpServer>>,
     config_host: RwLock<String>,
     config_port: RwLock<u16>,
-    config_grants: RwLock<PermissionGrantSet>,
+    /// The grants in force, whether or not the server is running.
+    ///
+    /// One cell, shared with the HTTP transport and with in-process callers, so
+    /// the status view, the transport and the AI assistant cannot drift into
+    /// disagreeing about what the user enabled.
+    grants: PermissionGrantHandle,
     config_auth_token: RwLock<Option<String>>,
     last_error: Arc<RwLock<Option<String>>>,
 }
@@ -79,7 +84,7 @@ impl Default for McpServerManager {
             runtime: RwLock::new(None),
             config_host: RwLock::new(DEFAULT_MCP_HOST.to_string()),
             config_port: RwLock::new(DEFAULT_MCP_PORT),
-            config_grants: RwLock::new(default_enabled_tool_set()),
+            grants: PermissionGrantHandle::new(default_enabled_tool_set()),
             config_auth_token: RwLock::new(None),
             last_error: Arc::new(RwLock::new(None)),
         }
@@ -191,12 +196,22 @@ pub fn build_status(
 }
 
 impl McpServerManager {
+    /// A read-only handle to the grants in force, for in-process callers.
+    ///
+    /// The AI assistant holds one of these so its dispatches are governed by
+    /// the permissions the user configured here — the running server's grants
+    /// while it runs, and the stored configuration while it does not, because
+    /// both are the same cell.
+    pub fn grant_handle(&self) -> PermissionGrantHandle {
+        self.grants.clone()
+    }
+
     pub async fn get_status(&self) -> McpServerStatus {
         let last_error = self.last_error.read().await.clone();
+        let grants = self.grants.snapshot().await;
         let runtime = self.runtime.read().await;
         if let Some(runtime) = runtime.as_ref() {
             let running = !runtime.task_handle.is_finished();
-            let grants = runtime.grants.read().await.clone();
             let token = runtime.auth_token.read().await.clone();
             return build_status(
                 running,
@@ -210,7 +225,6 @@ impl McpServerManager {
         drop(runtime);
         let host = self.config_host.read().await.clone();
         let port = *self.config_port.read().await;
-        let grants = self.config_grants.read().await.clone();
         let token = self.config_auth_token.read().await.clone();
         build_status(false, host, port, &grants, last_error, token)
     }
@@ -221,7 +235,6 @@ impl McpServerManager {
             let RunningMcpServer {
                 host,
                 port,
-                grants,
                 auth_token: _,
                 shutdown,
                 mut task_handle,
@@ -244,9 +257,11 @@ impl McpServerManager {
                         Some("MCP server shutdown exceeded its deadline.".to_string());
                 }
             }
+            // Grants outlive the runtime: they live in one cell the stopped
+            // manager keeps reading from, so stopping the server does not
+            // reset what the user enabled.
             *self.config_host.write().await = host;
             *self.config_port.write().await = port;
-            *self.config_grants.write().await = grants.read().await.clone();
         }
         Ok(())
     }
@@ -260,17 +275,11 @@ impl McpServerManager {
         &self,
         enabled_tools: Vec<String>,
     ) -> Result<McpServerStatus, String> {
-        let next = sanitize_enabled_tools(&enabled_tools);
-        *self.config_grants.write().await = next.clone();
-        let running_grants = self
-            .runtime
-            .read()
-            .await
-            .as_ref()
-            .map(|runtime| Arc::clone(&runtime.grants));
-        if let Some(grants) = running_grants {
-            *grants.write().await = next;
-        }
+        // One write reaches the running transport and the stored configuration
+        // alike, because they read the same cell.
+        self.grants
+            .replace(sanitize_enabled_tools(&enabled_tools))
+            .await;
         Ok(self.get_status().await)
     }
 
@@ -285,12 +294,6 @@ impl McpServerManager {
 
         let host = normalize_host(host)?;
         let port = normalize_port(port);
-        let desired_grants = if let Some(enabled_tools) = enabled_tools.as_deref() {
-            sanitize_enabled_tools(enabled_tools)
-        } else {
-            self.config_grants.read().await.clone()
-        };
-        let grants = Arc::new(RwLock::new(desired_grants.clone()));
         let effective_token = Some(effective_auth_token(auth_token));
         let token = Arc::new(RwLock::new(effective_token.clone()));
 
@@ -303,10 +306,19 @@ impl McpServerManager {
             .map_err(|error| format!("Failed to read MCP server address: {error}"))?
             .port();
 
+        // An explicit list replaces the grants; omitting it keeps whatever is
+        // already in force, including an explicitly empty set. Applied only
+        // once the socket is ours, so a failed start changes no permission.
+        if let Some(enabled_tools) = enabled_tools.as_deref() {
+            self.grants
+                .replace(sanitize_enabled_tools(enabled_tools))
+                .await;
+        }
+
         let policy = RuntimePolicy::default();
         let shutdown = CancellationToken::new();
         let state = transport::HttpRuntimeState::production(
-            Arc::clone(&grants),
+            self.grants.shared(),
             Arc::clone(&token),
             host.clone(),
             actual_port,
@@ -327,12 +339,10 @@ impl McpServerManager {
 
         *self.config_host.write().await = host.clone();
         *self.config_port.write().await = actual_port;
-        *self.config_grants.write().await = desired_grants;
         *self.config_auth_token.write().await = effective_token;
         *self.runtime.write().await = Some(RunningMcpServer {
             host,
             port: actual_port,
-            grants,
             auth_token: token,
             shutdown,
             task_handle,
@@ -384,6 +394,47 @@ mod tests {
         assert_eq!(
             build_status(false, "::1".to_string(), 8787, &grants, None, None).url,
             "http://[::1]:8787/mcp"
+        );
+    }
+
+    /// The handle the AI assistant holds has to report the user's current
+    /// choice, not a snapshot taken when the app booted — and stopping the
+    /// server must not look like a revocation.
+    #[tokio::test]
+    async fn the_in_process_grant_handle_tracks_edits_and_survives_stop() {
+        let manager = McpServerManager::default();
+        let handle = manager.grant_handle();
+        assert!(
+            handle.snapshot().await.is_empty(),
+            "nothing is granted until the user enables something"
+        );
+
+        manager
+            .set_enabled_tools(vec!["dns_validate_record".to_string()])
+            .await
+            .unwrap();
+        assert!(handle
+            .snapshot()
+            .await
+            .allows_id("bc.mcp.v1.dns.validate_record"));
+
+        let port = reserve_local_port();
+        manager
+            .start(None, Some(port), None, Some("test-token".to_string()))
+            .await
+            .unwrap();
+        assert!(handle
+            .snapshot()
+            .await
+            .allows_id("bc.mcp.v1.dns.validate_record"));
+
+        manager.stop().await.unwrap();
+        assert!(
+            handle
+                .snapshot()
+                .await
+                .allows_id("bc.mcp.v1.dns.validate_record"),
+            "stopping the server must not revoke what the user enabled"
         );
     }
 

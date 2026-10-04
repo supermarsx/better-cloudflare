@@ -152,7 +152,10 @@ pub fn tool_count() -> usize {
 }
 
 /// Compatibility entry point. Dispatch without an explicit canonical grant set
-/// is deliberately denied, including calls from other in-process crates.
+/// is deliberately denied, including calls from other in-process crates. A
+/// caller that holds grants uses [`execute_tool_with_grants`] instead; this
+/// stub stays a refusal so "I have no grants to present" can never mean "run
+/// it anyway".
 pub async fn execute_tool(name: &str, args: &Value) -> Result<Value, String> {
     let _ = (name, args);
     Err("Tool dispatch denied: explicit canonical permission grants are required.".to_string())
@@ -161,8 +164,14 @@ pub async fn execute_tool(name: &str, args: &Value) -> Result<Value, String> {
 /// Final dispatch boundary. Registry resolution, grant enforcement, and
 /// argument bounds all happen here so callers cannot bypass them by invoking a
 /// private sub-handler directly.
-#[allow(dead_code)] // Retained for crate tests and in-process compatibility audits.
-pub(crate) async fn execute_tool_with_grants(
+///
+/// This is the only public way to run a tool, and it cannot be called without
+/// presenting a [`PermissionGrantSet`]. That set is opaque — it is built solely
+/// by exact registry resolution of configured names — and it is re-checked
+/// here, not trusted: a caller presenting an empty set dispatches nothing. The
+/// in-process caller that matters, the AI assistant, presents the live grants
+/// read from [`crate::McpServerManager`], never a set of its own.
+pub async fn execute_tool_with_grants(
     grants: &PermissionGrantSet,
     name: &str,
     args: &Value,

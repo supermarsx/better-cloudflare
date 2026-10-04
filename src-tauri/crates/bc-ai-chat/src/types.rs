@@ -4,7 +4,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use bc_ai_provider::{Message, ProviderKind, ToolCall, Usage};
+use bc_ai_provider::{Message, ToolCall, Usage};
 
 use crate::error::ChatError;
 use crate::limits::{enforce_conversation_limits, validate_chat_message};
@@ -75,7 +75,8 @@ impl ChatMessage {
 pub struct ConversationMeta {
     pub id: Uuid,
     pub title: String,
-    pub provider: ProviderKind,
+    /// Id of the provider profile the conversation was created against.
+    pub provider: String,
     pub model: String,
     pub message_count: usize,
     pub created_at: DateTime<Utc>,
@@ -88,7 +89,13 @@ pub struct ConversationMeta {
 pub struct Conversation {
     pub id: Uuid,
     pub title: String,
-    pub provider: ProviderKind,
+    /// Id of the provider profile the conversation was created against.
+    ///
+    /// A profile id, not a protocol: provider identity is user-defined, so a
+    /// transcript records which connection it belongs to. Conversations stored
+    /// before profiles existed hold a bare protocol name (`"openai"`), which
+    /// is also a well-formed id, so both spellings load and validate.
+    pub provider: String,
     pub model: String,
     pub system_prompt: Option<String>,
     pub messages: Vec<ChatMessage>,
@@ -98,12 +105,12 @@ pub struct Conversation {
 
 impl Conversation {
     /// Create a new conversation.
-    pub fn new(provider: ProviderKind, model: String) -> Self {
+    pub fn new(provider: impl Into<String>, model: String) -> Self {
         let now = Utc::now();
         Self {
             id: Uuid::new_v4(),
             title: "New conversation".into(),
-            provider,
+            provider: provider.into(),
             model,
             system_prompt: None,
             messages: Vec::new(),

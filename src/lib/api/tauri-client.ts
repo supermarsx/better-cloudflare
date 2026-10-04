@@ -25,13 +25,12 @@ import type {
   AiPermissionsSnapshot,
   AiPersona,
   AiPersonaInput,
+  AiProviderProfile,
+  AiProviderProfileInput,
   Conversation,
   ConversationMeta,
   Model,
   Preset,
-  ProviderConfig,
-  ProviderKind,
-  ProviderStatus,
 } from "@/types/ai";
 
 const TAURI_UI_TIMEOUT_MS = 15_000;
@@ -1738,45 +1737,69 @@ export class TauriClient {
   }
 
   // ─── AI assistant ────────────────────────────────────────────────────────
-  // The seventeen commands registered at `src-tauri/src/main.rs:322-338`,
-  // implemented in `src-tauri/src/ai_commands.rs`. Wire shapes are the serde
-  // camelCase forms of the `bc-ai-*` crates (see `src/types/ai.ts`); every one
-  // rejects with an `AiCommandError`, not a string. There is no HTTP fallback
-  // in `server-client.ts`, so each method throws `AI_DESKTOP_ONLY` off desktop
-  // rather than hanging on a missing bridge.
+  // The eighteen chat/provider commands registered in `src-tauri/src/main.rs`
+  // and implemented in `src-tauri/src/ai_commands.rs` — seventeen plus
+  // `ai_delete_provider`, which arrived with user-defined providers. Wire
+  // shapes are the serde camelCase forms of the `bc-ai-*` crates (see
+  // `src/types/ai.ts`); every one rejects with an `AiCommandError`, not a
+  // string. There is no HTTP fallback in `server-client.ts`, so each method
+  // throws `AI_DESKTOP_ONLY` off desktop rather than hanging on a missing
+  // bridge.
 
   private static requireAiDesktop(): void {
     if (!isDesktop()) throw new Error(AI_DESKTOP_ONLY);
   }
 
-  /** Provider kinds and whether each is configured. Never returns a key. */
-  static async aiListProviders(): Promise<ProviderStatus[]> {
+  /**
+   * Every configured provider profile.
+   *
+   * Never returns key material: an {@link AiProviderProfile} has no `apiKey`
+   * field, only `hasApiKey`. Provider identity is a user-defined id, so two
+   * profiles may share a protocol — real OpenAI and a Groq endpoint both speak
+   * `"openai"` and are separate entries here.
+   */
+  static async aiListProviders(): Promise<AiProviderProfile[]> {
     TauriClient.requireAiDesktop();
     return invoke("ai_list_providers");
   }
 
   /**
-   * Save and verify a provider in one call: the backend validates, then runs a
-   * live `health_check()` before storing (`manager.rs:83-97`). A rejection
-   * therefore means "these credentials do not work", not merely "malformed".
+   * Create or update one provider profile, and verify it in the same call: the
+   * backend validates, then runs a live `health_check()` before storing. A
+   * rejection therefore means "this provider does not work", not merely
+   * "malformed".
    *
-   * The config is held in RAM only and does not survive an app restart.
+   * An input with no `id` creates; an input carrying an existing `id` updates
+   * it in place. Resolves with the **stored** profile, so the caller reads the
+   * resolved base URL and `hasApiKey` from the answer rather than assuming its
+   * own input was taken verbatim.
+   *
+   * `profile.apiKey` is three-valued and the distinction matters: absent leaves
+   * the stored key alone, `null` clears it, a string replaces it.
    */
-  static async aiConfigureProvider(config: ProviderConfig): Promise<void> {
+  static async aiConfigureProvider(
+    profile: AiProviderProfileInput,
+  ): Promise<AiProviderProfile> {
     TauriClient.requireAiDesktop();
-    return invoke("ai_configure_provider", { config });
+    return invoke("ai_configure_provider", { profile });
   }
 
-  /** Health-check a configured provider and list its models. */
-  static async aiTestProvider(kind: ProviderKind): Promise<Model[]> {
+  /** Forget one profile and its stored key. `false` if no such profile. */
+  static async aiDeleteProvider(id: string): Promise<boolean> {
     TauriClient.requireAiDesktop();
-    return invoke("ai_test_provider", { kind });
+    return invoke("ai_delete_provider", { id });
   }
 
-  /** List models for a configured provider (bounded to 1024 entries). */
-  static async aiListModels(kind: ProviderKind): Promise<Model[]> {
+  /** Health-check one profile and list its models. Keyed by profile id. */
+  static async aiTestProvider(id: string): Promise<Model[]> {
     TauriClient.requireAiDesktop();
-    return invoke("ai_list_models", { kind });
+    return invoke("ai_test_provider", { id });
+  }
+
+  /** List models for one profile (bounded to 1024 entries). */
+  static async aiListModels(id: string): Promise<Model[]> {
+    TauriClient.requireAiDesktop();
+    return invoke("ai_list_models", { id });
   }
 
   /** Agent-loop settings. Cannot leak a provider key. */
@@ -1790,8 +1813,9 @@ export class TauriClient {
     return invoke("ai_set_config", { config });
   }
 
+  /** `provider` is an {@link AiProviderProfile.id}. */
   static async aiCreateConversation(
-    provider: ProviderKind,
+    provider: string,
     model: string,
     title?: string,
     systemPrompt?: string,
@@ -1833,14 +1857,23 @@ export class TauriClient {
    * message id as soon as the turn is *started* — the assistant's reply
    * arrives asynchronously on {@link AI_EVENT}, so a resolved promise is not a
    * finished turn.
+   *
+   * `providerId` is optional: omitted, the backend uses the conversation's own
+   * provider, falling back to `AgentConfig.defaultProviderId`. It is sent as an
+   * explicit `null` rather than an absent key, matching the `Option<String>`
+   * parameter.
    */
   static async aiSendMessage(
     conversationId: string,
     text: string,
-    provider: ProviderKind,
+    providerId?: string | null,
   ): Promise<string> {
     TauriClient.requireAiDesktop();
-    return invoke("ai_send_message", { conversationId, text, provider });
+    return invoke("ai_send_message", {
+      conversationId,
+      text,
+      providerId: providerId ?? null,
+    });
   }
 
   /**
@@ -2431,11 +2464,10 @@ export type { NotificationSettings, UnlistenFn };
 export type {
   AgentConfig,
   AgentEvent,
+  AiProviderProfile,
+  AiProviderProfileInput,
   Conversation,
   ConversationMeta,
   Model,
   Preset,
-  ProviderConfig,
-  ProviderKind,
-  ProviderStatus,
 };

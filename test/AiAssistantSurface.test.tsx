@@ -41,6 +41,7 @@ const AGENT_CONFIG: AgentConfig = {
   temperature: 0.7,
   topP: 1,
   personaId: null,
+  defaultProviderId: null,
 };
 
 /** Counts the `ai_*` traffic the surface causes, which is the point of some tests. */

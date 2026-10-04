@@ -11,10 +11,14 @@
  * Nothing enforced that. These two tests do:
  *
  * 1. No file under `src/` may name a provider endpoint host. The host list is
- *    parsed out of `ProviderKind::default_base_url` rather than copied, and is
- *    then compared against a pinned set — so adding a fourth provider fails
+ *    parsed out of `ProviderProtocol::default_base_url` rather than copied, and
+ *    is then compared against a pinned set — so adding a fourth protocol fails
  *    this test until someone extends it deliberately, instead of silently
- *    leaving the new provider unguarded.
+ *    leaving the new endpoint unguarded.
+ *
+ *    This is also why no default base URL lives in the renderer at all: a
+ *    profile saved without one is stored with the protocol's default by the
+ *    Rust side, and `src/lib/ai/providers.ts` holds only default *models*.
  * 2. The renderer's AI code issues no outbound request by *any* route — not
  *    `fetch`, not `XMLHttpRequest`, not a `WebSocket`, not a beacon. Naming a
  *    host is the obvious way to break the boundary; assembling one from parts
@@ -95,7 +99,7 @@ function rustProviderHosts(): string[] {
   );
   assert.ok(
     block?.groups?.body,
-    "ProviderKind::default_base_url must stay parseable by this contract test",
+    "ProviderProtocol::default_base_url must stay parseable by this contract test",
   );
 
   const urls = [...block.groups.body.matchAll(/"([^"]+)"/g)].map(

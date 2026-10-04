@@ -11,7 +11,6 @@ use crate::limits::{
     validate_conversation, MAX_CONVERSATIONS, MAX_GLOBAL_RETAINED_BYTES,
 };
 use crate::types::{ChatMessage, Conversation, ConversationMeta};
-use bc_ai_provider::ProviderKind;
 
 #[derive(Default)]
 struct ChatState {
@@ -73,7 +72,7 @@ impl ChatManager {
     /// conversations if global count or byte limits are exceeded.
     pub async fn try_create_conversation(
         &self,
-        provider: ProviderKind,
+        provider: String,
         model: String,
         title: Option<String>,
         system_prompt: Option<String>,
@@ -213,6 +212,16 @@ impl ChatManager {
             .and_then(|conversation| conversation.system_prompt.clone())
     }
 
+    /// Id of the provider profile the conversation was created against.
+    pub async fn provider(&self, id: Uuid) -> Option<String> {
+        self.state
+            .read()
+            .await
+            .conversations
+            .get(&id)
+            .map(|conversation| conversation.provider.clone())
+    }
+
     /// Get the conversation's selected model.
     pub async fn model(&self, id: Uuid) -> Option<String> {
         self.state
@@ -271,7 +280,7 @@ mod tests {
 
     async fn conversation(manager: &ChatManager) -> Uuid {
         manager
-            .try_create_conversation(ProviderKind::Ollama, "test-model".into(), None, None)
+            .try_create_conversation("ollama".into(), "test-model".into(), None, None)
             .await
             .expect("conversation")
             .id
@@ -282,7 +291,7 @@ mod tests {
         let manager = ChatManager::default();
         manager
             .try_create_conversation(
-                ProviderKind::Ollama,
+                "ollama".into(),
                 "model".into(),
                 Some("t".repeat(MAX_TITLE_BYTES)),
                 None,
@@ -292,7 +301,7 @@ mod tests {
         assert!(matches!(
             manager
                 .try_create_conversation(
-                    ProviderKind::Ollama,
+                    "ollama".into(),
                     "model".into(),
                     Some("t".repeat(MAX_TITLE_BYTES + 1)),
                     None,

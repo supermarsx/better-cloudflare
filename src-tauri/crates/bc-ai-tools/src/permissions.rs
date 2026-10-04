@@ -24,6 +24,59 @@ pub const MAX_TOOL_PERMISSION_OVERRIDES: usize = 128;
 /// agent loop and its tests can recognise a refusal without parsing prose.
 pub const PERMISSION_REFUSAL_PREFIX: &str = "Tool call refused:";
 
+/// Marker naming the assistant's own policy as the layer that refused. Stable
+/// so a renderer can route the user to the right settings page.
+pub const ASSISTANT_POLICY_REFUSAL_MARKER: &str =
+    "the AI assistant's own tool permissions (AI assistant settings)";
+
+/// Marker naming the application's MCP grants as the layer that refused.
+pub const MCP_GRANT_REFUSAL_MARKER: &str =
+    "the application's MCP tool permissions (MCP server settings)";
+
+/// Which of the two permission layers refused a call.
+///
+/// The layers are composed as an intersection, so a refusal can come from
+/// either, and a user who sees "refused" needs to know which switch to look
+/// at: the assistant's own tool settings, or the application's MCP grants.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RefusalSource {
+    /// The assistant's mode plus per-tool overrides ([`resolve`]).
+    AssistantPolicy,
+    /// The application's canonical MCP permission grants.
+    McpGrants,
+}
+
+impl RefusalSource {
+    /// Human-readable name of the layer, for the refusal the model relays.
+    pub const fn marker(self) -> &'static str {
+        match self {
+            Self::AssistantPolicy => ASSISTANT_POLICY_REFUSAL_MARKER,
+            Self::McpGrants => MCP_GRANT_REFUSAL_MARKER,
+        }
+    }
+}
+
+/// What the assistant can actually dispatch right now.
+///
+/// The renderer cannot work this out for itself: it knows the assistant's
+/// permissions but not the MCP grants the dispatch is also gated on, so
+/// without this it has to guess whether tool use is possible at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolAvailability {
+    /// Whether any tool at all would pass both permission layers. False means
+    /// the assistant has no tools, and a UI should stop advertising them.
+    pub dispatch_available: bool,
+    /// Registered tools the application's MCP grants currently cover.
+    pub granted_tool_count: usize,
+    /// Registered tools that pass both layers — granted by MCP and not denied
+    /// by the assistant's policy. Never larger than `granted_tool_count`.
+    pub usable_tool_count: usize,
+    /// Every tool in the MCP catalogue, so a UI can say "3 of 48".
+    pub registered_tool_count: usize,
+}
+
 /// How much freedom the assistant has when it wants to call a tool.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -163,12 +216,32 @@ pub fn resolve(
 /// Body of the tool result that reports a refusal back to the model.
 ///
 /// The model must learn that the call was refused — otherwise it retries or
-/// stalls instead of answering the user.
-pub fn refusal_text(reason: &str) -> String {
+/// stalls instead of answering the user — and it must be able to tell the user
+/// *which* permission layer refused, because they are configured in two
+/// different places.
+pub fn refusal_text_from(source: RefusalSource, reason: &str) -> String {
     format!(
         "{PERMISSION_REFUSAL_PREFIX} {reason}. The tool was not executed. \
-         Do not retry this call; tell the user it was refused, or continue without that tool."
+         The refusal came from {}. \
+         Do not retry this call; tell the user it was refused and which permissions to change, \
+         or continue without that tool.",
+        source.marker()
     )
+}
+
+/// A refusal by the assistant's own policy, the layer [`resolve`] decides.
+pub fn refusal_text(reason: &str) -> String {
+    refusal_text_from(RefusalSource::AssistantPolicy, reason)
+}
+
+/// Reason for a tool the application's MCP grants do not cover.
+pub fn ungranted_reason(tool_name: &str) -> String {
+    format!("tool '{tool_name}' is not enabled in the application's MCP tool permissions")
+}
+
+/// Reason for a name that is not an MCP tool at all.
+pub fn unregistered_reason(tool_name: &str) -> String {
+    format!("'{tool_name}' is not a registered MCP tool")
 }
 
 /// Names of every tool registered in the MCP catalogue.

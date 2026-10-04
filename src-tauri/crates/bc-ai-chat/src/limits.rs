@@ -129,6 +129,17 @@ pub(crate) fn validate_conversation_metadata(conversation: &Conversation) -> Res
             message: "must not be empty".into(),
         });
     }
+    // The provider is a user-defined profile id now, so it is bounded text
+    // rather than a closed enum the deserializer could vet.
+    bc_ai_provider::validate_provider_id(&conversation.provider).map_err(|error| match error {
+        bc_ai_provider::AiProviderError::InvalidRequest { message, .. } => {
+            ChatError::InvalidField {
+                field: "provider",
+                message,
+            }
+        }
+        other => provider_error(other),
+    })?;
     validate_string("conversation model", &conversation.model, MAX_MODEL_BYTES)
         .map_err(provider_error)?;
     validate_string("conversation title", &conversation.title, MAX_TITLE_BYTES)

@@ -3,6 +3,11 @@
 //! Converts MCP tool descriptors to AI provider `ToolDefinition`s, executes
 //! tool calls, and enforces the AI permission policy at the point of dispatch
 //! (see [`permissions`] for the algorithm and [`executor`] for the gate).
+//!
+//! Dispatch is governed by two layers composed as an intersection: the
+//! application's canonical MCP grants decide what may happen at all, and the
+//! assistant's own permissions can only narrow that further. See
+//! [`executor::ToolExecutor`].
 
 pub mod converter;
 pub mod error;
@@ -15,7 +20,7 @@ pub use error::ToolExecutionError;
 pub use executor::ToolExecutor;
 pub use permissions::{
     AiPermissionMode, AiPermissions, AiToolDescriptor, AiToolPermission, PermissionDecision,
-    ToolClassification,
+    RefusalSource, ToolAvailability, ToolClassification,
 };
 pub use registry::ToolRegistry;
 pub use safety::{SafetyPolicy, ToolApproval};

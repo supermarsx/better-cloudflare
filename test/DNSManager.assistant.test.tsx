@@ -59,6 +59,7 @@ const AGENT_CONFIG: AgentConfig = {
   temperature: 0.7,
   topP: 1,
   personaId: null,
+  defaultProviderId: null,
 };
 
 function createMcpStatus(): McpServerStatus {
