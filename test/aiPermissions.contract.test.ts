@@ -516,15 +516,32 @@ test("every bound in the TS table is the Rust constant it mirrors", () => {
 });
 
 test("the agent-config floors the Rust validators imply are the TS floors", () => {
-  // These two have no `MIN_` constant because the Rust check is
-  // `== 0 || > MAX`, which makes 1 the floor by construction. Pinned as a
-  // literal *and* as the shape of the check, so promoting them to constants
-  // later shows up here rather than silently going unchecked.
-  assert.equal(AI_AGENT_LIMITS.maxToolRounds.min, 1);
-  assert.equal(AI_AGENT_LIMITS.maxTokensPerTurn.min, 1);
+  // These two have no `MIN_` constant: the Rust check is `== 0 || > MAX`,
+  // which makes 1 the floor by construction. Pinning the *shape* is the right
+  // call while the floors are implicit, but it does make the shape a contract
+  // rather than an accident — so the failure message says what to do, because
+  // the fix is not "restore the inline check", it is to move these two into
+  // `RUST_BOUNDS` with the new constant names.
+  const promoted =
+    "move maxToolRounds/maxTokensPerTurn into RUST_BOUNDS with the new constant names";
+  assert.equal(
+    AI_AGENT_LIMITS.maxToolRounds.min,
+    1,
+    `maxToolRounds min must be the floor the == 0 check implies - if Rust gained a MIN_TOOL_ROUNDS, ${promoted}`,
+  );
+  assert.equal(
+    AI_AGENT_LIMITS.maxTokensPerTurn.min,
+    1,
+    `maxTokensPerTurn min must be the floor the == 0 check implies - if Rust gained a MIN_COMPLETION_TOKENS, ${promoted}`,
+  );
   const agentSource = readFileSync(AGENT_CONFIG_RS, "utf8");
-  assert.match(agentSource, /self\.max_tool_rounds == 0/);
-  assert.match(agentSource, /self\.max_tokens_per_turn == 0/);
+  for (const field of ["max_tool_rounds", "max_tokens_per_turn"] as const) {
+    assert.match(
+      agentSource,
+      new RegExp(`self\\.${field} == 0`),
+      `${field} no longer has an inline zero check - if its floor became a named constant, ${promoted}`,
+    );
+  }
 });
 
 test("the validators compare against the constants they name", () => {
@@ -532,21 +549,48 @@ test("the validators compare against the constants they name", () => {
   // temperature range in particular used to be two literals here, which this
   // test scraped with a regex; reading the constants is sturdier, but only if
   // the validator is still using them.
-  const providerConfig = readFileSync(PROVIDER_CONFIG_RS, "utf8");
-  assert.match(
-    providerConfig,
-    /\(MIN_TEMPERATURE\.\.=MAX_TEMPERATURE\)\.contains\(&self\.temperature\)/,
-  );
-  const agentConfig = readFileSync(AGENT_CONFIG_RS, "utf8");
-  for (const pattern of [
-    /\(MIN_TEMPERATURE\.\.=MAX_TEMPERATURE\)\.contains\(&self\.temperature\)/,
-    /\(MIN_TOP_P\.\.=MAX_TOP_P\)\.contains\(&self\.top_p\)/,
-    /\(MIN_TOP_K\.\.=MAX_TOP_K\)\.contains\(&top_k\)/,
-    /\(MIN_SAMPLING_PENALTY\.\.=MAX_SAMPLING_PENALTY\)\.contains\(&penalty\)/,
-    /\(MIN_CONTEXT_TOKENS\.\.=MAX_CONTEXT_TOKENS\)\.contains\(&self\.max_context_tokens\)/,
-    /\(MIN_REQUEST_TIMEOUT_MS\.\.=MAX_REQUEST_TIMEOUT_MS\)\.contains\(&timeout_ms\)/,
-  ]) {
-    assert.match(agentConfig, pattern);
+  //
+  // Each pattern matches only the `(MIN..=MAX).contains(&field)` fragment, so
+  // it is indifferent to how rustfmt wraps the condition around it — two of
+  // these six are already split across lines before the `||`. The `\s*` before
+  // `.contains` is there for the one wrap that *would* break the match, a
+  // method call pushed onto its own line, so a pure formatting change cannot
+  // turn this into a false alarm. It still tolerates nothing but whitespace:
+  // a different constant or a different field fails.
+  const named = (range: string, field: string) =>
+    new RegExp(`\\(${range}\\)\\s*\\.contains\\(&${field}\\)`);
+  const sites: readonly [string, string, string][] = [
+    [
+      PROVIDER_CONFIG_RS,
+      "MIN_TEMPERATURE..=MAX_TEMPERATURE",
+      "self\\.temperature",
+    ],
+    [
+      AGENT_CONFIG_RS,
+      "MIN_TEMPERATURE..=MAX_TEMPERATURE",
+      "self\\.temperature",
+    ],
+    [AGENT_CONFIG_RS, "MIN_TOP_P..=MAX_TOP_P", "self\\.top_p"],
+    [AGENT_CONFIG_RS, "MIN_TOP_K..=MAX_TOP_K", "top_k"],
+    [AGENT_CONFIG_RS, "MIN_SAMPLING_PENALTY..=MAX_SAMPLING_PENALTY", "penalty"],
+    [
+      AGENT_CONFIG_RS,
+      "MIN_CONTEXT_TOKENS..=MAX_CONTEXT_TOKENS",
+      "self\\.max_context_tokens",
+    ],
+    [
+      AGENT_CONFIG_RS,
+      "MIN_REQUEST_TIMEOUT_MS..=MAX_REQUEST_TIMEOUT_MS",
+      "timeout_ms",
+    ],
+  ];
+  for (const [file, range, field] of sites) {
+    const escapedRange = range.replaceAll(".", "\\.");
+    assert.match(
+      readFileSync(file, "utf8"),
+      named(escapedRange, field),
+      `${basename(file)} must still enforce ${range} - a bound that is named but compared against something else is the drift this test exists for`,
+    );
   }
 });
 
