@@ -259,7 +259,10 @@ mod message_content_wire_tests {
         .expect("serializes");
 
         assert_eq!(value["type"], "toolUse");
-        assert!(value.get("toolCalls").is_some(), "expected toolCalls: {value}");
+        assert!(
+            value.get("toolCalls").is_some(),
+            "expected toolCalls: {value}"
+        );
         assert!(
             value.get("tool_calls").is_none(),
             "snake_case field `tool_calls` leaked: {value}"
