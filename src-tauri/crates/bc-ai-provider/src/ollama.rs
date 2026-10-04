@@ -8,14 +8,15 @@ use reqwest::Client;
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
 
-use crate::config::ProviderConfig;
+use crate::config::{ProviderConfig, ProviderProtocol};
 use crate::error::AiProviderError;
 use crate::limits::{
-    read_error_body, read_json_body, send_delta, serialized_len_limited,
-    validate_completion_request, validate_response_message, validate_string, BoundedString,
-    LineDecoder, StreamBudget, MAX_STREAM_OUTPUT_BYTES, MAX_TOOL_ARGUMENT_BYTES,
+    read_error_body, read_json_body, send_delta, send_head_bounded, serialized_len_limited,
+    validate_completion_request, validate_response_message, validate_string, with_total_timeout,
+    BoundedString, LineDecoder, StreamBudget, MAX_STREAM_OUTPUT_BYTES, MAX_TOOL_ARGUMENT_BYTES,
     MAX_TOOL_CALLS_PER_MESSAGE, MAX_TOOL_NAME_BYTES,
 };
+use crate::sampling::advanced_entries;
 use crate::traits::AiProvider;
 use crate::types::*;
 
@@ -87,6 +88,23 @@ impl OllamaProvider {
         }
 
         messages
+    }
+
+    /// Build Ollama's `options` object.
+    ///
+    /// Every generation control lives in here rather than at the top level,
+    /// and only the controls this protocol honours are taken — from the one
+    /// table the capability list is reported from. `None` when nothing is
+    /// configured, so an empty `options` is never sent.
+    pub(crate) fn build_options(request: &CompletionRequest) -> Option<Value> {
+        let mut options = serde_json::Map::new();
+        if let Some(temperature) = request.temperature {
+            options.insert("temperature".into(), json!(temperature));
+        }
+        for (key, value) in advanced_entries(ProviderProtocol::Ollama, request) {
+            options.insert(key.into(), value);
+        }
+        (!options.is_empty()).then_some(Value::Object(options))
     }
 
     fn build_tools(&self, request: &CompletionRequest) -> Option<Vec<Value>> {
@@ -302,15 +320,17 @@ impl AiProvider for OllamaProvider {
             "stream": false,
         });
 
-        if let Some(ref options) = request.temperature {
-            body["options"] = json!({"temperature": options});
+        if let Some(options) = Self::build_options(&request) {
+            body["options"] = options;
         }
 
         if let Some(tools) = self.build_tools(&request) {
             body["tools"] = json!(tools);
         }
 
-        let resp = self.client.post(&url).json(&body).send().await?;
+        let resp = with_total_timeout(self.client.post(&url).json(&body), request.timeout_ms)
+            .send()
+            .await?;
 
         let status = resp.status();
         if !status.is_success() {
@@ -399,15 +419,16 @@ impl AiProvider for OllamaProvider {
             "stream": true,
         });
 
-        if let Some(ref temp) = request.temperature {
-            body["options"] = json!({"temperature": temp});
+        if let Some(options) = Self::build_options(&request) {
+            body["options"] = options;
         }
 
         if let Some(tools) = self.build_tools(&request) {
             body["tools"] = json!(tools);
         }
 
-        let resp = self.client.post(&url).json(&body).send().await?;
+        let resp =
+            send_head_bounded(self.client.post(&url).json(&body), request.timeout_ms).await?;
 
         let status_code = resp.status();
         if !status_code.is_success() {

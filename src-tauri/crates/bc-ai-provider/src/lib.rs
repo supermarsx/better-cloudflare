@@ -18,6 +18,7 @@ pub mod config;
 pub mod error;
 pub mod limits;
 pub mod profile;
+pub mod sampling;
 pub mod traits;
 pub mod types;
 
@@ -31,5 +32,6 @@ pub use profile::{
     validate_provider_id, AiProviderProfile, AiProviderProfileInput, ProviderProfile,
     MAX_PROVIDER_ID_BYTES, MAX_PROVIDER_LABEL_BYTES, MAX_PROVIDER_PROFILES,
 };
+pub use sampling::{honoured_fields, honours, protocol_capabilities, AdvancedField};
 pub use traits::AiProvider;
 pub use types::*;

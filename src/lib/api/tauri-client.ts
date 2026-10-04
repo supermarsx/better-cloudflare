@@ -25,6 +25,7 @@ import type {
   AiPermissionsSnapshot,
   AiPersona,
   AiPersonaInput,
+  AiProtocolCapabilities,
   AiProviderProfile,
   AiProviderProfileInput,
   Conversation,
@@ -1737,9 +1738,10 @@ export class TauriClient {
   }
 
   // ─── AI assistant ────────────────────────────────────────────────────────
-  // The eighteen chat/provider commands registered in `src-tauri/src/main.rs`
-  // and implemented in `src-tauri/src/ai_commands.rs` — seventeen plus
-  // `ai_delete_provider`, which arrived with user-defined providers. Wire
+  // The chat/provider commands registered in `src-tauri/src/main.rs` and
+  // implemented in `src-tauri/src/ai_commands.rs`: the original seventeen,
+  // plus `ai_delete_provider` (user-defined providers) and
+  // `ai_protocol_capabilities` (advanced generation parameters). Wire
   // shapes are the serde camelCase forms of the `bc-ai-*` crates (see
   // `src/types/ai.ts`); every one rejects with an `AiCommandError`, not a
   // string. There is no HTTP fallback in `server-client.ts`, so each method
@@ -1811,6 +1813,21 @@ export class TauriClient {
   static async aiSetConfig(config: AgentConfig): Promise<void> {
     TauriClient.requireAiDesktop();
     return invoke("ai_set_config", { config });
+  }
+
+  /**
+   * Which advanced generation parameters each wire protocol honours.
+   *
+   * A map from `ProviderProtocol` to camelCase {@link AgentConfig} field
+   * names, answered by the code that builds the provider request. It exists
+   * because the alternative — a list in the renderer — was wrong the moment an
+   * adapter changed, and `AgentConfig.topP` already shipped once as a setting
+   * that was stored and sent nowhere. A caller must not treat an absent entry
+   * as support; see `aiParameterApplicability`.
+   */
+  static async aiProtocolCapabilities(): Promise<AiProtocolCapabilities> {
+    TauriClient.requireAiDesktop();
+    return invoke("ai_protocol_capabilities");
   }
 
   /** `provider` is an {@link AiProviderProfile.id}. */

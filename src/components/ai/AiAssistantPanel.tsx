@@ -8,13 +8,14 @@
  * sizing, scrolling and whether a dismiss affordance exists; it changes nothing
  * about what the assistant can do.
  *
- * Chat is tool-free by design. Tool dispatch is denied at a crate boundary
- * (`bc_mcp::tools::execute_tool` always returns an error and the real
- * dispatcher is `pub(crate)`), so this panel never offers an approve action —
- * it turns tool use off instead, which makes the whole broken path unreachable
- * rather than merely hidden. See `AiToolNotice` and `AiTranscript`. The
- * permission settings describe what the desktop service would decide; they do
- * not claim the dispatch path is open.
+ * Tool state never gates chat. Dispatch works, and the agent loop advertises
+ * only tools that pass both permission layers, so enabling tool use cannot
+ * produce a doomed call — with nothing usable the model is offered no tools and
+ * chats normally. `AiToolNotice` therefore reports the posture and the backend's
+ * own availability counts; the composer does not consult it. A pending tool
+ * call is still shown read-only: `ai_approve_tool_call` exists but this panel
+ * does not offer it yet, and there is no per-tool reject command at all, so
+ * "Stop this run" is the only way out of one. See `AiTranscript`.
  *
  * Desktop only: every `ai_*` command is a Tauri command and
  * `server-client.ts` has no HTTP fallback for any of them.
@@ -37,6 +38,7 @@ import {
   useAiConversations,
   useAiProviders,
 } from "@/hooks/ai/use-ai-chat";
+import { useAiPermissions } from "@/hooks/ai/use-ai-settings";
 import { useI18n } from "@/hooks/use-i18n";
 import { usePrefersReducedMotion } from "@/hooks/use-prefers-reduced-motion";
 import type { AiAssistantPresentation } from "@/lib/ai/presentation";
@@ -63,6 +65,13 @@ export interface AiAssistantPanelProps {
    */
   presentation?: AiAssistantPresentation;
   /**
+   * Changes which chrome the assistant wears. The preference is owned and
+   * persisted by `DNSManager`, so this is the setter rather than local state;
+   * passing it is what puts the placement control in Behaviour, and a host that
+   * does not own the preference gets no control instead of a dead one.
+   */
+  onPresentationChange?: (next: AiAssistantPresentation) => void;
+  /**
    * Renders a dismiss affordance in the header. Omitted for the tab, which is
    * closed by the workspace tab bar instead.
    */
@@ -77,6 +86,7 @@ export interface AiAssistantPanelProps {
 export function AiAssistantPanel({
   initialView = "chat",
   presentation = "panel",
+  onPresentationChange,
   onDismiss,
   watchdogMs,
 }: AiAssistantPanelProps = {}) {
@@ -98,8 +108,6 @@ export function AiAssistantPanel({
   >({});
   const [creating, setCreating] = useState(false);
   const [panelError, setPanelError] = useState<string | null>(null);
-  const [preflightError, setPreflightError] = useState<string | null>(null);
-  const [disablingTools, setDisablingTools] = useState(false);
   const [savingAgentConfig, setSavingAgentConfig] = useState(false);
   const [lastSent, setLastSent] = useState<string | null>(null);
   // There is no reject command and `ai_cancel_generation` does not clear
@@ -165,52 +173,28 @@ export function AiAssistantPanel({
   );
 
   /**
-   * Fail closed: until the agent config has actually been read, the posture is
-   * unknown and the composer stays locked. A panel opening must not silently
-   * mutate global agent config, so turning tools off is an explicit action.
+   * What the notice reports — not a gate. The old `blocked` posture is gone:
+   * tool use being on is not an error condition, so an unread config means
+   * "unknown", never "locked". A panel opening still does not write agent
+   * config, which is why the unknown state is simply reported.
    */
   const posture: AiToolPosture =
     agentConfig.config === null
       ? "checking"
       : agentConfig.config.toolsEnabled
-        ? "blocked"
-        : "ready";
+        ? "on"
+        : "off";
 
-  const handleDisableTools = useCallback(() => {
-    const current = agentConfig.config;
-    if (!current) return;
-    setDisablingTools(true);
-    setPreflightError(null);
-    void agentConfig
-      .update({ ...current, toolsEnabled: false })
-      .catch((error) => {
-        setPreflightError(
-          describeAiError(
-            error,
-            t(
-              "Tool use could not be disabled.",
-              "Tool use could not be disabled.",
-            ),
-          ).message,
-        );
-      })
-      .finally(() => setDisablingTools(false));
-  }, [agentConfig, t]);
-
-  const handleRetryPreflight = useCallback(() => {
-    setPreflightError(null);
-    void agentConfig.refresh().catch((error) => {
-      setPreflightError(
-        describeAiError(
-          error,
-          t(
-            "The assistant's tool settings could not be read.",
-            "The assistant's tool settings could not be read.",
-          ),
-        ).message,
-      );
-    });
-  }, [agentConfig, t]);
+  /**
+   * The availability the notice speaks from, read only while tool use is on.
+   *
+   * It has to come from the backend: the catalog describes the assistant's own
+   * policy, but a dispatch is also gated on the application's MCP grants, which
+   * no `ai_*` command exposes. With tool use off there is nothing to report and
+   * the read is skipped, so an assistant that never turns tools on never issues
+   * `ai_get_permissions` from the chat view at all.
+   */
+  const toolPermissions = useAiPermissions({ enabled: posture === "on" });
 
   /**
    * The persona lives in agent config, not in the persona list, so selecting
@@ -452,23 +436,17 @@ export function AiAssistantPanel({
     );
   }
 
-  const composerDisabled =
-    posture !== "ready" || selectedId === null || activeProvider === null;
-  const composerReason =
-    posture === "blocked"
-      ? t(
-          "Disable tool use to start chatting.",
-          "Disable tool use to start chatting.",
-        )
-      : posture === "checking"
-        ? t(
-            "Checking the assistant's tool settings…",
-            "Checking the assistant's tool settings…",
-          )
-        : t(
-            "Select a conversation, or start a new one.",
-            "Select a conversation, or start a new one.",
-          );
+  /**
+   * The only two things that can stop a message being sent: nowhere to send it,
+   * and nothing to send it with. Tool state is deliberately absent — it is not
+   * an error condition, and the agent loop offers the model no tools when none
+   * are usable, so a chat with tool use on is just a chat.
+   */
+  const composerDisabled = selectedId === null || activeProvider === null;
+  const composerReason = t(
+    "Select a conversation, or start a new one.",
+    "Select a conversation, or start a new one.",
+  );
 
   // A stalled run and a rejected command both surface as `chat.error`, but they
   // need different offers: resending after a stall would duplicate a user
@@ -551,10 +529,7 @@ export function AiAssistantPanel({
       >
         <AiToolNotice
           posture={posture}
-          busy={disablingTools}
-          error={preflightError}
-          onDisableTools={handleDisableTools}
-          onRetry={handleRetryPreflight}
+          availability={toolPermissions.snapshot?.availability ?? null}
         />
 
         {panelError ? (
@@ -626,6 +601,8 @@ export function AiAssistantPanel({
             onSaveConfig={handleAgentConfigSave}
             onSelectPersona={handlePersonaSelect}
             onSetDefaultProvider={handleDefaultProviderSelect}
+            presentation={presentation}
+            onPresentationChange={onPresentationChange}
           />
         ) : (
           <div className="space-y-4">

@@ -2,12 +2,14 @@
  * Tests for the AI assistant panel.
  *
  * The load-bearing assertions here are the ones about posture, not about
- * layout. Tool dispatch is denied at a crate boundary in this build
- * (`bc_mcp::tools::execute_tool` always returns an error; the real dispatcher
- * is `pub(crate)`), so the panel must never offer an approve action and must
- * not let a user chat while the agent is still configured to offer tools. Two
- * tests pin exactly that, and they are the ones to read first if this file ever
- * starts failing.
+ * layout, and the posture rule has been inverted on purpose: tool state must
+ * never gate chat. Dispatch works (`execute_tool_with_grants` is public) and
+ * the agent loop advertises only tools that pass both permission layers, so
+ * tool use being on cannot produce a doomed call — it is not an error
+ * condition, and the composer does not consult it. What the panel says about
+ * tools comes from the backend's own availability counts and from nothing else;
+ * a count the renderer invented would be a claim about MCP grants it cannot
+ * see. Those are the tests to read first if this file ever starts failing.
  */
 import assert from "node:assert/strict";
 import React from "react";
@@ -27,8 +29,10 @@ import { TauriClient } from "../src/lib/api/tauri-client";
 import type {
   AgentConfig,
   AgentEvent,
+  AiPermissionsSnapshot,
   AiProviderProfile,
   AiProviderProfileInput,
+  AiToolAvailability,
   ChatMessage,
   Conversation,
   ConversationMeta,
@@ -88,6 +92,10 @@ interface BackendOptions {
   providers?: AiProviderProfile[];
   conversations?: ConversationMeta[];
   conversation?: Conversation | null;
+  /** What `ai_get_permissions` reports as usable. Defaults to "all three". */
+  availability?: Partial<AiToolAvailability>;
+  /** Holds `ai_get_permissions` unresolved, to observe the unloaded state. */
+  stallPermissions?: boolean;
 }
 
 /** A provider profile as `ai_list_providers` reports one — never with a key. */
@@ -165,6 +173,18 @@ function installBackend(options: BackendOptions = {}): Backend {
     TauriClient,
     "aiSetConfig",
     record("aiSetConfig", () => undefined),
+  );
+  // Read by the Behaviour section to say which generation parameters the
+  // provider in use honours. Mocked here so that opening Behaviour does not
+  // depend on a Tauri bridge this environment does not have.
+  mock.method(
+    TauriClient,
+    "aiProtocolCapabilities",
+    record("aiProtocolCapabilities", () => ({
+      openai: ["topP", "stop", "seed"],
+      anthropic: ["topP", "topK", "stop"],
+      ollama: ["topP", "topK", "stop", "seed"],
+    })),
   );
   mock.method(
     TauriClient,
@@ -246,6 +266,29 @@ function installBackend(options: BackendOptions = {}): Backend {
     "aiExportConversation",
     record("aiExportConversation", () => '{"id":"conv-1"}'),
   );
+  // The chat view reads this only while tool use is on, which is what lets a
+  // test assert that an assistant with tools off never asks for it.
+  const permissions: AiPermissionsSnapshot = {
+    mode: "ask",
+    tools: {},
+    catalog: [],
+    availability: {
+      dispatchAvailable: true,
+      grantedToolCount: 3,
+      usableToolCount: 3,
+      registeredToolCount: 48,
+      ...options.availability,
+    },
+  };
+  mock.method(TauriClient, "aiGetPermissions", async () => {
+    calls.push({ name: "aiGetPermissions", args: [] });
+    if (failures.has("aiGetPermissions"))
+      throw failures.get("aiGetPermissions");
+    // Never resolving is the honest shape of "the read has not come back yet":
+    // the notice must say nothing at all rather than guess a zero.
+    if (options.stallPermissions) await new Promise(() => {});
+    return permissions;
+  });
   mock.method(TauriClient, "onAiEvent", async (next: unknown) => {
     calls.push({ name: "onAiEvent", args: [] });
     handler = next as (event: AgentEvent) => void;
@@ -310,45 +353,165 @@ test("the web build shows the desktop-only notice and never calls the backend", 
   assert.equal(backend.calls.length, 0);
 });
 
-// ── The tool posture: the reason this panel is chat-only ───────────────────
+// ── The tool posture: reported, never a gate ───────────────────────────────
 
-test("tools enabled blocks the composer behind an explicit opt-out", async () => {
+test("tool use being on does not disable the composer", async () => {
   const backend = installBackend({
     config: { toolsEnabled: true },
     conversations: [conversationMeta()],
   });
   render(<AiAssistantPanel />);
 
-  const notice = await screen.findByTestId("ai-tool-warning");
-  await waitFor(() =>
-    assert.equal(notice.getAttribute("data-state"), "blocked"),
-  );
-  assert.ok(within(notice).getByRole("alert"));
+  const notice = await screen.findByTestId("ai-tool-notice");
+  await waitFor(() => assert.equal(notice.getAttribute("data-state"), "on"));
 
-  // Opening the panel must not have quietly rewritten global agent config.
+  // The whole point: a conversation and a provider are the only requirements.
+  // Tools being on is not an error condition, so nothing stays locked and
+  // nothing demands the user turn a setting off first. The wait is for the
+  // conversation list to land, which is the only thing that was ever holding
+  // the composer here.
+  const composer = screen.getByLabelText("Message") as HTMLTextAreaElement;
+  await waitFor(() => assert.equal(composer.disabled, false));
+  assertAbsent(
+    within(notice).queryByRole("alert"),
+    "alert in the tool notice while tool use is on",
+  );
+  for (const button of screen.getAllByRole("button")) {
+    const name = `${button.textContent ?? ""} ${button.getAttribute("aria-label") ?? ""}`;
+    assert.doesNotMatch(name, /disable tool use/i);
+  }
+
+  // And the panel still does not rewrite global agent config behind the user.
   assert.equal(named(backend, "aiSetConfig").length, 0);
 
-  const composer = screen.getByLabelText("Message");
-  assert.equal((composer as HTMLTextAreaElement).disabled, true);
+  // A message can actually be sent, which is the user-visible defect.
+  fireEvent.change(composer, { target: { value: "Hello with tools on" } });
+  fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+  await waitFor(() =>
+    assert.deepEqual(named(backend, "aiSendMessage")[0]?.args, [
+      "conv-1",
+      "Hello with tools on",
+      "openai",
+    ]),
+  );
+});
 
-  fireEvent.click(screen.getByRole("button", { name: "Disable tool use" }));
+test("with tool use on the notice reports the backend's own counts", async () => {
+  installBackend({
+    config: { toolsEnabled: true },
+    conversations: [conversationMeta()],
+    availability: {
+      dispatchAvailable: true,
+      grantedToolCount: 7,
+      usableToolCount: 3,
+      registeredToolCount: 48,
+    },
+  });
+  render(<AiAssistantPanel />);
 
-  await waitFor(() => assert.equal(named(backend, "aiSetConfig").length, 1));
-  const [written] = named(backend, "aiSetConfig")[0].args as [AgentConfig];
-  assert.equal(written.toolsEnabled, false);
-  // The rest of the agent config is carried through untouched.
-  assert.equal(written.maxToolRounds, 8);
-  assert.equal(written.preset, "default");
+  const usable = await screen.findByTestId("ai-tool-usable");
+  // "3 of 48", from `ai_get_permissions` — not from counting catalog rows,
+  // which cannot see the MCP grants that half of this describes.
+  assert.match(usable.textContent ?? "", /can use 3 of the 48 tools/);
+  assertAbsent(
+    screen.queryByTestId("ai-tool-none-usable"),
+    "the none-usable notice while three tools are usable",
+  );
+});
 
+test("tool use on with nothing granted says so calmly, and names the right screen", async () => {
+  installBackend({
+    config: { toolsEnabled: true },
+    conversations: [conversationMeta()],
+    availability: {
+      dispatchAvailable: false,
+      grantedToolCount: 0,
+      usableToolCount: 0,
+      registeredToolCount: 48,
+    },
+  });
+  render(<AiAssistantPanel />);
+
+  const none = await screen.findByTestId("ai-tool-none-usable");
+  assert.match(none.textContent ?? "", /none of its 48 tools/);
+  assert.match(none.textContent ?? "", /MCP server settings/);
+  // Informational, not destructive, and not an alert: chatting works, so this
+  // is a setup state rather than a failure.
+  assert.equal(none.getAttribute("role"), "note");
+  assert.doesNotMatch(none.className, /destructive/);
+  assertAbsent(
+    within(screen.getByTestId("ai-tool-notice")).queryByRole("button"),
+    "a coercive button in the tool notice",
+  );
+  await waitFor(() =>
+    assert.equal(
+      (screen.getByLabelText("Message") as HTMLTextAreaElement).disabled,
+      false,
+      "nothing usable is still no reason to lock the composer",
+    ),
+  );
+});
+
+test("tool use on with every granted tool refused points at the assistant's own rules", async () => {
+  installBackend({
+    config: { toolsEnabled: true },
+    conversations: [conversationMeta()],
+    availability: {
+      dispatchAvailable: false,
+      grantedToolCount: 9,
+      usableToolCount: 0,
+      registeredToolCount: 48,
+    },
+  });
+  render(<AiAssistantPanel />);
+
+  // The two layers compose as an intersection, so which one is empty decides
+  // which settings screen is worth naming.
+  const none = await screen.findByTestId("ai-tool-none-usable");
+  assert.match(none.textContent ?? "", /refuse all 9 of the 48 tools/);
+  assert.match(none.textContent ?? "", /Tools & permissions/);
+  assert.doesNotMatch(none.textContent ?? "", /MCP server settings/);
+});
+
+test("no count is shown until the backend has reported one", async () => {
+  installBackend({
+    config: { toolsEnabled: true },
+    conversations: [conversationMeta()],
+    stallPermissions: true,
+  });
+  render(<AiAssistantPanel />);
+
+  const notice = await screen.findByTestId("ai-tool-notice");
+  await waitFor(() => assert.equal(notice.getAttribute("data-state"), "on"));
+  // A plausible zero would be a fabricated claim about the MCP grants.
+  assertAbsent(
+    screen.queryByTestId("ai-tool-usable"),
+    "a usable count before the read resolved",
+  );
+  assertAbsent(
+    screen.queryByTestId("ai-tool-none-usable"),
+    "a none-usable claim before the read resolved",
+  );
+});
+
+test("tool use off says what that means and reads no permission catalog", async () => {
+  const backend = installBackend({ conversations: [conversationMeta()] });
+  render(<AiAssistantPanel />);
+
+  const notice = await screen.findByTestId("ai-tool-notice");
+  await waitFor(() => assert.equal(notice.getAttribute("data-state"), "off"));
+  assert.match(
+    notice.textContent ?? "",
+    /Tool use is off, so the assistant can read and discuss but will not change anything in your account\./,
+  );
+  // Nothing to report, so nothing is read: the chat view does not pay for a
+  // catalog it would not speak from.
+  assert.equal(named(backend, "aiGetPermissions").length, 0);
   await waitFor(() =>
     assert.equal(
       (screen.getByLabelText("Message") as HTMLTextAreaElement).disabled,
       false,
     ),
-  );
-  assert.equal(
-    screen.getByTestId("ai-tool-warning").getAttribute("data-state"),
-    "ready",
   );
 });
 
@@ -393,8 +556,8 @@ test("an approval request is read-only and offers no way to approve it", async (
   );
 });
 
-test("the tool-use toggle is present, disabled, and reports the real state", async () => {
-  installBackend();
+test("the tool-use toggle writes agent config through the panel", async () => {
+  const harness = installBackend();
   render(<AiAssistantPanel initialView="settings" />);
 
   // The toggle lives in Tools & permissions, next to the policy it governs,
@@ -408,12 +571,37 @@ test("the tool-use toggle is present, disabled, and reports the real state", asy
   );
 
   const toggle = await screen.findByRole("switch", { name: "Tool use" });
-  assert.equal((toggle as HTMLButtonElement).disabled, true);
   assert.equal(toggle.getAttribute("aria-checked"), "false");
-  assert.ok(
-    screen.getAllByText(
-      /Tool use is unavailable in this build\. The assistant can read and discuss, but cannot change anything in your account\./,
-    ).length > 0,
+  // It used to be `disabled`, because nothing in the renderer wrote
+  // `toolsEnabled` once the chat view's opt-out button went with the gate it
+  // belonged to — which left tool use on by default and unreachable. This is
+  // the control now, so the write is pinned end to end rather than the
+  // read-only-ness.
+  assert.equal((toggle as HTMLButtonElement).disabled, false);
+
+  await act(async () => {
+    fireEvent.click(toggle);
+  });
+
+  const writes = harness.calls.filter((call) => call.name === "aiSetConfig");
+  assert.equal(writes.length, 1);
+  assert.equal(
+    (writes[0].args[0] as AgentConfig).toolsEnabled,
+    true,
+    "the switch must store the new value, not merely re-send the old config",
+  );
+  // The whole config goes with it: `ai_set_config` replaces the stored
+  // document, so a partial write would reset the other sections' settings.
+  assert.equal((writes[0].args[0] as AgentConfig).maxToolRounds, 8);
+  assert.equal(
+    await screen
+      .findByRole("switch", { name: "Tool use" })
+      .then((node) => node.getAttribute("aria-checked")),
+    "true",
+  );
+  assert.doesNotMatch(
+    document.body.textContent ?? "",
+    /unavailable in this build/,
   );
 });
 

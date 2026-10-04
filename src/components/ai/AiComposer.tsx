@@ -12,7 +12,11 @@ import { Textarea } from "@/components/ui/textarea";
 import { useI18n } from "@/hooks/use-i18n";
 
 export interface AiComposerProps {
-  /** Locked because there is no conversation, or the tool preflight is unresolved. */
+  /**
+   * Locked because there is nowhere to send a message — no conversation is
+   * selected, or the selected one has no usable provider. Tool state is not a
+   * reason: see `AiAssistantPanel`.
+   */
   disabled: boolean;
   /** Shown in place of the hint when `disabled`. */
   disabledReason?: string | null;

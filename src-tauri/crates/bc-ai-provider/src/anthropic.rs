@@ -9,14 +9,16 @@ use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use tokio::sync::mpsc;
 
-use crate::config::ProviderConfig;
+use crate::config::{ProviderConfig, ProviderProtocol};
 use crate::error::AiProviderError;
 use crate::limits::{
-    parse_tool_arguments, read_error_body, read_json_body, send_delta, validate_completion_request,
-    validate_response_message, validate_string, BoundedString, LineDecoder, StreamBudget,
-    MAX_MODEL_BYTES, MAX_STREAM_OUTPUT_BYTES, MAX_TOOL_ARGUMENT_BYTES, MAX_TOOL_CALLS_PER_MESSAGE,
-    MAX_TOOL_CALL_ID_BYTES, MAX_TOOL_NAME_BYTES,
+    parse_tool_arguments, read_error_body, read_json_body, send_delta, send_head_bounded,
+    validate_completion_request, validate_response_message, validate_string, with_total_timeout,
+    BoundedString, LineDecoder, StreamBudget, MAX_MODEL_BYTES, MAX_STREAM_OUTPUT_BYTES,
+    MAX_TOOL_ARGUMENT_BYTES, MAX_TOOL_CALLS_PER_MESSAGE, MAX_TOOL_CALL_ID_BYTES,
+    MAX_TOOL_NAME_BYTES,
 };
+use crate::sampling::advanced_entries;
 use crate::traits::AiProvider;
 use crate::types::*;
 
@@ -59,7 +61,7 @@ impl AnthropicProvider {
     }
 
     /// Build the Anthropic messages-format body.
-    fn build_body(&self, request: &CompletionRequest) -> Value {
+    pub(crate) fn build_body(&self, request: &CompletionRequest) -> Value {
         let messages: Vec<Value> = request
             .messages
             .iter()
@@ -125,6 +127,13 @@ impl AnthropicProvider {
 
         if let Some(temp) = request.temperature {
             body["temperature"] = json!(temp);
+        }
+
+        // Only the controls the Messages API honours, taken from the one table
+        // the capability list is reported from. `seed` and both penalties have
+        // no equivalent field here, so they are omitted rather than renamed.
+        for (key, value) in advanced_entries(ProviderProtocol::Anthropic, request) {
+            body[key] = value;
         }
 
         // Tools
@@ -530,18 +539,20 @@ impl AiProvider for AnthropicProvider {
         let url = format!("{}/messages", self.base_url());
         let body = self.build_body(&request);
 
-        let resp = self
-            .client
-            .post(&url)
-            .header(
-                "x-api-key",
-                self.config.api_key.as_deref().unwrap_or_default(),
-            )
-            .header("anthropic-version", ANTHROPIC_API_VERSION)
-            .header("content-type", "application/json")
-            .json(&body)
-            .send()
-            .await?;
+        let resp = with_total_timeout(
+            self.client
+                .post(&url)
+                .header(
+                    "x-api-key",
+                    self.config.api_key.as_deref().unwrap_or_default(),
+                )
+                .header("anthropic-version", ANTHROPIC_API_VERSION)
+                .header("content-type", "application/json")
+                .json(&body),
+            request.timeout_ms,
+        )
+        .send()
+        .await?;
 
         let status = resp.status();
         if !status.is_success() {
@@ -584,18 +595,19 @@ impl AiProvider for AnthropicProvider {
         let mut body = self.build_body(&request);
         body["stream"] = json!(true);
 
-        let resp = self
-            .client
-            .post(&url)
-            .header(
-                "x-api-key",
-                self.config.api_key.as_deref().unwrap_or_default(),
-            )
-            .header("anthropic-version", ANTHROPIC_API_VERSION)
-            .header("content-type", "application/json")
-            .json(&body)
-            .send()
-            .await?;
+        let resp = send_head_bounded(
+            self.client
+                .post(&url)
+                .header(
+                    "x-api-key",
+                    self.config.api_key.as_deref().unwrap_or_default(),
+                )
+                .header("anthropic-version", ANTHROPIC_API_VERSION)
+                .header("content-type", "application/json")
+                .json(&body),
+            request.timeout_ms,
+        )
+        .await?;
 
         if !resp.status().is_success() {
             let status = resp.status().as_u16();

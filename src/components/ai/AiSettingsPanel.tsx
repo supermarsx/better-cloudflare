@@ -41,12 +41,25 @@
 import {
   useId,
   useRef,
+  useState,
   type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode,
 } from "react";
 
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { useI18n } from "@/hooks/use-i18n";
+import {
+  AI_ASSISTANT_PRESENTATION_OPTIONS,
+  isAiAssistantPresentation,
+  type AiAssistantPresentation,
+} from "@/lib/ai/presentation";
 import { cn } from "@/lib/utils";
 import type {
   AgentConfig,
@@ -54,7 +67,9 @@ import type {
   AiProviderProfileInput,
 } from "@/types/ai";
 
-import { AiAgentSettings } from "./AiAgentSettings";
+import { ConnectedAiAgentSettings } from "./AiAgentSettings";
+import { AI_SELECT_CONTENT_CLASS, AI_SELECT_TRIGGER_CLASS } from "./ai-select";
+import { describeAiError } from "./ai-error";
 import { ConnectedAiPermissionSettings } from "./AiPermissionSettings";
 import { ConnectedAiPersonaSettings } from "./AiPersonaSettings";
 import { AiProviderSettings } from "./AiProviderSettings";
@@ -79,6 +94,23 @@ export const AI_SETTINGS_SECTIONS: readonly {
   { id: "personas", label: "Personas" },
 ] as const;
 
+/**
+ * The placement picker's value guard, as a function rather than an inline
+ * `if`, so that the rule can be pinned by a test on its own.
+ *
+ * A dropdown's change handler takes a bare `string`: the themed `Select` is
+ * typed `(value: string) => void`, and the value it reports comes from
+ * whichever item was rendered at the time, which can be a set that has since
+ * changed. The stored preference it is seeded from can hold anything at all.
+ * So the string is narrowed here and a value that is not a presentation
+ * becomes `null` — never state, and never a call to the owner.
+ */
+export function placementFromPickerValue(
+  value: string,
+): AiAssistantPresentation | null {
+  return isAiAssistantPresentation(value) ? value : null;
+}
+
 export interface AiSettingsPanelProps {
   section: AiSettingsSection;
   onSectionChange: (section: AiSettingsSection) => void;
@@ -99,6 +131,14 @@ export interface AiSettingsPanelProps {
   onSaveConfig: (config: AgentConfig) => Promise<void>;
   onSelectPersona: (id: string | null) => void;
   onSetDefaultProvider: (id: string | null) => void;
+  /** Which chrome the assistant is currently wearing. */
+  presentation: AiAssistantPresentation;
+  /**
+   * Changes that chrome. Absent when the host does not own the preference, in
+   * which case no placement control is offered — an inert one would be worse
+   * than none, and this is the only section that could show it.
+   */
+  onPresentationChange?: (next: AiAssistantPresentation) => void;
 }
 
 export function AiSettingsPanel({
@@ -116,6 +156,8 @@ export function AiSettingsPanel({
   onSaveConfig,
   onSelectPersona,
   onSetDefaultProvider,
+  presentation,
+  onPresentationChange,
 }: AiSettingsPanelProps) {
   const { t } = useI18n();
   const baseId = useId();
@@ -123,6 +165,58 @@ export function AiSettingsPanel({
 
   const panelId = `${baseId}-section`;
   const tabId = (id: AiSettingsSection) => `${baseId}-${id}`;
+  const placementId = `${baseId}-placement`;
+  const defaultProvider =
+    providers.find((profile) => profile.id === config?.defaultProviderId) ??
+    null;
+
+  /**
+   * The `toolsEnabled` write in flight, or `null` when none is.
+   *
+   * It is a tri-state rather than a boolean `busy` flag because the switch has
+   * to show the value being written while the round trip runs: `config` still
+   * holds the old one, and rendering that would make every flip look like it
+   * bounced back.
+   */
+  const [toolsPending, setToolsPending] = useState<boolean | null>(null);
+  const [toolsError, setToolsError] = useState<string | null>(null);
+  const [toolsRemediation, setToolsRemediation] = useState<string | null>(null);
+  const shownToolsEnabled = toolsPending ?? config?.toolsEnabled ?? false;
+
+  /**
+   * Flip tool use, carrying the whole config.
+   *
+   * A partial write would reset whatever the Behaviour form and the provider
+   * list last stored, which is the same reason `handlePersonaSelect` in
+   * `AiAssistantPanel` sends `{ ...current }`. A second flip while the first
+   * is in flight is dropped rather than queued: two `ai_set_config` writes
+   * have no guaranteed order, so the loser would silently win.
+   */
+  const setToolsEnabled = async (next: boolean) => {
+    if (config === null || toolsPending !== null) return;
+    setToolsPending(next);
+    setToolsError(null);
+    setToolsRemediation(null);
+    try {
+      await onSaveConfig({ ...config, toolsEnabled: next });
+    } catch (error) {
+      const described = describeAiError(
+        error,
+        t("Tool use could not be changed.", "Tool use could not be changed."),
+      );
+      setToolsError(described.message);
+      setToolsRemediation(described.remediation ?? null);
+    } finally {
+      // Back to reporting `config`. On success the host has already replaced
+      // it; on a refusal it never changed, so the switch returns to the state
+      // the backend is actually in.
+      setToolsPending(null);
+    }
+  };
+  const placementHint =
+    AI_ASSISTANT_PRESENTATION_OPTIONS.find(
+      (option) => option.id === presentation,
+    )?.hint ?? null;
 
   /**
    * Nothing is configured yet, so the Providers section is marked in the nav.
@@ -191,14 +285,106 @@ export function AiSettingsPanel({
       );
     }
     if (section === "behaviour") {
-      return <AiAgentSettings config={config} onSave={onSaveConfig} />;
+      return (
+        <div className="min-w-0 space-y-4">
+          {/* Where the assistant appears. It lives here rather than inside
+              `AiAgentSettings` because that form is agent config behind a Save
+              button, and this is a local UI preference that applies the moment
+              it changes.
+
+              A dropdown rather than the radio list the workspace's own Session
+              settings uses: this section has to fit a 22rem dock and a 26rem
+              bubble, where three labels each with their own paragraph would
+              cost more transcript height than the choice is worth. The
+              selected option's consequence is stated under it, which is the
+              part a label cannot carry — the full set is still spelled out in
+              Session settings, under General. */}
+          {onPresentationChange ? (
+            <section
+              className="min-w-0 space-y-2"
+              data-testid="ai-placement"
+              data-presentation={presentation}
+            >
+              <h3 className="text-sm font-semibold">
+                {t(
+                  "Where the assistant appears",
+                  "Where the assistant appears",
+                )}
+              </h3>
+              <label
+                htmlFor={placementId}
+                className="block text-xs font-medium"
+              >
+                {t("Placement", "Placement")}
+              </label>
+              <Select
+                value={presentation}
+                onValueChange={(value) => {
+                  // The guard the native `<select>` carried, unchanged: a junk
+                  // value must not become state. See `placementFromPickerValue`.
+                  const next = placementFromPickerValue(value);
+                  if (next !== null) onPresentationChange(next);
+                }}
+              >
+                <SelectTrigger
+                  id={placementId}
+                  className={AI_SELECT_TRIGGER_CLASS}
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent className={AI_SELECT_CONTENT_CLASS}>
+                  {AI_ASSISTANT_PRESENTATION_OPTIONS.map((option) => (
+                    <SelectItem
+                      key={option.id}
+                      value={option.id}
+                      // Radix consumes `value`, so the chosen id never reaches
+                      // the DOM. Mirrored here because which *value* an option
+                      // carries is the thing worth pinning — a label can be
+                      // translated, an id cannot.
+                      data-value={option.id}
+                    >
+                      {t(option.label, option.label)}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p
+                role="note"
+                data-testid="ai-placement-hint"
+                className="text-xs text-muted-foreground break-words [overflow-wrap:anywhere]"
+              >
+                {placementHint ? t(placementHint, placementHint) : null}
+              </p>
+            </section>
+          ) : null}
+          {/* The default provider decides which advanced parameters apply:
+              new conversations start with it, so it is the one the settings
+              can honestly be checked against. An id that resolves to nothing
+              — deleted profile, or none chosen yet — is passed through as
+              `null` rather than guessed at. */}
+          <ConnectedAiAgentSettings
+            config={config}
+            onSave={onSaveConfig}
+            protocol={defaultProvider?.protocol ?? null}
+            providerLabel={defaultProvider?.label ?? null}
+          />
+        </div>
+      );
     }
     if (section === "tools") {
       return (
         <div className="min-w-0 space-y-4">
-          {/* The one control the chat view also owns, and the only place it is
-              offered in settings — two switches for one piece of state could
-              disagree about whether any tool can run. */}
+          {/* The master switch, and the only control for it anywhere in the
+              app: the chat view's old "Disable tool use" button went with the
+              gate it belonged to, which left `toolsEnabled` on by default and
+              unreachable. It writes the whole config through `onSaveConfig`,
+              so a flip here cannot reset what the other sections stored.
+
+              While the write is in flight the switch shows the value being
+              written, not the one still in `config` — a switch that springs
+              back for the length of a round trip reads as a failure. A refusal
+              is what actually springs it back, next to the backend's own
+              message. */}
           <section className="space-y-2">
             <h3 className="text-sm font-semibold">
               {t("Tool use", "Tool use")}
@@ -207,17 +393,35 @@ export function AiSettingsPanel({
               <Switch
                 id="ai-tools-enabled"
                 size="sm"
-                checked={config?.toolsEnabled ?? false}
-                disabled
+                checked={shownToolsEnabled}
+                disabled={config === null || toolsPending !== null}
                 aria-label={t("Tool use", "Tool use")}
+                onCheckedChange={(next) => void setToolsEnabled(next)}
               />
               <p className="text-xs text-muted-foreground">
-                {t(
-                  "Tool use is unavailable in this build. The assistant can read and discuss, but cannot change anything in your account.",
-                  "Tool use is unavailable in this build. The assistant can read and discuss, but cannot change anything in your account.",
-                )}
+                {shownToolsEnabled
+                  ? t(
+                      "Tool use is on for the assistant. Which tools it can actually run is still decided by the rules below and by the app's own MCP tool grants, so turning it on does not by itself allow anything.",
+                      "Tool use is on for the assistant. Which tools it can actually run is still decided by the rules below and by the app's own MCP tool grants, so turning it on does not by itself allow anything.",
+                    )
+                  : t(
+                      "Tool use is off for the assistant, so no tool runs whatever the rules below say. The assistant can still chat; it just cannot look anything up.",
+                      "Tool use is off for the assistant, so no tool runs whatever the rules below say. The assistant can still chat; it just cannot look anything up.",
+                    )}
               </p>
             </div>
+            {toolsError ? (
+              <p
+                role="alert"
+                data-testid="ai-tools-error"
+                className="space-y-1 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive"
+              >
+                <span className="block">{toolsError}</span>
+                {toolsRemediation ? (
+                  <span className="block">{toolsRemediation}</span>
+                ) : null}
+              </p>
+            ) : null}
           </section>
           <ConnectedAiPermissionSettings
             toolsEnabled={config?.toolsEnabled ?? false}

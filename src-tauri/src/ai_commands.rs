@@ -2,6 +2,7 @@
 //!
 //! Bounded delegates that preserve structured, secret-safe failures.
 
+use std::collections::BTreeMap;
 use std::future::Future;
 use std::io::{self, Write};
 use std::time::Duration;
@@ -15,7 +16,8 @@ use bc_ai_agent::personas::{AiPersona, AiPersonaInput, MAX_PERSONA_ID_BYTES};
 use bc_ai_agent::{AgentConfig, AgentError, AgentEvent, AgentManager};
 use bc_ai_chat::{ChatError, ChatMessage, ConversationMeta};
 use bc_ai_provider::{
-    AiProviderError, AiProviderProfile, AiProviderProfileInput, Model, MAX_PROVIDER_ID_BYTES,
+    AdvancedField, AiProviderError, AiProviderProfile, AiProviderProfileInput, Model,
+    MAX_PROVIDER_ID_BYTES,
 };
 use bc_ai_tools::permissions::{
     AiPermissionMode, AiPermissions, AiToolDescriptor, AiToolPermission, ToolAvailability,
@@ -27,7 +29,7 @@ use bc_error::sanitize_error_text;
 /// `main.rs`. A command the renderer is written against but that was never
 /// registered fails only at runtime, so the list is asserted at build time.
 #[cfg(test)]
-pub const COMMAND_NAMES: [&str; 24] = [
+pub const COMMAND_NAMES: [&str; 25] = [
     "ai_list_providers",
     "ai_configure_provider",
     "ai_delete_provider",
@@ -35,6 +37,7 @@ pub const COMMAND_NAMES: [&str; 24] = [
     "ai_list_models",
     "ai_get_config",
     "ai_set_config",
+    "ai_protocol_capabilities",
     "ai_create_conversation",
     "ai_list_conversations",
     "ai_get_conversation",
@@ -185,6 +188,10 @@ fn map_provider_error(error: AiProviderError, operation: &'static str) -> AiComm
             });
             error
         }
+        // The streaming path bounds only the wait for a response head, so it
+        // reports its own timeout; a one-shot call times out through reqwest
+        // and lands in the arm below. Both are the same failure to a user.
+        AiProviderError::Timeout { .. } => AiCommandError::timeout(operation),
         AiProviderError::Http(error) if error.is_timeout() => {
             let mut mapped = AiCommandError::new(
                 "AI_TIMEOUT",
@@ -584,6 +591,23 @@ pub async fn ai_set_config(
     config: AgentConfig,
 ) -> Result<(), AiCommandError> {
     set_config_inner(&agent, config).await
+}
+
+/// Which advanced generation controls each provider protocol honours.
+///
+/// A configured control the selected provider cannot take is omitted from its
+/// request rather than sent and rejected — so the renderer needs this to mark
+/// the setting inapplicable instead of showing a value that does nothing. The
+/// answer is derived from the same per-protocol table the clients build their
+/// request bodies from, so the two cannot disagree.
+///
+/// Keys are protocol wire spellings (`openai`, `anthropic`, `ollama`); values
+/// are camelCase control names (`topP`, `topK`, `stop`, `seed`,
+/// `frequencyPenalty`, `presencePenalty`).
+#[tauri::command]
+pub async fn ai_protocol_capabilities(
+) -> Result<BTreeMap<&'static str, Vec<AdvancedField>>, AiCommandError> {
+    Ok(bc_ai_provider::protocol_capabilities())
 }
 
 // ─── Conversation Management ───────────────────────────────────────────────

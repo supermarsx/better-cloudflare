@@ -24,7 +24,10 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useI18n } from "@/hooks/use-i18n";
+import { cn } from "@/lib/utils";
 import type { AiProviderProfile, ConversationMeta } from "@/types/ai";
+
+import { AI_SELECT_CONTENT_CLASS, AI_SELECT_TRIGGER_CLASS } from "./ai-select";
 
 export interface AiConversationListProps {
   conversations: ConversationMeta[];
@@ -87,11 +90,14 @@ export function AiConversationList({
               <SelectTrigger
                 id="ai-new-provider"
                 aria-label={t("Provider", "Provider")}
-                className="h-8 w-36 text-xs"
+                className={cn(AI_SELECT_TRIGGER_CLASS, "w-36")}
               >
                 <SelectValue />
               </SelectTrigger>
-              <SelectContent>
+              {/* Raised for the same reason the settings dropdowns are: this
+                  picker is rendered inside the floating bubble too, and the
+                  shared `z-50` default loses to the bubble's `z-[60]`. */}
+              <SelectContent className={AI_SELECT_CONTENT_CLASS}>
                 {configuredProviders.map((profile) => (
                   <SelectItem key={profile.id} value={profile.id}>
                     {profile.label}

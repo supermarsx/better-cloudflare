@@ -144,6 +144,16 @@ pub struct ToolResult {
 // ─── Completion Request / Response ─────────────────────────────────────────
 
 /// Request to an AI provider for a completion.
+///
+/// Every field is listed at every construction site on purpose: the advanced
+/// controls below exist because `top_p` was stored, validated and migrated for
+/// a release without ever being named here, so a setting a caller forgets to
+/// pass should be a compile error rather than a silent default.
+///
+/// Which of the advanced controls a given protocol actually honours is
+/// [`crate::sampling::honoured_fields`]; a request may carry one the selected
+/// provider cannot take, and that client omits it rather than sending a field
+/// the API would reject.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CompletionRequest {
@@ -163,6 +173,32 @@ pub struct CompletionRequest {
     /// System prompt (some providers handle this separately).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub system: Option<String>,
+    /// Nucleus sampling probability mass (0.0–1.0).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub top_p: Option<f32>,
+    /// Sample only from the `k` most likely tokens.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub top_k: Option<u32>,
+    /// Sequences that end generation when produced.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stop: Option<Vec<String>>,
+    /// Seed for reproducible sampling, where the provider supports one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub seed: Option<u32>,
+    /// Penalty applied in proportion to how often a token has already appeared.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub frequency_penalty: Option<f32>,
+    /// Flat penalty for tokens that have appeared at all.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub presence_penalty: Option<f32>,
+    /// Per-request HTTP timeout.
+    ///
+    /// Not a generation control and not part of the capability list: it is
+    /// transport, so every protocol honours it. A one-shot completion is
+    /// bounded in full; a stream is bounded up to its response head, because a
+    /// total timeout would truncate a generation that is still arriving.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u32>,
 }
 
 /// Response from a completion request.

@@ -26,6 +26,47 @@ export const AI_ASSISTANT_PRESENTATIONS: readonly AiAssistantPresentation[] = [
 export const DEFAULT_AI_ASSISTANT_PRESENTATION: AiAssistantPresentation =
   "panel";
 
+/**
+ * How each choice is described, in offer order.
+ *
+ * Shared because the preference is offered in two places — the workspace's
+ * Session settings and the assistant's own Behaviour section — and two copies of
+ * these sentences would drift. The strings are English source text that each
+ * call site passes through `t()`, which is the same arrangement
+ * `AI_SETTINGS_SECTIONS` uses; they are already in the locale catalogues under
+ * exactly these keys, so moving them here does not orphan a translation.
+ *
+ * `hint` names the consequence a user cannot guess from the label — what the
+ * dock does to a narrow window, and how the bubble is dismissed — so the
+ * difference between the three is readable without trying them. `saved` is what
+ * a confirmation says afterwards.
+ */
+export const AI_ASSISTANT_PRESENTATION_OPTIONS: readonly {
+  id: AiAssistantPresentation;
+  label: string;
+  hint: string;
+  saved: string;
+}[] = [
+  {
+    id: "panel",
+    label: "Workspace tab",
+    hint: "Opens as its own tab alongside zones and settings.",
+    saved: "Assistant opens as a workspace tab.",
+  },
+  {
+    id: "sidebar",
+    label: "Docked sidebar",
+    hint: "Stays beside the workspace while you move between tabs. In a narrow window it slides over the workspace instead of shrinking it.",
+    saved: "Assistant docked beside the workspace.",
+  },
+  {
+    id: "bubble",
+    label: "Floating bubble",
+    hint: "A button in the corner that opens a small chat window over the workspace. Escape closes it.",
+    saved: "Assistant floats over the workspace.",
+  },
+] as const;
+
 export function isAiAssistantPresentation(
   value: unknown,
 ): value is AiAssistantPresentation {

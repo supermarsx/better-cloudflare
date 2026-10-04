@@ -86,6 +86,7 @@ import {
   AiAssistantSurface,
 } from "@/components/ai/AiAssistantSurface";
 import {
+  AI_ASSISTANT_PRESENTATION_OPTIONS,
   AI_ASSISTANT_PRESENTATIONS,
   isAiAssistantPresentation,
   type AiAssistantPresentation,
@@ -1677,44 +1678,28 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       storageManager.getAiAssistantPresentation(),
     );
   const [assistantOpen, setAssistantOpen] = useState(false);
-  const assistantPlacementLabels: Record<
-    AiAssistantPresentation,
-    { label: string; hint: string; saved: string }
-  > = {
-    panel: {
-      label: t("Workspace tab", "Workspace tab"),
-      hint: t(
-        "Opens as its own tab alongside zones and settings.",
-        "Opens as its own tab alongside zones and settings.",
-      ),
-      saved: t(
-        "Assistant opens as a workspace tab.",
-        "Assistant opens as a workspace tab.",
-      ),
-    },
-    sidebar: {
-      label: t("Docked sidebar", "Docked sidebar"),
-      hint: t(
-        "Stays beside the workspace while you move between tabs. In a narrow window it slides over the workspace instead of shrinking it.",
-        "Stays beside the workspace while you move between tabs. In a narrow window it slides over the workspace instead of shrinking it.",
-      ),
-      saved: t(
-        "Assistant docked beside the workspace.",
-        "Assistant docked beside the workspace.",
-      ),
-    },
-    bubble: {
-      label: t("Floating bubble", "Floating bubble"),
-      hint: t(
-        "A button in the corner that opens a small chat window over the workspace. Escape closes it.",
-        "A button in the corner that opens a small chat window over the workspace. Escape closes it.",
-      ),
-      saved: t(
-        "Assistant floats over the workspace.",
-        "Assistant floats over the workspace.",
-      ),
-    },
-  };
+  /**
+   * Translated once, from the shared option list the assistant's own Behaviour
+   * section reads too — the preference is offered in two places, and two copies
+   * of these sentences would drift apart.
+   */
+  const assistantPlacementLabels = useMemo(
+    () =>
+      Object.fromEntries(
+        AI_ASSISTANT_PRESENTATION_OPTIONS.map((option) => [
+          option.id,
+          {
+            label: t(option.label, option.label),
+            hint: t(option.hint, option.hint),
+            saved: t(option.saved, option.saved),
+          },
+        ]),
+      ) as Record<
+        AiAssistantPresentation,
+        { label: string; hint: string; saved: string }
+      >,
+    [t],
+  );
   const [mcpServerEnabled, setMcpServerEnabled] = useState(
     storageManager.getMcpServerEnabled(),
   );
@@ -2840,6 +2825,37 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     }
     setAssistantOpen(true);
   }, [assistantPresentation, openActionTab]);
+
+  /**
+   * Moving the assistant *from inside the assistant*.
+   *
+   * Deliberately not the same as the Session settings radio group, which leaves
+   * the assistant closed ("moving it should not also pop it open" — the user is
+   * looking at a settings tab there, not at the assistant). Here the user *is*
+   * looking at the assistant, so the one thing this must not do is make it
+   * vanish: the dock and the bubble stay open, and switching to the workspace
+   * tab opens that tab, because otherwise the control the user just used would
+   * disappear along with everything around it.
+   *
+   * Only one assistant is ever mounted either way, and not because of anything
+   * here: `AiAssistantSurface` renders nothing for `panel`, and the assistant
+   * tab renders `AiAssistantRelocatedNotice` instead of a second panel for
+   * anything else. The two conditions are complements, so there is no ordering
+   * in which both appear.
+   */
+  const handleAssistantPresentationChange = useCallback(
+    (next: AiAssistantPresentation) => {
+      setAssistantPresentation(next);
+      if (next === "panel") {
+        setAssistantOpen(false);
+        openActionTab("assistant");
+      } else {
+        setAssistantOpen(true);
+      }
+      notifySaved(assistantPlacementLabels[next].saved);
+    },
+    [assistantPlacementLabels, notifySaved, openActionTab],
+  );
 
   /**
    * "Check registration" from an expiry notice: open the Registry workspace
@@ -6883,6 +6899,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
           presentation={assistantPresentation}
           open={assistantOpen}
           onOpenChange={setAssistantOpen}
+          onPresentationChange={handleAssistantPresentationChange}
         />
       }
       commandBar={
@@ -10394,7 +10411,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
               )}
               {activeTab.kind === "assistant" &&
                 (assistantPresentation === "panel" ? (
-                  <AiAssistantPanel />
+                  <AiAssistantPanel
+                    presentation="panel"
+                    onPresentationChange={handleAssistantPresentationChange}
+                  />
                 ) : (
                   // The tab can still be open — restored from
                   // `reopen_last_tabs`, or opened before the preference

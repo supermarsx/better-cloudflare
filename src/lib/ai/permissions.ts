@@ -53,17 +53,66 @@ export const AI_TOOL_PERMISSIONS: readonly AiToolPermission[] = [
 ] as const;
 
 /**
- * Agent-loop bounds, taken from the Rust validators rather than guessed:
- * `maxToolRounds` from `bc_ai_agent::config::MAX_TOOL_ROUNDS`,
- * `maxTokensPerTurn` from `bc_ai_provider::limits::MAX_COMPLETION_TOKENS`,
- * `temperature` from `ProviderConfig::validate`. `topP` is a probability, so
- * its ceiling is 1.
+ * Agent-loop bounds, taken from the Rust validators rather than guessed.
+ *
+ * Every pair here is the pair `AgentConfig::validate` enforces, and
+ * `test/aiPermissions.contract.test.ts` reads the Rust constants to prove it:
+ *
+ * - `maxToolRounds` — `bc_ai_agent::config::MAX_TOOL_ROUNDS`
+ * - `maxTokensPerTurn` — `bc_ai_provider::limits::MAX_COMPLETION_TOKENS`
+ * - `temperature`, `topP`, `topK` — the matching `MIN_`/`MAX_` pair in
+ *   `bc_ai_provider::limits`
+ * - `frequencyPenalty`, `presencePenalty` — both are
+ *   `MIN_SAMPLING_PENALTY`…`MAX_SAMPLING_PENALTY`
+ * - `maxContextTokens` — `bc_ai_agent::config::MIN_CONTEXT_TOKENS`…`MAX_`
+ * - `requestTimeoutMs` — `bc_ai_provider::limits::MIN_REQUEST_TIMEOUT_MS`…`MAX_`
+ *
+ * `seed` is the one exception, and it is excluded from that contract test on
+ * purpose: its range is the **`u32` type**, not a validated bound. Rust types
+ * it `Option<u32>` and has no validator arm at all, because every value a
+ * `u32` can hold round-trips and anything outside it is unrepresentable rather
+ * than rejected. There is therefore no constant to pin it against, and
+ * asserting that no validator exists would fire as a false alarm the day
+ * someone adds a legitimate one. The pair below is kept so the form can refuse
+ * an out-of-range seed with a sentence instead of letting serde refuse it with
+ * a parse error.
  */
 export const AI_AGENT_LIMITS = {
   maxToolRounds: { min: 1, max: 32 },
   maxTokensPerTurn: { min: 1, max: 131_072 },
   temperature: { min: 0, max: 2 },
   topP: { min: 0, max: 1 },
+  topK: { min: 1, max: 1_000_000 },
+  seed: { min: 0, max: 4_294_967_295 },
+  frequencyPenalty: { min: -2, max: 2 },
+  presencePenalty: { min: -2, max: 2 },
+  maxContextTokens: { min: 512, max: 2_000_000 },
+  requestTimeoutMs: { min: 1_000, max: 600_000 },
+} as const;
+
+/**
+ * What `AgentConfig::default()` uses for the context budget.
+ *
+ * Needed because `maxContextTokens` is the one advanced parameter that is not
+ * optional: Rust types it a bare `u32` with a serde default, so there is no
+ * "unset" to render. A config read from a build that predates the field has no
+ * value to seed the form with, and this is the value that build's successor
+ * would have given it.
+ */
+export const AI_DEFAULT_MAX_CONTEXT_TOKENS = 128_000;
+
+/**
+ * Stop-sequence bounds, from `bc_ai_provider::limits::validate_stop_sequences`.
+ *
+ * `maxSequences` is OpenAI's ceiling, which is the lowest of the protocols that
+ * take `stop` at all, so it is the most any of them can honour. A sequence must
+ * also carry at least one non-whitespace character — an all-space sequence is
+ * refused rather than silently dropped.
+ */
+export const AI_STOP_LIMITS = {
+  maxSequences: 4,
+  minSequenceBytes: 1,
+  maxSequenceBytes: 128,
 } as const;
 
 /**
@@ -78,6 +127,31 @@ export const AI_PERSONA_LIMITS = {
   descriptionBytes: 1024,
   systemPromptBytes: 256 * 1024,
 } as const;
+
+/**
+ * Advanced parameters that are whole numbers and may be left unset.
+ *
+ * "Unset" is load-bearing and is **not** zero: Rust types each of these
+ * `Option<u32>` and sends nothing at all when it is `None`, so a `topK` of 0
+ * would be a request to sample from no tokens rather than a request to leave
+ * sampling alone. `maxContextTokens` is absent from this list on purpose — it
+ * is a bare `u32` with a default, so it is always set.
+ */
+export const AI_OPTIONAL_INTEGER_FIELDS = [
+  "topK",
+  "seed",
+  "requestTimeoutMs",
+] as const;
+
+/** Advanced parameters that are fractional and may be left unset. */
+export const AI_OPTIONAL_DECIMAL_FIELDS = [
+  "frequencyPenalty",
+  "presencePenalty",
+] as const;
+
+export type AiOptionalNumberField =
+  | (typeof AI_OPTIONAL_INTEGER_FIELDS)[number]
+  | (typeof AI_OPTIONAL_DECIMAL_FIELDS)[number];
 
 /** Which of the three rules produced an effective permission. */
 export type AiPermissionReason = "toolsOff" | "override" | "mode";
@@ -197,17 +271,43 @@ export function summarizeAiToolPermissionRows(
  */
 export type AiValidationIssue =
   | {
-      field: "temperature" | "topP";
+      field: "temperature" | "topP" | "frequencyPenalty" | "presencePenalty";
       code: "range";
       min: number;
       max: number;
     }
   | {
-      field: "maxToolRounds" | "maxTokensPerTurn";
+      field:
+        | "maxToolRounds"
+        | "maxTokensPerTurn"
+        | "topK"
+        | "seed"
+        | "maxContextTokens"
+        | "requestTimeoutMs";
       code: "integerRange";
       min: number;
       max: number;
     }
+  /**
+   * The stop-sequence rules, each as its own code.
+   *
+   * They are separate because the fixes are: drop one, shorten one, and put
+   * something other than spaces in one. A single "invalid stop sequences"
+   * would leave the user to work out which.
+   */
+  | { field: "stop"; code: "tooManySequences"; limit: number }
+  | { field: "stop"; code: "sequenceTooLong"; limit: number }
+  | { field: "stop"; code: "sequenceBlank" }
+  /**
+   * The system-prompt override's own codes, rather than a wider `tooLong`.
+   *
+   * The persona form and the agent-config form each describe only the codes
+   * they can produce, and widening `tooLong` would make every persona issue
+   * carry a field the persona form has no control for.
+   */
+  | { field: "systemPromptOverride"; code: "overrideBlank" }
+  | { field: "systemPromptOverride"; code: "overrideTooLong"; limit: number }
+  | { field: "systemPromptOverride" | "stop"; code: "controlCharacter" }
   | { field: "name" | "systemPrompt"; code: "required" }
   | {
       field: "name" | "description" | "systemPrompt";
@@ -215,8 +315,14 @@ export type AiValidationIssue =
       limit: number;
     };
 
+type AiRangeField = Extract<AiValidationIssue, { code: "range" }>["field"];
+type AiIntegerRangeField = Extract<
+  AiValidationIssue,
+  { code: "integerRange" }
+>["field"];
+
 function rangeIssue(
-  field: "temperature" | "topP",
+  field: AiRangeField,
   value: number,
 ): AiValidationIssue | null {
   const { min, max } = AI_AGENT_LIMITS[field];
@@ -227,7 +333,7 @@ function rangeIssue(
 }
 
 function integerRangeIssue(
-  field: "maxToolRounds" | "maxTokensPerTurn",
+  field: AiIntegerRangeField,
   value: number,
 ): AiValidationIssue | null {
   const { min, max } = AI_AGENT_LIMITS[field];
@@ -237,19 +343,153 @@ function integerRangeIssue(
   return null;
 }
 
-/** Every bound the agent-config form can break, in field order. */
+/**
+ * `null` and `undefined` both mean "not set", which is always valid: these
+ * parameters exist precisely so that *not* choosing one is expressible. A
+ * value that is present is held to the same range the Rust validator holds
+ * it to — including NaN, which fails every comparison and so is reported
+ * rather than being allowed through as "unset".
+ */
+function optionalIssue(
+  field: AiIntegerRangeField | AiRangeField,
+  value: number | null | undefined,
+  check: (field: never, value: number) => AiValidationIssue | null,
+): AiValidationIssue | null {
+  if (value === null || value === undefined) return null;
+  return check(field as never, value);
+}
+
+/**
+ * Whether a string carries a control character other than tab, carriage
+ * return or newline.
+ *
+ * The same rule Rust's `has_forbidden_control` applies, and for the same
+ * reason: a control character pasted into a system prompt can forge message
+ * structure in the prompt it is joined into. Prose may legitimately carry the
+ * other three, which is why they are exempt.
+ *
+ * A code-point scan rather than a character-class regex, matching the idiom
+ * in `@/lib/ai/providers`: a regex for this needs either literal control
+ * characters - which make the whole source file look binary to grep and to
+ * diff tooling - or escapes nobody can read.
+ */
+function hasForbiddenControl(value: string): boolean {
+  for (const character of value) {
+    const code = character.codePointAt(0) ?? 0;
+    if (code === 0x09 || code === 0x0a || code === 0x0d) continue;
+    // C0 and C1 together are Unicode's `Cc` category, which is the set
+    // Rust's `char::is_control()` covers.
+    if (code < 0x20 || (code >= 0x7f && code <= 0x9f)) return true;
+  }
+  return false;
+}
+
+/** Every stop-sequence rule `validate_stop_sequences` enforces. */
+function stopIssues(stop: readonly string[] | undefined): AiValidationIssue[] {
+  if (stop === undefined) return [];
+  const issues: AiValidationIssue[] = [];
+  if (stop.length > AI_STOP_LIMITS.maxSequences) {
+    issues.push({
+      field: "stop",
+      code: "tooManySequences",
+      limit: AI_STOP_LIMITS.maxSequences,
+    });
+  }
+  if (
+    stop.some(
+      (sequence) => utf8ByteLength(sequence) > AI_STOP_LIMITS.maxSequenceBytes,
+    )
+  ) {
+    issues.push({
+      field: "stop",
+      code: "sequenceTooLong",
+      limit: AI_STOP_LIMITS.maxSequenceBytes,
+    });
+  }
+  // A sequence of nothing but whitespace is refused upstream, so it is refused
+  // here rather than being sent and bounced.
+  if (stop.some((sequence) => sequence.trim().length === 0)) {
+    issues.push({ field: "stop", code: "sequenceBlank" });
+  }
+  if (stop.some(hasForbiddenControl)) {
+    issues.push({ field: "stop", code: "controlCharacter" });
+  }
+  return issues;
+}
+
+/**
+ * Every bound the agent-config form can break, in field order.
+ *
+ * Each one mirrors an arm of Rust's `AgentConfig::validate`, with the bounds
+ * read from {@link AI_AGENT_LIMITS} and {@link AI_STOP_LIMITS}. A parameter
+ * that is absent or `null` is "not set" and is never an issue — except
+ * `maxContextTokens`, which Rust types as a bare `u32` with a default, so an
+ * absent one means "a build that predates the field" and is left alone rather
+ * than failed.
+ */
 export function validateAgentConfig(
   config: Pick<
     AgentConfig,
-    "maxToolRounds" | "maxTokensPerTurn" | "temperature" | "topP"
+    | "maxToolRounds"
+    | "maxTokensPerTurn"
+    | "temperature"
+    | "topP"
+    | "topK"
+    | "stop"
+    | "seed"
+    | "frequencyPenalty"
+    | "presencePenalty"
+    | "maxContextTokens"
+    | "requestTimeoutMs"
+    | "systemPromptOverride"
   >,
 ): AiValidationIssue[] {
-  return [
+  const issues: AiValidationIssue[] = [
     integerRangeIssue("maxToolRounds", config.maxToolRounds),
     integerRangeIssue("maxTokensPerTurn", config.maxTokensPerTurn),
     rangeIssue("temperature", config.temperature),
     rangeIssue("topP", config.topP),
+    optionalIssue("topK", config.topK, integerRangeIssue),
+    optionalIssue("seed", config.seed, integerRangeIssue),
+    optionalIssue("frequencyPenalty", config.frequencyPenalty, rangeIssue),
+    optionalIssue("presencePenalty", config.presencePenalty, rangeIssue),
+    optionalIssue(
+      "maxContextTokens",
+      config.maxContextTokens,
+      integerRangeIssue,
+    ),
+    optionalIssue(
+      "requestTimeoutMs",
+      config.requestTimeoutMs,
+      integerRangeIssue,
+    ),
   ].filter((issue): issue is AiValidationIssue => issue !== null);
+
+  issues.push(...stopIssues(config.stop));
+
+  const override = config.systemPromptOverride;
+  if (override !== null && override !== undefined) {
+    // Rust refuses a blank-but-present override outright: `null` is how the
+    // setting is cleared, and an empty string would otherwise compose a pair
+    // of blank lines onto every system prompt.
+    if (override.trim().length === 0) {
+      issues.push({ field: "systemPromptOverride", code: "overrideBlank" });
+    } else if (utf8ByteLength(override) > AI_PERSONA_LIMITS.systemPromptBytes) {
+      issues.push({
+        field: "systemPromptOverride",
+        code: "overrideTooLong",
+        limit: AI_PERSONA_LIMITS.systemPromptBytes,
+      });
+    }
+    if (hasForbiddenControl(override)) {
+      issues.push({
+        field: "systemPromptOverride",
+        code: "controlCharacter",
+      });
+    }
+  }
+
+  return issues;
 }
 
 /** Every bound the persona form can break, in field order. */

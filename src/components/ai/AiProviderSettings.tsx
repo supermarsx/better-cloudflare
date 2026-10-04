@@ -37,6 +37,13 @@ import { useEffect, useId, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Tag } from "@/components/ui/tag";
 import { useI18n } from "@/hooks/use-i18n";
 import {
@@ -54,6 +61,7 @@ import {
   type ProviderDraft,
   type ProviderKeyAction,
 } from "@/lib/ai/providers";
+import { cn } from "@/lib/utils";
 import {
   PROVIDER_PROTOCOLS,
   type AiProviderProfile,
@@ -61,10 +69,7 @@ import {
 } from "@/types/ai";
 
 import { describeAiError } from "./ai-error";
-
-/** The same control strip the per-tool picker in `AiPermissionSettings` uses. */
-const SELECT_CLASS =
-  "ui-focus glass-surface glass-surface-hover h-9 w-full rounded-md border border-border bg-background/10 px-2 text-xs focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50";
+import { AI_SELECT_CONTENT_CLASS, AI_SELECT_TRIGGER_CLASS } from "./ai-select";
 
 /** Which form is open, and whether it creates or updates. */
 type Editor =
@@ -675,24 +680,35 @@ export function AiProviderSettings({
             <Label htmlFor="ai-provider-protocol">
               {t("Protocol", "Protocol")}
             </Label>
-            {/* A native select, like the per-tool picker in
-                `AiPermissionSettings` — same strip of classes, and the platform
-                keyboard and screen-reader behaviour for free. */}
-            <select
-              id="ai-provider-protocol"
-              className={SELECT_CLASS}
-              value={draft.protocol}
-              onChange={(event) => changeProtocol(event.target.value)}
-            >
-              {PROVIDER_PROTOCOLS.map((candidate) => (
-                <option key={candidate} value={candidate}>
-                  {t(
-                    PROVIDER_PROTOCOL_INFO[candidate].label,
-                    PROVIDER_PROTOCOL_INFO[candidate].label,
-                  )}
-                </option>
-              ))}
-            </select>
+            {/* The app's themed dropdown, like the per-tool picker in
+                `AiPermissionSettings` — one idiom for every choice in the
+                assistant. `changeProtocol` narrows the reported value before
+                it reaches the draft, so a string that is not a protocol
+                cannot become one. */}
+            <Select value={draft.protocol} onValueChange={changeProtocol}>
+              <SelectTrigger
+                id="ai-provider-protocol"
+                className={cn(AI_SELECT_TRIGGER_CLASS, "h-9")}
+              >
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent className={AI_SELECT_CONTENT_CLASS}>
+                {PROVIDER_PROTOCOLS.map((candidate) => (
+                  // Radix consumes `value`; `data-value` keeps the wire
+                  // spelling of the protocol visible on the DOM.
+                  <SelectItem
+                    key={candidate}
+                    value={candidate}
+                    data-value={candidate}
+                  >
+                    {t(
+                      PROVIDER_PROTOCOL_INFO[candidate].label,
+                      PROVIDER_PROTOCOL_INFO[candidate].label,
+                    )}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
             <p className="text-xs text-muted-foreground">
               {t(protocolInfo.description, protocolInfo.description)}
             </p>

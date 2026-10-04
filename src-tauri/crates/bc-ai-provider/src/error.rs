@@ -41,6 +41,14 @@ pub enum AiProviderError {
     #[error("Stream closed: {0}")]
     StreamClosed(String),
 
+    /// The provider did not answer within the configured request timeout.
+    ///
+    /// A one-shot completion reports a timeout as [`Self::Http`] because
+    /// reqwest's own total timeout fires first; this variant is the streaming
+    /// path, where only the wait for the response head is bounded.
+    #[error("Provider request timed out after {ms}ms")]
+    Timeout { ms: u32 },
+
     /// Request was cancelled.
     #[error("Request cancelled")]
     Cancelled,

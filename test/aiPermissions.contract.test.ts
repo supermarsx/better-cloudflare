@@ -14,13 +14,15 @@
  */
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { test } from "node:test";
 
 import {
   AI_AGENT_LIMITS,
+  AI_DEFAULT_MAX_CONTEXT_TOKENS,
   AI_PERMISSION_MODES,
   AI_PERSONA_LIMITS,
+  AI_STOP_LIMITS,
   AI_TOOL_PERMISSIONS,
   buildAiToolPermissionRows,
   isAiPermissionMode,
@@ -65,19 +67,41 @@ const PROVIDER_CONFIG_RS = join(
   "config.rs",
 );
 
-/** Read `pub const NAME: ty = 32;` or `= 256 * 1024;` out of a Rust file. */
+/**
+ * Read a numeric `const NAME: ty = …;` out of a Rust file.
+ *
+ * Handles the three spellings these bounds actually use: a plain integer
+ * (`32`), a product (`256 * 1024`), and a signed decimal (`-2.0`). The value
+ * group used to be integers-only, which matched no float bound at all —
+ * `MAX_TOP_P`, `MAX_TEMPERATURE` and both sampling penalties — and a reader
+ * that cannot match the value it was asked for is worse than no reader,
+ * because the assertion looks present and checks nothing. It is widened
+ * rather than paired with a float-only sibling so there is one reader and no
+ * way to call the wrong one.
+ *
+ * `pub` is optional because not every bound worth pinning is exported: a
+ * crate-private default is still the number the backend will use.
+ */
 function rustConst(path: string, name: string): number {
   const source = readFileSync(path, "utf8");
   const match = source.match(
     new RegExp(
-      `pub const ${name}\\s*:\\s*[A-Za-z0-9_]+\\s*=\\s*([0-9_]+(?:\\s*\\*\\s*[0-9_]+)*)\\s*;`,
+      `(?:pub )?const ${name}\\s*:\\s*[A-Za-z0-9_]+\\s*=\\s*(-?[0-9_]+(?:\\.[0-9]+)?(?:\\s*\\*\\s*-?[0-9_]+(?:\\.[0-9]+)?)*)\\s*;`,
     ),
   );
   assert.ok(match, `${name} must stay parseable in ${path}`);
-  return match[1]
+  const value = match[1]
     .split("*")
     .map((part) => Number(part.trim().replaceAll("_", "")))
     .reduce((product, factor) => product * factor, 1);
+  // A `Number()` that returned NaN would otherwise compare unequal to every
+  // expectation and be reported as a drift rather than as an unreadable
+  // constant.
+  assert.ok(
+    Number.isFinite(value),
+    `${name} in ${path} did not parse to a number`,
+  );
+  return value;
 }
 
 function tool(
@@ -98,6 +122,25 @@ function policy(
   tools: Record<string, AiToolPermission> = {},
 ): AiPermissions {
   return { mode, tools };
+}
+
+/**
+ * The availability the backend reports alongside the catalog.
+ *
+ * None of the row-building assertions below read it — a row's permission comes
+ * from the catalog and the policy, never from these counts — but it is part of
+ * `ai_get_permissions`, so a snapshot without it is not a snapshot.
+ */
+function availability(
+  usable: number,
+  registered: number,
+): AiPermissionsSnapshot["availability"] {
+  return {
+    dispatchAvailable: usable > 0,
+    grantedToolCount: usable,
+    usableToolCount: usable,
+    registeredToolCount: registered,
+  };
 }
 
 // ── The resolution order ───────────────────────────────────────────────────
@@ -202,6 +245,7 @@ const SNAPSHOT: AiPermissionsSnapshot = {
     tool("cf_delete_dns_record", "write", "allow"),
     tool("cf_purge_cache", "write", "ask"),
   ],
+  availability: availability(3, 3),
 };
 
 test("a row renders the permission the backend reported, with its reason", () => {
@@ -259,6 +303,7 @@ test("a backend decision the rules do not predict is flagged, not overruled", ()
     // `readOnly` would deny a write, but the backend says it runs. The backend
     // is what actually executes, so its answer is rendered — and marked.
     catalog: [tool("cf_delete_dns_record", "write", "allow")],
+    availability: availability(1, 1),
   };
 
   const [row] = buildAiToolPermissionRows(drifting, true);
@@ -270,7 +315,7 @@ test("a backend decision the rules do not predict is flagged, not overruled", ()
 
 test("an empty catalog produces no rows and a zeroed summary", () => {
   const rows = buildAiToolPermissionRows(
-    { mode: "ask", tools: {}, catalog: [] },
+    { mode: "ask", tools: {}, catalog: [], availability: availability(0, 0) },
     true,
   );
   assert.deepEqual(rows, []);
@@ -283,28 +328,236 @@ test("an empty catalog produces no rows and a zeroed summary", () => {
 
 // ── Bounds, against the Rust validators ────────────────────────────────────
 
-test("the agent-config bounds are the Rust validators' bounds", () => {
-  assert.equal(
-    AI_AGENT_LIMITS.maxToolRounds.max,
-    rustConst(AGENT_CONFIG_RS, "MAX_TOOL_ROUNDS"),
-  );
-  assert.equal(
-    AI_AGENT_LIMITS.maxTokensPerTurn.max,
-    rustConst(PROVIDER_LIMITS_RS, "MAX_COMPLETION_TOKENS"),
-  );
-  // Both Rust checks are `== 0 || > MAX`, so 1 is the floor.
+/**
+ * Every bound in the TS table, paired with the Rust constant that is its
+ * source of truth.
+ *
+ * `AI_AGENT_LIMITS` is a hand-maintained duplicate of those constants, so it
+ * can drift freely and silently — which is the whole reason this table exists.
+ * Drift is a build-time problem and belongs in CI, not in a round-trip on
+ * every settings open, so the bounds are not fetched at runtime.
+ *
+ * Nearly everything lives in the provider crate: the provider crate cannot
+ * depend on the agent crate, so a bound the request validator enforces has to
+ * live provider-side, and `bc_ai_agent::config` re-exports two of them as
+ * aliases. The aliases are deliberately never read here — an alias is not a
+ * literal, so reading one would fail to parse rather than assert anything.
+ * Only four bounds are genuinely agent-only concepts.
+ *
+ * `seed` is absent on purpose: its range is the `u32` type rather than a
+ * validated bound, so there is no constant to pin, and asserting that no
+ * validator exists would fire the day someone adds a legitimate one.
+ */
+const RUST_BOUNDS: readonly {
+  field: string;
+  bound: "min" | "max";
+  actual: number;
+  file: string;
+  constant: string;
+}[] = [
+  // Agent-only concepts, with no provider-side validator.
+  {
+    field: "maxToolRounds",
+    bound: "max",
+    actual: AI_AGENT_LIMITS.maxToolRounds.max,
+    file: AGENT_CONFIG_RS,
+    constant: "MAX_TOOL_ROUNDS",
+  },
+  {
+    field: "maxContextTokens",
+    bound: "min",
+    actual: AI_AGENT_LIMITS.maxContextTokens.min,
+    file: AGENT_CONFIG_RS,
+    constant: "MIN_CONTEXT_TOKENS",
+  },
+  {
+    field: "maxContextTokens",
+    bound: "max",
+    actual: AI_AGENT_LIMITS.maxContextTokens.max,
+    file: AGENT_CONFIG_RS,
+    constant: "MAX_CONTEXT_TOKENS",
+  },
+  // Everything the provider crate owns, because the request validator is the
+  // last gate before the wire and has to enforce them anyway.
+  {
+    field: "maxTokensPerTurn",
+    bound: "max",
+    actual: AI_AGENT_LIMITS.maxTokensPerTurn.max,
+    file: PROVIDER_LIMITS_RS,
+    constant: "MAX_COMPLETION_TOKENS",
+  },
+  {
+    field: "temperature",
+    bound: "min",
+    actual: AI_AGENT_LIMITS.temperature.min,
+    file: PROVIDER_LIMITS_RS,
+    constant: "MIN_TEMPERATURE",
+  },
+  {
+    field: "temperature",
+    bound: "max",
+    actual: AI_AGENT_LIMITS.temperature.max,
+    file: PROVIDER_LIMITS_RS,
+    constant: "MAX_TEMPERATURE",
+  },
+  {
+    field: "topP",
+    bound: "min",
+    actual: AI_AGENT_LIMITS.topP.min,
+    file: PROVIDER_LIMITS_RS,
+    constant: "MIN_TOP_P",
+  },
+  {
+    field: "topP",
+    bound: "max",
+    actual: AI_AGENT_LIMITS.topP.max,
+    file: PROVIDER_LIMITS_RS,
+    constant: "MAX_TOP_P",
+  },
+  {
+    field: "topK",
+    bound: "min",
+    actual: AI_AGENT_LIMITS.topK.min,
+    file: PROVIDER_LIMITS_RS,
+    constant: "MIN_TOP_K",
+  },
+  {
+    field: "topK",
+    bound: "max",
+    actual: AI_AGENT_LIMITS.topK.max,
+    file: PROVIDER_LIMITS_RS,
+    constant: "MAX_TOP_K",
+  },
+  {
+    field: "frequencyPenalty",
+    bound: "min",
+    actual: AI_AGENT_LIMITS.frequencyPenalty.min,
+    file: PROVIDER_LIMITS_RS,
+    constant: "MIN_SAMPLING_PENALTY",
+  },
+  {
+    field: "frequencyPenalty",
+    bound: "max",
+    actual: AI_AGENT_LIMITS.frequencyPenalty.max,
+    file: PROVIDER_LIMITS_RS,
+    constant: "MAX_SAMPLING_PENALTY",
+  },
+  // Both penalties share one Rust pair, so both are listed: a table that
+  // checked only one would let the other drift.
+  {
+    field: "presencePenalty",
+    bound: "min",
+    actual: AI_AGENT_LIMITS.presencePenalty.min,
+    file: PROVIDER_LIMITS_RS,
+    constant: "MIN_SAMPLING_PENALTY",
+  },
+  {
+    field: "presencePenalty",
+    bound: "max",
+    actual: AI_AGENT_LIMITS.presencePenalty.max,
+    file: PROVIDER_LIMITS_RS,
+    constant: "MAX_SAMPLING_PENALTY",
+  },
+  {
+    field: "requestTimeoutMs",
+    bound: "min",
+    actual: AI_AGENT_LIMITS.requestTimeoutMs.min,
+    file: PROVIDER_LIMITS_RS,
+    constant: "MIN_REQUEST_TIMEOUT_MS",
+  },
+  {
+    field: "requestTimeoutMs",
+    bound: "max",
+    actual: AI_AGENT_LIMITS.requestTimeoutMs.max,
+    file: PROVIDER_LIMITS_RS,
+    constant: "MAX_REQUEST_TIMEOUT_MS",
+  },
+  {
+    field: "stop (sequence count)",
+    bound: "max",
+    actual: AI_STOP_LIMITS.maxSequences,
+    file: PROVIDER_LIMITS_RS,
+    constant: "MAX_STOP_SEQUENCES",
+  },
+  {
+    field: "stop (bytes per sequence)",
+    bound: "min",
+    actual: AI_STOP_LIMITS.minSequenceBytes,
+    file: PROVIDER_LIMITS_RS,
+    constant: "MIN_STOP_SEQUENCE_BYTES",
+  },
+  {
+    field: "stop (bytes per sequence)",
+    bound: "max",
+    actual: AI_STOP_LIMITS.maxSequenceBytes,
+    file: PROVIDER_LIMITS_RS,
+    constant: "MAX_STOP_SEQUENCE_BYTES",
+  },
+  {
+    field: "systemPromptOverride (bytes)",
+    bound: "max",
+    actual: AI_PERSONA_LIMITS.systemPromptBytes,
+    file: PROVIDER_LIMITS_RS,
+    constant: "MAX_SYSTEM_PROMPT_BYTES",
+  },
+];
+
+test("every bound in the TS table is the Rust constant it mirrors", () => {
+  for (const { field, bound, actual, file, constant } of RUST_BOUNDS) {
+    const expected = rustConst(file, constant);
+    // The message names the field and the constant, so a drift says what to
+    // change rather than only that two numbers differ.
+    assert.equal(
+      actual,
+      expected,
+      `${field} ${bound} is ${actual} in AI_AGENT_LIMITS but ${constant} is ${expected} in ${basename(file)} - update the TS table to match`,
+    );
+  }
+});
+
+test("the agent-config floors the Rust validators imply are the TS floors", () => {
+  // These two have no `MIN_` constant because the Rust check is
+  // `== 0 || > MAX`, which makes 1 the floor by construction. Pinned as a
+  // literal *and* as the shape of the check, so promoting them to constants
+  // later shows up here rather than silently going unchecked.
   assert.equal(AI_AGENT_LIMITS.maxToolRounds.min, 1);
   assert.equal(AI_AGENT_LIMITS.maxTokensPerTurn.min, 1);
+  const agentSource = readFileSync(AGENT_CONFIG_RS, "utf8");
+  assert.match(agentSource, /self\.max_tool_rounds == 0/);
+  assert.match(agentSource, /self\.max_tokens_per_turn == 0/);
+});
 
-  const temperatureRange = readFileSync(PROVIDER_CONFIG_RS, "utf8").match(
-    /\(([0-9.]+)\.\.=([0-9.]+)\)\.contains\(&self\.temperature\)/,
+test("the validators compare against the constants they name", () => {
+  // A bound can be named and then compared against something else. The
+  // temperature range in particular used to be two literals here, which this
+  // test scraped with a regex; reading the constants is sturdier, but only if
+  // the validator is still using them.
+  const providerConfig = readFileSync(PROVIDER_CONFIG_RS, "utf8");
+  assert.match(
+    providerConfig,
+    /\(MIN_TEMPERATURE\.\.=MAX_TEMPERATURE\)\.contains\(&self\.temperature\)/,
   );
-  assert.ok(
-    temperatureRange,
-    "ProviderConfig::validate must keep its temperature range parseable",
+  const agentConfig = readFileSync(AGENT_CONFIG_RS, "utf8");
+  for (const pattern of [
+    /\(MIN_TEMPERATURE\.\.=MAX_TEMPERATURE\)\.contains\(&self\.temperature\)/,
+    /\(MIN_TOP_P\.\.=MAX_TOP_P\)\.contains\(&self\.top_p\)/,
+    /\(MIN_TOP_K\.\.=MAX_TOP_K\)\.contains\(&top_k\)/,
+    /\(MIN_SAMPLING_PENALTY\.\.=MAX_SAMPLING_PENALTY\)\.contains\(&penalty\)/,
+    /\(MIN_CONTEXT_TOKENS\.\.=MAX_CONTEXT_TOKENS\)\.contains\(&self\.max_context_tokens\)/,
+    /\(MIN_REQUEST_TIMEOUT_MS\.\.=MAX_REQUEST_TIMEOUT_MS\)\.contains\(&timeout_ms\)/,
+  ]) {
+    assert.match(agentConfig, pattern);
+  }
+});
+
+test("the context-budget default is the one AgentConfig::default uses", () => {
+  // The form has to seed this field with *something* when a config read from
+  // an older build carries no value, and the only honest something is the
+  // value the backend would have defaulted it to.
+  assert.equal(
+    AI_DEFAULT_MAX_CONTEXT_TOKENS,
+    rustConst(AGENT_CONFIG_RS, "DEFAULT_MAX_CONTEXT_TOKENS"),
   );
-  assert.equal(AI_AGENT_LIMITS.temperature.min, Number(temperatureRange[1]));
-  assert.equal(AI_AGENT_LIMITS.temperature.max, Number(temperatureRange[2]));
 });
 
 test("the persona bounds are the Rust byte limits", () => {

@@ -232,6 +232,63 @@ async fn execute_tool_calls(
     Ok(false)
 }
 
+/// Join the configured override onto the prompt already in effect.
+///
+/// Composition, not substitution: the base prompt is the conversation's own
+/// prompt or the selected persona, and replacing either from a global setting
+/// would silently discard a choice made elsewhere in the same UI. A per-
+/// conversation prompt already *is* the replacement channel — it outranks the
+/// persona outright — so this knob only ever adds.
+fn compose_system_prompt(base: Option<String>, override_text: Option<&str>) -> Option<String> {
+    match (base, override_text) {
+        (Some(base), Some(extra)) => Some(format!("{base}\n\n{extra}")),
+        (Some(base), None) => Some(base),
+        (None, Some(extra)) => Some(extra.to_string()),
+        (None, None) => None,
+    }
+}
+
+/// Trim history to the configured context budget.
+///
+/// `fit_context_window` keeps the most recent messages, which can leave a
+/// tool result at the front with the tool call it answers now dropped. Every
+/// protocol rejects that — Anthropic with an unknown `tool_use_id`, OpenAI
+/// with a `tool` message that follows no call — so a leading orphan is
+/// dropped too. Truncating from the front cannot produce the mirror case: a
+/// kept tool call keeps the results that came after it.
+fn fit_history(
+    messages: Vec<Message>,
+    system_prompt: Option<&str>,
+    max_context_tokens: u32,
+) -> Vec<Message> {
+    let fitted = bc_ai_chat::context::fit_context_window(
+        &messages,
+        system_prompt,
+        max_context_tokens as usize,
+    );
+    // A single message over budget fits nothing. Sending no messages at all is
+    // worse than sending one the provider may refuse: it discards what the
+    // user just typed and asks the model to answer nothing.
+    let mut fitted = if fitted.is_empty() {
+        messages.into_iter().next_back().into_iter().collect()
+    } else {
+        fitted
+    };
+    let orphans = fitted
+        .iter()
+        .take_while(|message| {
+            matches!(message.content, MessageContent::ToolResult { .. })
+                || message.role == Role::Tool
+        })
+        .count()
+        // Never empty the list to remove an orphan: a budget that fits only a
+        // tool result is misconfigured, and a request the provider rejects by
+        // name beats one with no messages in it at all.
+        .min(fitted.len().saturating_sub(1));
+    fitted.drain(..orphans);
+    fitted
+}
+
 /// Run one agentic turn until final text, approval pause, cancellation, or error.
 #[allow(clippy::too_many_arguments)]
 pub async fn run_turn(
@@ -249,7 +306,11 @@ pub async fn run_turn(
     config.validate()?;
     // A prompt chosen for this conversation wins; the configured persona is
     // the fallback, so selecting one actually changes how the agent behaves.
-    let system_prompt = chat.system_prompt(conversation_id).await.or(persona_prompt);
+    // The configured override is appended to whichever of the two applies.
+    let system_prompt = compose_system_prompt(
+        chat.system_prompt(conversation_id).await.or(persona_prompt),
+        config.system_prompt_override.as_deref(),
+    );
     let model = chat
         .model(conversation_id)
         .await
@@ -272,13 +333,28 @@ pub async fn run_turn(
             .provider_messages(conversation_id)
             .await
             .ok_or(bc_ai_chat::ChatError::ConversationNotFound(conversation_id))?;
+        // Every configured control is named here. Which of them the selected
+        // provider can honour is the client's decision, reported to the
+        // renderer through `ai_protocol_capabilities`; a control reaching no
+        // provider at all is the bug these fields exist to fix.
         let request = CompletionRequest {
             model: model.clone(),
-            messages,
+            messages: fit_history(
+                messages,
+                system_prompt.as_deref(),
+                config.max_context_tokens,
+            ),
             system: system_prompt.clone(),
             temperature: Some(config.temperature),
             max_tokens: Some(config.max_tokens_per_turn),
             tools: tools.clone(),
+            top_p: Some(config.top_p),
+            top_k: config.top_k,
+            stop: (!config.stop.is_empty()).then(|| config.stop.clone()),
+            seed: config.seed,
+            frequency_penalty: config.frequency_penalty,
+            presence_penalty: config.presence_penalty,
+            timeout_ms: config.request_timeout_ms,
         };
 
         let assistant_message = ChatMessage::assistant_pending();
@@ -390,6 +466,7 @@ mod tests {
     use bc_mcp::{McpGrantHandle, McpGrantSet};
 
     use super::*;
+    use crate::config::MIN_CONTEXT_TOKENS;
 
     const READ_TOOL: &str = "dns_parse_spf";
     const WRITE_TOOL: &str = "cf_delete_dns_record";
@@ -878,5 +955,219 @@ mod tests {
             .clone()
             .expect("the provider was called");
         assert_eq!(request.system.as_deref(), Some("Conversation prompt."));
+    }
+
+    /// The defect these fields exist to fix: `top_p` was stored, validated,
+    /// migrated and unit-tested while appearing nowhere in any request. A
+    /// control that validates but does nothing is worse than an absent one,
+    /// because the user believes it — so every one of them is pinned here on
+    /// the hop from configuration to request.
+    ///
+    /// Which controls the *selected provider* then honours is a separate
+    /// contract, pinned by `sampling::tests` against each client's real body.
+    #[tokio::test]
+    async fn the_configured_sampling_knobs_reach_the_provider() {
+        let harness = Harness::new(AiPermissions::default()).await;
+        let provider = CapturingProvider::default();
+        let configured = AgentConfig {
+            temperature: 0.3,
+            top_p: 0.85,
+            top_k: Some(40),
+            stop: vec!["\nUser:".into()],
+            seed: Some(1234),
+            frequency_penalty: Some(0.5),
+            presence_penalty: Some(-0.25),
+            request_timeout_ms: Some(45_000),
+            ..config(2)
+        };
+
+        harness
+            .run(&provider, &configured, None)
+            .await
+            .expect("plain text turn completes");
+
+        let request = provider
+            .request
+            .lock()
+            .expect("request")
+            .clone()
+            .expect("the provider was called");
+        assert_eq!(request.temperature, Some(0.3));
+        assert_eq!(request.top_p, Some(0.85));
+        assert_eq!(request.top_k, Some(40));
+        assert_eq!(request.stop, Some(vec!["\nUser:".to_string()]));
+        assert_eq!(request.seed, Some(1234));
+        assert_eq!(request.frequency_penalty, Some(0.5));
+        assert_eq!(request.presence_penalty, Some(-0.25));
+        assert_eq!(request.timeout_ms, Some(45_000));
+        assert_eq!(request.max_tokens, Some(configured.max_tokens_per_turn));
+    }
+
+    /// An unconfigured control is absent rather than sent as a default, so
+    /// upgrading cannot change how an existing install generates.
+    #[tokio::test]
+    async fn unconfigured_knobs_are_absent_from_the_request() {
+        let harness = Harness::new(AiPermissions::default()).await;
+        let provider = CapturingProvider::default();
+
+        harness
+            .run(&provider, &config(2), None)
+            .await
+            .expect("turn completes");
+
+        let request = provider
+            .request
+            .lock()
+            .expect("request")
+            .clone()
+            .expect("the provider was called");
+        assert_eq!(request.top_k, None);
+        assert_eq!(request.stop, None, "an empty stop list is not a setting");
+        assert_eq!(request.seed, None);
+        assert_eq!(request.frequency_penalty, None);
+        assert_eq!(request.presence_penalty, None);
+        assert_eq!(request.timeout_ms, None);
+        // `top_p` is not optional in the configuration — it has always had a
+        // stored default — so it is always sent, exactly like temperature.
+        assert_eq!(request.top_p, Some(AgentConfig::default().top_p));
+    }
+
+    /// The override composes with the persona rather than replacing it: the
+    /// persona is a separate choice in the same settings panel, and a true
+    /// replacement already exists per conversation.
+    #[tokio::test]
+    async fn the_system_prompt_override_is_appended_to_the_prompt_in_effect() {
+        let harness = Harness::new(AiPermissions::default()).await;
+        let provider = CapturingProvider::default();
+        let configured = AgentConfig {
+            system_prompt_override: Some("Prefer UK English.".into()),
+            ..config(2)
+        };
+
+        harness
+            .run(&provider, &configured, Some("You are the persona.".into()))
+            .await
+            .expect("turn completes");
+
+        let request = provider
+            .request
+            .lock()
+            .expect("request")
+            .clone()
+            .expect("the provider was called");
+        assert_eq!(
+            request.system.as_deref(),
+            Some("You are the persona.\n\nPrefer UK English.")
+        );
+    }
+
+    #[tokio::test]
+    async fn the_override_applies_with_no_persona_prompt_at_all() {
+        let harness = Harness::new(AiPermissions::default()).await;
+        let provider = CapturingProvider::default();
+        let configured = AgentConfig {
+            system_prompt_override: Some("Prefer UK English.".into()),
+            ..config(2)
+        };
+
+        harness
+            .run(&provider, &configured, None)
+            .await
+            .expect("turn completes");
+
+        let request = provider
+            .request
+            .lock()
+            .expect("request")
+            .clone()
+            .expect("the provider was called");
+        assert_eq!(request.system.as_deref(), Some("Prefer UK English."));
+    }
+
+    /// `max_context_tokens` has to actually bound what is sent — before this
+    /// change `fit_context_window` was called from nowhere but its own tests,
+    /// so a long conversation went to the provider whole.
+    #[tokio::test]
+    async fn the_context_budget_bounds_the_history_that_is_sent() {
+        let harness = Harness::new(AiPermissions::default()).await;
+        for index in 0..8 {
+            harness
+                .chat
+                .try_push_message(
+                    harness.conversation_id,
+                    ChatMessage::user(format!("message {index} {}", "padding ".repeat(64))),
+                )
+                .await
+                .expect("user message");
+        }
+        let provider = CapturingProvider::default();
+        let configured = AgentConfig {
+            max_context_tokens: MIN_CONTEXT_TOKENS,
+            ..config(2)
+        };
+
+        harness
+            .run(&provider, &configured, None)
+            .await
+            .expect("turn completes");
+
+        let request = provider
+            .request
+            .lock()
+            .expect("request")
+            .clone()
+            .expect("the provider was called");
+        let sent = request.messages.len();
+        assert!(sent > 0, "a budget must never send an empty history");
+        assert!(
+            sent < 9,
+            "the budget did not bound the history: {sent} sent"
+        );
+        // What survives is the tail, so the newest turn is what the model sees.
+        assert!(
+            request.messages[sent - 1].content.as_text().contains("7"),
+            "the most recent message was dropped"
+        );
+    }
+
+    /// Truncation must not hand a provider a tool result whose call it can no
+    /// longer see: Anthropic rejects the unknown `tool_use_id` and OpenAI the
+    /// `tool` message that follows no call.
+    #[test]
+    fn fitting_never_leaves_a_tool_result_without_its_call() {
+        let messages = vec![
+            Message::tool_result("call-1", "{}", false),
+            Message::tool_result("call-2", "{}", false),
+            Message::assistant("here is the answer"),
+        ];
+        // A budget small enough to drop the assistant turn that made the call.
+        let fitted = fit_history(messages.clone(), None, MIN_CONTEXT_TOKENS);
+        assert!(
+            !matches!(fitted[0].content, MessageContent::ToolResult { .. }),
+            "a leading orphaned tool result survived: {:?}",
+            fitted[0].content
+        );
+
+        // And a budget that fits nothing still sends the newest message.
+        let fitted = fit_history(messages, None, MIN_CONTEXT_TOKENS);
+        assert_eq!(fitted.len(), 1);
+        assert_eq!(fitted[0].content.as_text(), "here is the answer");
+    }
+
+    #[test]
+    fn composition_covers_every_combination_of_base_and_override() {
+        assert_eq!(
+            compose_system_prompt(Some("base".into()), Some("extra")).as_deref(),
+            Some("base\n\nextra")
+        );
+        assert_eq!(
+            compose_system_prompt(Some("base".into()), None).as_deref(),
+            Some("base")
+        );
+        assert_eq!(
+            compose_system_prompt(None, Some("extra")).as_deref(),
+            Some("extra")
+        );
+        assert_eq!(compose_system_prompt(None, None), None);
     }
 }

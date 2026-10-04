@@ -9,14 +9,16 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
 
-use crate::config::ProviderConfig;
+use crate::config::{ProviderConfig, ProviderProtocol};
 use crate::error::AiProviderError;
 use crate::limits::{
-    parse_tool_arguments, read_error_body, read_json_body, send_delta, validate_completion_request,
-    validate_response_message, validate_string, BoundedString, LineDecoder, StreamBudget,
-    MAX_MODEL_BYTES, MAX_STREAM_OUTPUT_BYTES, MAX_TOOL_ARGUMENT_BYTES, MAX_TOOL_CALLS_PER_MESSAGE,
-    MAX_TOOL_CALL_ID_BYTES, MAX_TOOL_NAME_BYTES,
+    parse_tool_arguments, read_error_body, read_json_body, send_delta, send_head_bounded,
+    validate_completion_request, validate_response_message, validate_string, with_total_timeout,
+    BoundedString, LineDecoder, StreamBudget, MAX_MODEL_BYTES, MAX_STREAM_OUTPUT_BYTES,
+    MAX_TOOL_ARGUMENT_BYTES, MAX_TOOL_CALLS_PER_MESSAGE, MAX_TOOL_CALL_ID_BYTES,
+    MAX_TOOL_NAME_BYTES,
 };
+use crate::sampling::advanced_entries;
 use crate::traits::AiProvider;
 use crate::types::*;
 
@@ -115,6 +117,38 @@ impl OpenAiProvider {
             }
         }
         out
+    }
+
+    /// Build the chat-completions body.
+    ///
+    /// One builder for both `complete` and `stream`: they differ only by the
+    /// `stream` flag, and two copies of this is how a control reaches one code
+    /// path and not the other.
+    pub(crate) fn build_body(request: &CompletionRequest, stream: bool) -> Value {
+        let mut body = json!({
+            "model": request.model,
+            "messages": Self::build_messages(request.system.as_deref(), &request.messages),
+        });
+        if stream {
+            body["stream"] = json!(true);
+        }
+        if let Some(temp) = request.temperature {
+            body["temperature"] = json!(temp);
+        }
+        if let Some(max) = request.max_tokens {
+            body["max_tokens"] = json!(max);
+        }
+        // Only the controls this protocol honours, taken from the one table the
+        // capability list is reported from.
+        for (key, value) in advanced_entries(ProviderProtocol::OpenAi, request) {
+            body[key] = value;
+        }
+        if let Some(ref tools) = request.tools {
+            if !tools.is_empty() {
+                body["tools"] = json!(Self::build_tools(tools));
+            }
+        }
+        body
     }
 
     /// Convert our tool definitions to the OpenAI format.
@@ -450,30 +484,17 @@ impl AiProvider for OpenAiProvider {
     ) -> Result<CompletionResponse, AiProviderError> {
         validate_completion_request(&request)?;
         let url = format!("{}/chat/completions", self.base_url());
+        let body = Self::build_body(&request, false);
 
-        let mut body = json!({
-            "model": request.model,
-            "messages": Self::build_messages(request.system.as_deref(), &request.messages),
-        });
-        if let Some(temp) = request.temperature {
-            body["temperature"] = json!(temp);
-        }
-        if let Some(max) = request.max_tokens {
-            body["max_tokens"] = json!(max);
-        }
-        if let Some(ref tools) = request.tools {
-            if !tools.is_empty() {
-                body["tools"] = json!(Self::build_tools(tools));
-            }
-        }
-
-        let resp = self
-            .client
-            .post(&url)
-            .header("Authorization", self.auth_header())
-            .json(&body)
-            .send()
-            .await?;
+        let resp = with_total_timeout(
+            self.client
+                .post(&url)
+                .header("Authorization", self.auth_header())
+                .json(&body),
+            request.timeout_ms,
+        )
+        .send()
+        .await?;
 
         let status = resp.status();
         if !status.is_success() {
@@ -514,31 +535,16 @@ impl AiProvider for OpenAiProvider {
     ) -> Result<CompletionResponse, AiProviderError> {
         validate_completion_request(&request)?;
         let url = format!("{}/chat/completions", self.base_url());
+        let body = Self::build_body(&request, true);
 
-        let mut body = json!({
-            "model": request.model,
-            "messages": Self::build_messages(request.system.as_deref(), &request.messages),
-            "stream": true,
-        });
-        if let Some(temp) = request.temperature {
-            body["temperature"] = json!(temp);
-        }
-        if let Some(max) = request.max_tokens {
-            body["max_tokens"] = json!(max);
-        }
-        if let Some(ref tools) = request.tools {
-            if !tools.is_empty() {
-                body["tools"] = json!(Self::build_tools(tools));
-            }
-        }
-
-        let resp = self
-            .client
-            .post(&url)
-            .header("Authorization", self.auth_header())
-            .json(&body)
-            .send()
-            .await?;
+        let resp = send_head_bounded(
+            self.client
+                .post(&url)
+                .header("Authorization", self.auth_header())
+                .json(&body),
+            request.timeout_ms,
+        )
+        .await?;
 
         if !resp.status().is_success() {
             let status = resp.status().as_u16();

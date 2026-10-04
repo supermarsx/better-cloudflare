@@ -18,8 +18,18 @@ import {
   within,
 } from "@testing-library/react";
 
-import { AiPermissionSettings } from "../src/components/ai/AiPermissionSettings";
+import {
+  AiPermissionSettings,
+  applyAiToolOverride,
+} from "../src/components/ai/AiPermissionSettings";
+import { AI_TOOL_PERMISSIONS } from "../src/lib/ai/permissions";
 import { useEnglishLocale } from "./i18n-ready";
+import {
+  chooseThemedSelectValue,
+  enableThemedSelectEnvironment,
+  themedSelectValue,
+  themedSelectValues,
+} from "./radix-select";
 import type {
   AiPermissionMode,
   AiPermissions,
@@ -52,7 +62,20 @@ function snapshot(
     tool(WRITE, "write", mode === "autonomous" ? "allow" : "ask"),
   ],
 ): AiPermissionsSnapshot {
-  return { mode, tools: overrides, catalog };
+  return {
+    mode,
+    tools: overrides,
+    catalog,
+    // Part of `ai_get_permissions`, and nothing on this screen reads it: a row
+    // reports the catalog's own decision, never a count. Present so the fixture
+    // is the shape the command actually returns.
+    availability: {
+      dispatchAvailable: catalog.length > 0,
+      grantedToolCount: catalog.length,
+      usableToolCount: catalog.length,
+      registeredToolCount: catalog.length,
+    },
+  };
 }
 
 interface Harness {
@@ -94,6 +117,9 @@ beforeEach(async () => {
   // Without this the first synchronous test in the file renders before the
   // locale bundle has loaded and every short label comes back empty.
   await useEnglishLocale();
+  // The per-tool picker is a Radix dropdown; opening one needs the two jsdom
+  // gaps this installs. See `test/radix-select.ts`.
+  enableThemedSelectEnvironment();
 });
 
 afterEach(() => {
@@ -214,14 +240,46 @@ test("a per-tool choice is sent as an override and shown as the reason", async (
     ]),
   });
 
-  const select = within(row(WRITE)).getByRole("combobox");
-  fireEvent.change(select, { target: { value: "allow" } });
+  // The picker is the app's themed dropdown now, so it is opened and an
+  // option is clicked rather than `change`d: a Radix trigger is a button, and
+  // `fireEvent.change` on one does nothing at all.
+  await chooseThemedSelectValue(
+    within(row(WRITE)).getByRole("combobox"),
+    "allow",
+  );
 
   await waitFor(() => assert.equal(harness.saved.length, 1));
   assert.deepEqual(harness.saved[0], {
     mode: "readOnly",
     tools: { [WRITE]: "allow" },
   });
+});
+
+test("the per-tool picker offers exactly the storable values", async () => {
+  renderSettings({ snapshot: snapshot("ask") });
+
+  // "Use the mode" is a UI sentinel, not a permission: it is the absence of an
+  // override. Everything else is a value the backend stores verbatim.
+  assert.deepEqual(
+    await themedSelectValues(within(row(WRITE)).getByRole("combobox")),
+    ["inherit", ...AI_TOOL_PERMISSIONS],
+  );
+});
+
+test("a value that is not a permission clears the override instead of storing it", () => {
+  // The picker's whole write path. A themed dropdown reports a bare `string`,
+  // and the options it reports from can have been re-rendered since, so this
+  // guard is the thing standing between a junk value and the stored policy.
+  assert.deepEqual(applyAiToolOverride({ [WRITE]: "allow" }, WRITE, "deny"), {
+    [WRITE]: "deny",
+  });
+  for (const junk of ["inherit", "", "ALLOW", "allow ", "autonomous", "null"]) {
+    assert.deepEqual(
+      applyAiToolOverride({ [WRITE]: "allow", [READ]: "deny" }, WRITE, junk),
+      { [READ]: "deny" },
+      `${junk} must clear the override rather than become one`,
+    );
+  }
 });
 
 test("an override shows as the reason and clears back to the mode", async () => {
@@ -236,14 +294,15 @@ test("an override shows as the reason and clears back to the mode", async () => 
   assert.equal(row(WRITE).dataset.override, "allow");
   assert.match(row(WRITE).textContent ?? "", /Set for this tool\./);
   assert.equal(
-    (within(row(WRITE)).getByRole("combobox") as HTMLSelectElement).value,
+    await themedSelectValue(within(row(WRITE)).getByRole("combobox")),
     "allow",
   );
 
   // Choosing "use the mode" must delete the key, not store a third value.
-  fireEvent.change(within(row(WRITE)).getByRole("combobox"), {
-    target: { value: "" },
-  });
+  await chooseThemedSelectValue(
+    within(row(WRITE)).getByRole("combobox"),
+    "inherit",
+  );
   await waitFor(() => assert.equal(harness.saved.length, 1));
   assert.deepEqual(harness.saved[0], { mode: "ask", tools: {} });
   assert.ok(!("cf_delete_dns_record" in harness.saved[0].tools));

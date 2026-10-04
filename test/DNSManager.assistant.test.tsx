@@ -36,6 +36,11 @@ import { storageManager } from "../src/lib/storage/storage";
 import type { AgentConfig } from "../src/types/ai";
 
 import { useEnglishLocale } from "./i18n-ready";
+import {
+  chooseThemedSelectValue,
+  enableThemedSelectEnvironment,
+  themedSelectValue,
+} from "./radix-select";
 
 const originalFetch = globalThis.fetch;
 
@@ -109,6 +114,13 @@ function mockRuntime(
   mock.method(TauriClient, "aiGetConfig", async () => AGENT_CONFIG);
   mock.method(TauriClient, "aiListConversations", async () => []);
   mock.method(TauriClient, "onAiEvent", async () => () => {});
+  // The Behaviour section — where the assistant's own placement control
+  // lives — reads which generation parameters the provider in use honours.
+  mock.method(TauriClient, "aiProtocolCapabilities", async () => ({
+    openai: ["topP", "stop", "seed"],
+    anthropic: ["topP", "topK", "stop"],
+    ollama: ["topP", "topK", "stop", "seed"],
+  }));
 
   globalThis.fetch = async () =>
     new Response(JSON.stringify([]), {
@@ -146,6 +158,38 @@ async function openAssistantPlacement(): Promise<HTMLElement> {
   return screen.findByTestId("assistant-placement");
 }
 
+/**
+ * Open the placement control inside the assistant itself: Settings -> Behaviour
+ * on the panel's own nav.
+ *
+ * Scoped to the panel throughout. "Settings" names both the workspace tab in
+ * the command bar and the assistant's own view switch, and "Behaviour" would be
+ * unambiguous today but is one section rename away from not being.
+ */
+async function openAssistantOwnPlacement(): Promise<HTMLElement> {
+  const panel = await screen.findByTestId("ai-panel");
+  fireEvent.click(
+    within(
+      within(panel).getByRole("toolbar", { name: "Assistant views" }),
+    ).getByRole("button", { name: "Settings" }),
+  );
+  fireEvent.click(
+    within(
+      await screen.findByRole("toolbar", {
+        name: "Assistant settings sections",
+      }),
+    ).getByRole("button", { name: "Behaviour" }),
+  );
+  // The themed dropdown's trigger, not a native `<select>`: it is driven
+  // through `chooseThemedSelectValue`. See `test/radix-select.ts`.
+  return screen.findByLabelText("Placement");
+}
+
+/** Every mounted assistant panel. More than one is the bug this guards. */
+function mountedPanels(): number {
+  return document.querySelectorAll('[data-testid="ai-panel"]').length;
+}
+
 /** The command bar's assistant control, distinct from a bubble launcher. */
 function commandBarAssistant(): HTMLElement {
   const toolbar = screen.getByRole("toolbar", {
@@ -172,6 +216,9 @@ function assertAbsent(node: Element | null, label: string): void {
 
 beforeEach(async () => {
   await useEnglishLocale();
+  // The assistant's own placement control is a Radix dropdown; opening one
+  // needs the two jsdom gaps this installs. See `test/radix-select.ts`.
+  enableThemedSelectEnvironment();
 });
 
 afterEach(() => {
@@ -346,6 +393,102 @@ test("an assistant tab left open while the bubble takes over points at it, not a
     ),
   );
   assert.equal(document.querySelectorAll('[data-testid="ai-panel"]').length, 1);
+});
+
+// ── Moving it from inside it ───────────────────────────────────────────────
+
+test("the assistant can be moved from its own settings, and the choice persists", async () => {
+  const harness = mockRuntime({ assistantPresentation: "bubble" });
+  renderManager();
+  await screen.findByTestId("ai-assistant-bubble");
+  fireEvent.click(commandBarAssistant());
+
+  // The control has to be reachable here at all: the bubble and the dock are
+  // the two placements with no workspace settings tab in front of them.
+  const placement = await openAssistantOwnPlacement();
+  assert.equal(await themedSelectValue(placement), "bubble");
+
+  await chooseThemedSelectValue(await openAssistantOwnPlacement(), "sidebar");
+
+  // It takes effect immediately, in both stores the preference lives in.
+  const dock = await screen.findByTestId("ai-assistant-sidebar");
+  await waitFor(() =>
+    assert.equal(storageManager.getAiAssistantPresentation(), "sidebar"),
+  );
+  await waitFor(() => {
+    const profile = writtenProfile(harness);
+    assert.ok(profile, "a session profile must have been written");
+    assert.equal(profile.assistantPresentation, "sidebar");
+  });
+
+  // And — unlike the workspace's own placement radios — it does not make the
+  // assistant vanish out from under the control the user just used.
+  assert.equal(dock.dataset.open, "true");
+  assert.equal(dock.hidden, false);
+  assertAbsent(screen.queryByTestId("ai-assistant-bubble"), "bubble");
+  assert.equal(mountedPanels(), 1);
+});
+
+test("switching placement from inside the assistant never mounts two of them", async () => {
+  mockRuntime();
+  renderManager();
+  await screen.findByRole("button", { name: "Settings" });
+
+  // Start in the tab, which is the one placement DNSManager renders itself.
+  fireEvent.click(commandBarAssistant());
+  await waitFor(() => assert.equal(mountedPanels(), 1));
+
+  // Tab -> bubble. The tab stays open and must point at the bubble rather than
+  // render a second panel with its own conversation and event subscription.
+  await chooseThemedSelectValue(await openAssistantOwnPlacement(), "bubble");
+  await screen.findByTestId("ai-assistant-bubble");
+  await waitFor(() => assert.equal(mountedPanels(), 1));
+  assert.ok(screen.getByTestId("ai-assistant-relocated"));
+
+  // Bubble -> dock, through the bubble's own copy of the control.
+  await chooseThemedSelectValue(await openAssistantOwnPlacement(), "sidebar");
+  await screen.findByTestId("ai-assistant-sidebar");
+  await waitFor(() => assert.equal(mountedPanels(), 1));
+  assertAbsent(screen.queryByTestId("ai-assistant-bubble"), "bubble");
+
+  // Dock -> tab. Switching back must leave neither floating surface behind,
+  // and must open the tab, or the assistant would disappear entirely.
+  await chooseThemedSelectValue(await openAssistantOwnPlacement(), "panel");
+  await waitFor(() =>
+    assertAbsent(screen.queryByTestId("ai-assistant-sidebar"), "dock"),
+  );
+  assertAbsent(screen.queryByTestId("ai-assistant-bubble"), "bubble");
+  assertAbsent(
+    screen.queryByTestId("ai-assistant-relocated"),
+    "relocation notice while the assistant is the tab again",
+  );
+  assert.equal(mountedPanels(), 1);
+  assert.equal(
+    screen.getByTestId("ai-panel").dataset.presentation,
+    "panel",
+    "the surviving panel is the tab's",
+  );
+});
+
+test("moving the assistant from its own settings does not cancel a run", async () => {
+  mockRuntime({ assistantPresentation: "sidebar" });
+  const cancelled: unknown[] = [];
+  mock.method(TauriClient, "aiCancelGeneration", async (id: unknown) => {
+    cancelled.push(id);
+    return true;
+  });
+  renderManager();
+  await screen.findByTestId("ai-assistant-sidebar");
+  fireEvent.click(commandBarAssistant());
+
+  await chooseThemedSelectValue(await openAssistantOwnPlacement(), "bubble");
+  await screen.findByTestId("ai-assistant-bubble");
+
+  // The chromes are different parents, so the panel is remounted rather than
+  // moved — but a remount only drops the `ai:event` subscription. Cancelling
+  // the turn would be the thing that actually loses work, and nothing does.
+  await waitFor(() => assert.equal(mountedPanels(), 1));
+  assert.deepEqual(cancelled, []);
 });
 
 test("moving the assistant does not pop it open", async () => {

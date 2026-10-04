@@ -30,6 +30,17 @@
  * a streaming turn therefore does not abandon the run, and the first open does
  * not happen until the user asks for it, so an install that never opens the
  * assistant never issues an `ai_*` call.
+ *
+ * **Changing chrome does remount.** The three chromes are three different
+ * parents — a flow-level `aside`, a `document.body` portal, and (for `panel`)
+ * a workspace tab body this component does not own at all — and React cannot
+ * carry one instance between them, so switching placement unmounts the panel
+ * and mounts a new one. That is bounded, not lossy: unmounting only drops the
+ * `ai:event` subscription, never cancels the turn (see `useAiChat`'s cleanup),
+ * so the run continues in the backend and the remounted panel reloads the
+ * conversation and re-subscribes. What is lost is the provisional, not-yet-
+ * persisted stream buffer for the few milliseconds of the swap; the completed
+ * message still arrives with the refresh that `turnComplete` triggers.
  */
 import {
   useEffect,
@@ -55,6 +66,14 @@ export interface AiAssistantSurfaceProps {
   presentation: AiAssistantPresentation;
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  /**
+   * Changes which chrome the assistant wears, from the assistant's own
+   * settings. Required rather than optional: the dock and the bubble are the
+   * two surfaces with no workspace settings tab in front of them, so a host
+   * that renders them without wiring this leaves the preference unreachable
+   * exactly where it is hardest to reach.
+   */
+  onPresentationChange: (next: AiAssistantPresentation) => void;
   /** Forwarded to the panel so a test can shorten the stall watchdog. */
   watchdogMs?: number;
 }
@@ -119,6 +138,7 @@ export function AiAssistantSurface({
   presentation,
   open,
   onOpenChange,
+  onPresentationChange,
   watchdogMs,
 }: AiAssistantSurfaceProps) {
   const { t } = useI18n();
@@ -170,6 +190,7 @@ export function AiAssistantSurface({
   const panel = everOpened ? (
     <AiAssistantPanel
       presentation={presentation}
+      onPresentationChange={onPresentationChange}
       onDismiss={() => onOpenChange(false)}
       watchdogMs={watchdogMs}
     />

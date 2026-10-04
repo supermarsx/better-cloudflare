@@ -18,11 +18,13 @@ import assert from "node:assert/strict";
 import React from "react";
 import { afterEach, beforeEach, mock, test } from "node:test";
 import {
+  act,
   cleanup,
   fireEvent,
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 
 import { AiAssistantSurface } from "../src/components/ai/AiAssistantSurface";
@@ -31,6 +33,11 @@ import type { AiAssistantPresentation } from "../src/lib/ai/presentation";
 import type { AgentConfig } from "../src/types/ai";
 
 import { useEnglishLocale } from "./i18n-ready";
+import {
+  chooseThemedSelectValue,
+  enableThemedSelectEnvironment,
+  openThemedSelect,
+} from "./radix-select";
 
 const AGENT_CONFIG: AgentConfig = {
   maxToolRounds: 8,
@@ -69,6 +76,17 @@ function installBackend(): { calls: string[] } {
     "aiSetConfig",
     record("setConfig", () => undefined),
   );
+  // Only the Behaviour section reads this, so it adds nothing to the call
+  // counts the "opening costs a round trip" tests assert on.
+  mock.method(
+    TauriClient,
+    "aiProtocolCapabilities",
+    record("capabilities", () => ({
+      openai: ["topP", "stop", "seed"],
+      anthropic: ["topP", "topK", "stop"],
+      ollama: ["topP", "topK", "stop", "seed"],
+    })),
+  );
   mock.method(
     TauriClient,
     "aiListConversations",
@@ -89,9 +107,15 @@ interface HarnessProps {
 /**
  * A trigger outside the surface plus a re-render button, so focus restoration
  * and focus stability can both be observed from the outside.
+ *
+ * The placement is state rather than a prop so that a chrome change can be
+ * driven from inside the assistant, which is how the real owner (`DNSManager`)
+ * wires it.
  */
 function Harness({ presentation, initiallyOpen = false }: HarnessProps) {
   const [open, setOpen] = React.useState(initiallyOpen);
+  const [placement, setPlacement] =
+    React.useState<AiAssistantPresentation>(presentation);
   const [, setTick] = React.useState(0);
   return (
     <div>
@@ -102,9 +126,10 @@ function Harness({ presentation, initiallyOpen = false }: HarnessProps) {
         Force re-render
       </button>
       <AiAssistantSurface
-        presentation={presentation}
+        presentation={placement}
         open={open}
         onOpenChange={setOpen}
+        onPresentationChange={setPlacement}
       />
     </div>
   );
@@ -118,6 +143,9 @@ function assertAbsent(node: Element | null, label: string): void {
 beforeEach(async () => {
   (window as unknown as { __TAURI__?: unknown }).__TAURI__ = {};
   await useEnglishLocale();
+  // The placement picker is a Radix dropdown; opening one needs the two jsdom
+  // gaps this installs. See `test/radix-select.ts`.
+  enableThemedSelectEnvironment();
 });
 
 afterEach(() => {
@@ -306,6 +334,94 @@ test("dismissing hides the panel without unmounting it, so a run is not abandone
     ),
   );
   assert.equal(backend.calls.length, callsWhileOpen);
+});
+
+// ── Changing chrome from inside the chrome ─────────────────────────────────
+
+test("the panel's own placement control reaches the surface, and swaps the chrome", async () => {
+  installBackend();
+  render(<Harness presentation="sidebar" initiallyOpen />);
+  const panel = await screen.findByTestId("ai-panel");
+  assert.equal(panel.dataset.presentation, "sidebar");
+
+  // The dock and the bubble are the two placements with no workspace settings
+  // tab in front of them, so the setter has to arrive this far down.
+  fireEvent.click(
+    within(
+      within(panel).getByRole("toolbar", { name: "Assistant views" }),
+    ).getByRole("button", { name: "Settings" }),
+  );
+  fireEvent.click(
+    within(
+      await screen.findByRole("toolbar", {
+        name: "Assistant settings sections",
+      }),
+    ).getByRole("button", { name: "Behaviour" }),
+  );
+  // The themed dropdown is opened and an option clicked: `fireEvent.change`
+  // was for the native `<select>` this replaced, and does nothing to a Radix
+  // trigger.
+  await chooseThemedSelectValue(
+    await screen.findByLabelText("Placement"),
+    "bubble",
+  );
+
+  await screen.findByTestId("ai-assistant-bubble");
+  assertAbsent(screen.queryByTestId("ai-assistant-sidebar"), "dock");
+  // Still one assistant: the chrome changed, not the count.
+  assert.equal(document.querySelectorAll('[data-testid="ai-panel"]').length, 1);
+  assert.equal(screen.getByTestId("ai-panel").dataset.presentation, "bubble");
+
+  // The remounted panel re-reads its config, providers and conversations.
+  // Settling those inside the test keeps their state updates in `act` instead
+  // of landing after the test body has finished.
+  await act(async () => {});
+});
+
+test("Escape in an open dropdown closes the dropdown, not the bubble", async () => {
+  installBackend();
+  render(<Harness presentation="bubble" initiallyOpen />);
+  const panel = await screen.findByTestId("ai-panel");
+
+  fireEvent.click(
+    within(
+      within(panel).getByRole("toolbar", { name: "Assistant views" }),
+    ).getByRole("button", { name: "Settings" }),
+  );
+  fireEvent.click(
+    within(
+      await screen.findByRole("toolbar", {
+        name: "Assistant settings sections",
+      }),
+    ).getByRole("button", { name: "Behaviour" }),
+  );
+
+  const trigger = await screen.findByLabelText("Placement");
+  const popover = await openThemedSelect(trigger);
+  assert.equal(trigger.getAttribute("data-state"), "open");
+
+  // The bubble closes on Escape, and the dropdown lives inside it. Radix
+  // handles Escape on a document capture listener and calls
+  // `preventDefault()`, and the bubble's handler ignores an already-prevented
+  // key — which is the whole reason that guard exists. One Escape must
+  // therefore close the dropdown and leave the bubble up.
+  await act(async () => {
+    fireEvent.keyDown(popover, { key: "Escape" });
+  });
+  assert.equal(trigger.getAttribute("data-state"), "closed");
+  assert.equal(screen.getByTestId("ai-assistant-bubble").dataset.open, "true");
+  assert.ok(screen.getByTestId("ai-panel").isConnected);
+
+  // With nothing open, Escape still dismisses the bubble.
+  await act(async () => {
+    fireEvent.keyDown(screen.getByTestId("ai-panel"), { key: "Escape" });
+  });
+  await waitFor(() =>
+    assert.equal(
+      screen.getByTestId("ai-assistant-bubble").dataset.open,
+      "false",
+    ),
+  );
 });
 
 // ── Focus ──────────────────────────────────────────────────────────────────

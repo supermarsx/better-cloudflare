@@ -77,6 +77,7 @@ test("every AI method throws a clear error off desktop", async () => {
     () => TauriClient.aiListModels("openai-main"),
     () => TauriClient.aiGetConfig(),
     () => TauriClient.aiSetConfig(AGENT_CONFIG),
+    () => TauriClient.aiProtocolCapabilities(),
     () => TauriClient.aiCreateConversation("anthropic", "claude"),
     () => TauriClient.aiListConversations(),
     () => TauriClient.aiGetConversation("c1"),
@@ -106,14 +107,14 @@ test("every AI method throws a clear error off desktop", async () => {
     () => TauriClient.aiDeletePersona("p1"),
     () => TauriClient.onAiEvent(() => {}),
   ];
-  // Twenty-four commands plus the event subscription.
-  assert.equal(attempts.length, 25);
+  // Twenty-five commands plus the event subscription.
+  assert.equal(attempts.length, 26);
   for (const attempt of attempts) {
     await assert.rejects(attempt, { message: AI_DESKTOP_ONLY });
   }
 });
 
-test("all eighteen commands use the camelCase Tauri contract", async () => {
+test("every chat and provider command uses the camelCase Tauri contract", async () => {
   desktop();
   const calls = recordCalls((command) => {
     switch (command) {
@@ -135,6 +136,12 @@ test("all eighteen commands use the camelCase Tauri contract", async () => {
         return [{ id: "m", name: "M", supportsTools: true }];
       case "ai_get_config":
         return AGENT_CONFIG;
+      case "ai_protocol_capabilities":
+        return {
+          openai: ["topP", "stop", "seed"],
+          anthropic: ["topP", "topK", "stop"],
+          ollama: ["topP", "topK", "stop", "seed"],
+        };
       case "ai_create_conversation":
         return { id: "c1", title: "New" };
       case "ai_list_conversations":
@@ -189,6 +196,7 @@ test("all eighteen commands use the camelCase Tauri contract", async () => {
   await TauriClient.aiListModels("ollama-local");
   await TauriClient.aiGetConfig();
   await TauriClient.aiSetConfig(AGENT_CONFIG);
+  await TauriClient.aiProtocolCapabilities();
   await TauriClient.aiCreateConversation(
     "openai-main",
     "gpt-4o",
@@ -218,6 +226,7 @@ test("all eighteen commands use the camelCase Tauri contract", async () => {
       "ai_list_models",
       "ai_get_config",
       "ai_set_config",
+      "ai_protocol_capabilities",
       "ai_create_conversation",
       "ai_create_conversation",
       "ai_list_conversations",
@@ -280,6 +289,9 @@ test("all eighteen commands use the camelCase Tauri contract", async () => {
   assert.deepEqual(byCommand("ai_set_config")[0].payload, {
     config: AGENT_CONFIG,
   });
+  // The capability map is a question about the build, not about a profile, so
+  // it takes no argument at all.
+  assert.deepEqual(byCommand("ai_protocol_capabilities")[0].payload, {});
 
   // Optional conversation fields are sent as explicit nulls, matching the
   // `Option<String>` parameters rather than relying on absent keys.
@@ -310,6 +322,15 @@ test("permission and persona commands use the camelCase Tauri contract", async (
         permission: "allow",
       },
     ],
+    // `availability` is part of the view and is carried through untouched like
+    // everything else: the client must not derive it from the catalog, which
+    // cannot see the MCP grants that half of it describes.
+    availability: {
+      dispatchAvailable: true,
+      grantedToolCount: 1,
+      usableToolCount: 1,
+      registeredToolCount: 48,
+    },
   };
   const persona: AiPersona = {
     id: "custom-1",

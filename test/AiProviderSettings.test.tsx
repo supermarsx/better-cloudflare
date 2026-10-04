@@ -28,12 +28,18 @@ import {
 
 import { AiProviderSettings } from "../src/components/ai/AiProviderSettings";
 import { AI_PROVIDER_LIMITS } from "../src/lib/ai/providers";
-import type {
-  AiProviderProfile,
-  AiProviderProfileInput,
+import {
+  PROVIDER_PROTOCOLS,
+  type AiProviderProfile,
+  type AiProviderProfileInput,
 } from "../src/types/ai";
 
 import { useEnglishLocale } from "./i18n-ready";
+import {
+  chooseThemedSelectValue,
+  enableThemedSelectEnvironment,
+  themedSelectValues,
+} from "./radix-select";
 
 const OPENAI: AiProviderProfile = {
   id: "openai-main",
@@ -131,6 +137,9 @@ function lastSaved(harness: Harness): AiProviderProfileInput {
 
 beforeEach(async () => {
   await useEnglishLocale();
+  // The protocol picker is a Radix dropdown; opening one needs the two jsdom
+  // gaps this installs. See `test/radix-select.ts`.
+  enableThemedSelectEnvironment();
 });
 
 afterEach(() => {
@@ -323,18 +332,24 @@ test("a typed id is left alone when the name changes afterwards", () => {
   );
 });
 
-test("changing the protocol swaps an untouched model but keeps a typed one", () => {
+test("changing the protocol swaps an untouched model but keeps a typed one", async () => {
   renderProviders({ providers: [], defaultProviderId: null });
 
   fireEvent.click(screen.getByRole("button", { name: "Add a provider" }));
-  const protocol = screen.getByLabelText("Protocol") as HTMLSelectElement;
+  // The protocol picker is the app's themed dropdown, so it is opened and an
+  // option is clicked. `fireEvent.change` was for the native `<select>` this
+  // replaced; against a Radix trigger — a `<button>` — it does nothing.
+  const protocol = () => screen.getByLabelText("Protocol");
   assert.equal(
     (screen.getByLabelText("Model") as HTMLInputElement).value,
     "gpt-4o-mini",
   );
+  assert.deepEqual(await themedSelectValues(protocol()), [
+    ...PROVIDER_PROTOCOLS,
+  ]);
 
   // An untouched default is replaced: `gpt-4o-mini` is not an Ollama tag.
-  fireEvent.change(protocol, { target: { value: "ollama" } });
+  await chooseThemedSelectValue(protocol(), "ollama");
   assert.equal(
     (screen.getByLabelText("Model") as HTMLInputElement).value,
     "llama3.1",
@@ -353,7 +368,7 @@ test("changing the protocol swaps an untouched model but keeps a typed one", () 
   fireEvent.change(screen.getByLabelText("Model"), {
     target: { value: "my-finetune-v3" },
   });
-  fireEvent.change(protocol, { target: { value: "anthropic" } });
+  await chooseThemedSelectValue(protocol(), "anthropic");
   assert.equal(
     (screen.getByLabelText("Model") as HTMLInputElement).value,
     "my-finetune-v3",
@@ -373,9 +388,7 @@ test("changing the protocol drops a base URL the backend would not inherit", asy
   // `ProviderProfile::apply` does not carry a base URL across a protocol
   // change, so keeping this one on screen would point the Anthropic client at
   // an OpenAI gateway the backend would never have chosen.
-  fireEvent.change(screen.getByLabelText("Protocol"), {
-    target: { value: "anthropic" },
-  });
+  await chooseThemedSelectValue(screen.getByLabelText("Protocol"), "anthropic");
   assert.equal(
     (screen.getByLabelText("Base URL (optional)") as HTMLInputElement).value,
     "",
@@ -416,9 +429,7 @@ test("an Ollama provider saves with no key at all", async () => {
   const harness = renderProviders({ providers: [], defaultProviderId: null });
 
   fireEvent.click(screen.getByRole("button", { name: "Add a provider" }));
-  fireEvent.change(screen.getByLabelText("Protocol"), {
-    target: { value: "ollama" },
-  });
+  await chooseThemedSelectValue(screen.getByLabelText("Protocol"), "ollama");
   fireEvent.change(screen.getByLabelText("Name"), {
     target: { value: "Ollama (local)" },
   });

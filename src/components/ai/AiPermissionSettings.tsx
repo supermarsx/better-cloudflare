@@ -27,6 +27,13 @@ import { useId, useMemo, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Tag } from "@/components/ui/tag";
 import { useAiPermissions } from "@/hooks/ai/use-ai-settings";
 import { useI18n } from "@/hooks/use-i18n";
@@ -39,6 +46,7 @@ import {
   type AiPermissionReason,
   type AiToolPermissionRow,
 } from "@/lib/ai/permissions";
+import { cn } from "@/lib/utils";
 import type {
   AiPermissionMode,
   AiPermissions,
@@ -48,6 +56,7 @@ import type {
 } from "@/types/ai";
 
 import { describeAiError } from "./ai-error";
+import { AI_SELECT_CONTENT_CLASS, AI_SELECT_TRIGGER_CLASS } from "./ai-select";
 
 export interface AiPermissionSettingsProps {
   /** `null` until a read succeeds. Never a locally invented default. */
@@ -62,11 +71,35 @@ export interface AiPermissionSettingsProps {
   onRetry: () => void;
 }
 
-const SELECT_CLASS =
-  "ui-focus glass-surface glass-surface-hover h-8 shrink-0 rounded-md border border-border bg-background/10 px-2 text-xs focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50";
+/**
+ * Sentinel for "no override". Not a permission, and deliberately not the empty
+ * string: a themed `SelectItem` must carry a non-empty value, and an empty one
+ * would in any case be indistinguishable from "nothing selected".
+ */
+const INHERIT = "inherit";
 
-/** Sentinel for "no override" — an empty `<option>` value, not a permission. */
-const INHERIT = "";
+/**
+ * Apply one per-tool choice to the stored overrides.
+ *
+ * Anything that is not a permission — the {@link INHERIT} sentinel, or a value
+ * a re-rendered picker reported for a set of options that has since changed —
+ * **removes** the override so the mode decides again. It is never stored as a
+ * third state: `tools` is the explicit-overrides map the backend persists, and
+ * a junk key in it would be a rule nothing can resolve.
+ *
+ * Exported because it is the whole of the picker's write path, and a guard
+ * that cannot be tested on its own tends to stop being a guard.
+ */
+export function applyAiToolOverride(
+  tools: Readonly<Record<string, AiToolPermission>>,
+  toolName: string,
+  value: string,
+): Record<string, AiToolPermission> {
+  const next = { ...tools };
+  if (isAiToolPermission(value)) next[toolName] = value;
+  else delete next[toolName];
+  return next;
+}
 
 export function AiPermissionSettings({
   snapshot,
@@ -183,10 +216,10 @@ export function AiPermissionSettings({
 
   const handleOverrideChange = (toolName: string, value: string) => {
     if (!snapshot || busy) return;
-    const tools = { ...snapshot.tools };
-    if (isAiToolPermission(value)) tools[toolName] = value;
-    else delete tools[toolName];
-    requestSave({ mode: snapshot.mode, tools });
+    requestSave({
+      mode: snapshot.mode,
+      tools: applyAiToolOverride(snapshot.tools, toolName, value),
+    });
   };
 
   const handleClearOverrides = () => {
@@ -461,27 +494,39 @@ export function AiPermissionSettings({
                           >
                             {t("This tool", "This tool")}
                           </label>
-                          <select
-                            id={selectId}
-                            className={SELECT_CLASS}
+                          <Select
                             value={row.override ?? INHERIT}
                             disabled={busy}
-                            onChange={(event) =>
-                              handleOverrideChange(
-                                row.tool.name,
-                                event.target.value,
-                              )
+                            onValueChange={(value) =>
+                              handleOverrideChange(row.tool.name, value)
                             }
                           >
-                            <option value={INHERIT}>
-                              {t("Use the mode", "Use the mode")}
-                            </option>
-                            {AI_TOOL_PERMISSIONS.map((permission) => (
-                              <option key={permission} value={permission}>
-                                {overrideLabels[permission]}
-                              </option>
-                            ))}
-                          </select>
+                            <SelectTrigger
+                              id={selectId}
+                              disabled={busy}
+                              className={cn(AI_SELECT_TRIGGER_CLASS, "w-36")}
+                            >
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent className={AI_SELECT_CONTENT_CLASS}>
+                              {/* Radix consumes `value`, so `data-value`
+                                  mirrors it onto the DOM: the stored
+                                  permission is the part worth pinning, and
+                                  the label is translated. */}
+                              <SelectItem value={INHERIT} data-value={INHERIT}>
+                                {t("Use the mode", "Use the mode")}
+                              </SelectItem>
+                              {AI_TOOL_PERMISSIONS.map((permission) => (
+                                <SelectItem
+                                  key={permission}
+                                  value={permission}
+                                  data-value={permission}
+                                >
+                                  {overrideLabels[permission]}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
                         </div>
                       </div>
                     );

@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::AiProviderError;
 use crate::limits::{
     validate_string, MAX_API_KEY_BYTES, MAX_BASE_URL_BYTES, MAX_COMPLETION_TOKENS, MAX_MODEL_BYTES,
+    MAX_TEMPERATURE, MIN_TEMPERATURE,
 };
 
 /// The wire protocol a provider speaks.
@@ -23,6 +24,13 @@ pub enum ProviderProtocol {
 }
 
 impl ProviderProtocol {
+    /// Every protocol, in the order the renderer lists them.
+    ///
+    /// Anything that must answer "for each protocol" — the advanced-control
+    /// capability list above all — iterates this rather than restating the
+    /// three names, so adding a protocol cannot leave one of those answers out.
+    pub const ALL: &'static [Self] = &[Self::OpenAi, Self::Anthropic, Self::Ollama];
+
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::OpenAi => "openai",
@@ -132,10 +140,14 @@ impl ProviderConfig {
                 });
             }
         }
-        if !self.temperature.is_finite() || !(0.0..=2.0).contains(&self.temperature) {
+        if !self.temperature.is_finite()
+            || !(MIN_TEMPERATURE..=MAX_TEMPERATURE).contains(&self.temperature)
+        {
             return Err(AiProviderError::InvalidRequest {
                 field: "temperature",
-                message: "must be finite and between 0 and 2".into(),
+                message: format!(
+                    "must be finite and between {MIN_TEMPERATURE} and {MAX_TEMPERATURE}"
+                ),
             });
         }
         if self.max_tokens == 0 || self.max_tokens > MAX_COMPLETION_TOKENS {
@@ -195,6 +207,24 @@ mod tests {
                 ..
             })
         ));
+
+        // Both ends of the range, now that both are named constants rather
+        // than literals inside the `contains` call.
+        for refused in [MIN_TEMPERATURE - 0.1, MAX_TEMPERATURE + 0.1] {
+            config.temperature = refused;
+            assert!(
+                matches!(
+                    config.validate(),
+                    Err(AiProviderError::InvalidRequest {
+                        field: "temperature",
+                        ..
+                    })
+                ),
+                "temperature {refused} must be refused"
+            );
+        }
+        config.temperature = MIN_TEMPERATURE;
+        config.validate().expect("the temperature floor is valid");
     }
 
     /// The second of the two scheme checks a stored profile passes through

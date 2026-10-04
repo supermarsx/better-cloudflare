@@ -204,7 +204,9 @@ export interface Conversation {
  * by `AgentConfig::validate` — see `AI_AGENT_LIMITS` for the numbers.
  *
  * `temperature`, `topP` and `personaId` are the three fields the sampling and
- * persona work added to `ai_get_config` / `ai_set_config`.
+ * persona work added to `ai_get_config` / `ai_set_config`. The advanced
+ * generation parameters that follow them are optional and provider-dependent;
+ * read their own doc comment before rendering a control for one.
  *
  * `defaultProviderId` arrives with user-defined providers. It lives in agent
  * config rather than on the profiles themselves so that exactly one provider
@@ -217,6 +219,53 @@ export interface AgentConfig {
   maxTokensPerTurn: number;
   toolsEnabled: boolean;
   stream: boolean;
+  /**
+   * The advanced generation parameters, mirroring Rust `AgentConfig`
+   * (`bc-ai-agent/src/config.rs`).
+   *
+   * Most are `Option<…>` in Rust, so `null` is how "not set" is *sent* and
+   * absent is how an older build's read arrives — both mean the same thing,
+   * and the backend then sends nothing for that parameter at all. Zero is
+   * never that: a `topK` of 0 asks to sample from no tokens.
+   *
+   * Which of them a provider honours is not a property of this type:
+   * Anthropic has no `seed` and no penalties, OpenAI has no `topK`. Ask
+   * `ai_protocol_capabilities` (see {@link AiProtocolCapabilities}) rather
+   * than assuming a stored value reaches anything — {@link topP} spent a
+   * release stored, validated and sent nowhere, which is the mistake that
+   * command exists to stop.
+   */
+  topK?: number | null;
+  /**
+   * Sequences that end the reply, at most four. Empty or absent sends none —
+   * Rust types this a bare `Vec<String>`, and an empty array is the absence
+   * of the setting rather than "stop on nothing".
+   */
+  stop?: string[];
+  seed?: number | null;
+  frequencyPenalty?: number | null;
+  presencePenalty?: number | null;
+  /**
+   * The token budget for the history sent with a turn.
+   *
+   * The one advanced parameter that is **not** optional: Rust types it a bare
+   * `u32` with a serde default, so it is always a number and `null` is not a
+   * value it can take. It is marked optional here only so that a config read
+   * from a build predating the field still satisfies the type; see
+   * `AI_DEFAULT_MAX_CONTEXT_TOKENS` for what to seed a form with then.
+   */
+  maxContextTokens?: number;
+  /**
+   * Extra instructions **added to** the system prompt in effect.
+   *
+   * Composed, not substituted: `compose_system_prompt`
+   * (`bc-ai-agent/src/agent.rs`) appends this after the conversation's own
+   * prompt or, failing that, the selected persona's, so the persona keeps
+   * applying. A present-but-blank value is refused by the backend — `null` is
+   * how the setting is cleared.
+   */
+  systemPromptOverride?: string | null;
+  requestTimeoutMs?: number | null;
   /**
    * The pre-persona spelling of {@link personaId}.
    *
@@ -244,6 +293,27 @@ export interface AgentConfig {
   personaId: string | null;
   defaultProviderId: string | null;
 }
+
+/**
+ * `ai_protocol_capabilities`: which advanced {@link AgentConfig} parameters
+ * each wire protocol honours.
+ *
+ * The keys are {@link ProviderProtocol} values and the entries are camelCase
+ * `AgentConfig` field names — the same spellings the renderer writes, so a
+ * lookup needs no translation table. The map is the **only** authority on this
+ * question: a frontend list of "OpenAI has no topK" would drift the first time
+ * a protocol adapter gained a parameter, and the whole point of the command is
+ * that the answer comes from the code that builds the request.
+ *
+ * Both halves are deliberately loose. A protocol the renderer does not know is
+ * ignored rather than rejected, and a field name it does not render is ignored
+ * too, so a backend that adds either does not have to ship with a matching
+ * renderer. What a reader may **not** do is treat a missing entry as "honoured"
+ * — see `aiParameterApplicability`.
+ */
+export type AiProtocolCapabilities = Partial<
+  Record<ProviderProtocol, readonly string[]>
+>;
 
 // ─── Permissions ───────────────────────────────────────────────────────────
 
@@ -282,9 +352,40 @@ export interface AiPermissions {
   tools: Record<string, AiToolPermission>;
 }
 
-/** `ai_get_permissions`: the stored policy plus the catalog it resolves over. */
+/**
+ * What the assistant can actually dispatch right now.
+ *
+ * Rust's `ToolAvailability` (`bc-ai-tools/src/permissions.rs`), carried on the
+ * permissions view verbatim. The renderer cannot work these numbers out for
+ * itself: the catalog describes the assistant's *own* policy, while a dispatch
+ * is gated on that policy **and** on the application's canonical MCP grants,
+ * which no `ai_*` command exposes. Anything the UI says about whether tool use
+ * is possible has to come from here rather than from counting catalog rows.
+ */
+export interface AiToolAvailability {
+  /**
+   * Whether any tool at all passes both layers. `false` means the agent loop
+   * advertises no tools, so the model is offered none and simply chats.
+   */
+  dispatchAvailable: boolean;
+  /** Registered tools the application's MCP grants currently cover. */
+  grantedToolCount: number;
+  /**
+   * Registered tools that pass both layers — MCP-granted and not denied by the
+   * assistant's policy. Never larger than `grantedToolCount`.
+   */
+  usableToolCount: number;
+  /** Every tool in the MCP catalogue, so a UI can say "3 of 48". */
+  registeredToolCount: number;
+}
+
+/**
+ * `ai_get_permissions`: the stored policy, the catalog it resolves over, and
+ * what that resolution plus the MCP grants actually leaves usable.
+ */
 export interface AiPermissionsSnapshot extends AiPermissions {
   catalog: AiToolDescriptor[];
+  availability: AiToolAvailability;
 }
 
 // ─── Personas ──────────────────────────────────────────────────────────────

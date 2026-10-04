@@ -29,6 +29,38 @@ pub const MAX_TOOL_CALLS_PER_MESSAGE: usize = 64;
 pub const MAX_REQUEST_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_COMPLETION_TOKENS: u32 = 131_072;
 
+/// Sampling-temperature bounds. Zero is greedy decoding, not "unset".
+pub const MIN_TEMPERATURE: f32 = 0.0;
+pub const MAX_TEMPERATURE: f32 = 2.0;
+/// Nucleus-sampling bounds. `top_p` is a probability mass, so 1.0 is "keep
+/// everything" and anything above it is meaningless rather than permissive.
+pub const MIN_TOP_P: f32 = 0.0;
+pub const MAX_TOP_P: f32 = 1.0;
+/// `top_k` floor. Zero is not "no filtering", it is "sample from no tokens".
+pub const MIN_TOP_K: u32 = 1;
+/// `top_k` ceiling. Chosen above every current model vocabulary (Gemma's 256k
+/// is the largest), so the cap cannot clip a setting that would have changed
+/// sampling: a `top_k` at or beyond the vocabulary filters nothing.
+pub const MAX_TOP_K: u32 = 1_000_000;
+/// Bounds for `frequency_penalty` and `presence_penalty`, which OpenAI
+/// documents as −2.0…2.0 and rejects outside.
+///
+/// Both ends are spelled as literals rather than one negating the other, so
+/// that each can be read without evaluating an expression. A test below pins
+/// them as a symmetric pair, which is what the negation used to guarantee.
+pub const MIN_SAMPLING_PENALTY: f32 = -2.0;
+pub const MAX_SAMPLING_PENALTY: f32 = 2.0;
+/// OpenAI accepts at most four `stop` sequences, so four is the most that can
+/// be honoured by every protocol that takes them.
+pub const MAX_STOP_SEQUENCES: usize = 4;
+/// An empty stop sequence is refused by OpenAI, so one byte is the floor.
+pub const MIN_STOP_SEQUENCE_BYTES: usize = 1;
+pub const MAX_STOP_SEQUENCE_BYTES: usize = 128;
+/// Floor for a per-request HTTP timeout. Below a second, a timeout cancels
+/// requests that were going to succeed.
+pub const MIN_REQUEST_TIMEOUT_MS: u32 = 1_000;
+pub const MAX_REQUEST_TIMEOUT_MS: u32 = 600_000;
+
 pub const STREAM_CHANNEL_CAPACITY: usize = 64;
 pub const MAX_STREAM_CHUNK_BYTES: usize = 256 * 1024;
 pub const MAX_STREAM_LINE_BYTES: usize = 256 * 1024;
@@ -108,6 +140,56 @@ pub fn serialized_len_limited<T: Serialize>(
     Ok(writer.written)
 }
 
+/// Vet stop sequences against what *every* protocol that takes them accepts.
+///
+/// The rules are deliberately the intersection rather than the union, because
+/// the same configuration is sent to whichever provider is selected:
+/// - OpenAI rejects an empty string;
+/// - Anthropic rejects a sequence with no non-whitespace character, which also
+///   rules out the whitespace-only `"\n\n"` form;
+/// - `\n`, `\r` and `\t` stay legal inside a sequence, because `"\nUser:"` is
+///   the canonical use of the knob and JSON carries those three losslessly.
+///   Every other control character is refused: it cannot be typed deliberately
+///   and would otherwise ride into a provider body unseen.
+pub fn validate_stop_sequences(stop: &[String]) -> Result<(), AiProviderError> {
+    if stop.len() > MAX_STOP_SEQUENCES {
+        return Err(limit_error(
+            "stop sequences",
+            MAX_STOP_SEQUENCES,
+            stop.len(),
+        ));
+    }
+    for (index, sequence) in stop.iter().enumerate() {
+        if sequence.len() < MIN_STOP_SEQUENCE_BYTES {
+            return Err(AiProviderError::InvalidRequest {
+                field: "stop",
+                message: format!(
+                    "sequence {index} must contain at least {MIN_STOP_SEQUENCE_BYTES} byte"
+                ),
+            });
+        }
+        validate_string("stop sequence", sequence, MAX_STOP_SEQUENCE_BYTES)?;
+        if !sequence.chars().any(|value| !value.is_whitespace()) {
+            return Err(AiProviderError::InvalidRequest {
+                field: "stop",
+                message: format!("sequence {index} must contain a non-whitespace character"),
+            });
+        }
+        if sequence
+            .chars()
+            .any(|value| value.is_control() && !matches!(value, '\n' | '\r' | '\t'))
+        {
+            return Err(AiProviderError::InvalidRequest {
+                field: "stop",
+                message: format!(
+                    "sequence {index} must not contain control characters other than newline or tab"
+                ),
+            });
+        }
+    }
+    Ok(())
+}
+
 pub fn validate_message(message: &Message) -> Result<(), AiProviderError> {
     if let Some(id) = &message.tool_call_id {
         validate_string("message tool-call id", id, MAX_TOOL_CALL_ID_BYTES)?;
@@ -173,10 +255,12 @@ pub fn validate_completion_request(request: &CompletionRequest) -> Result<(), Ai
         validate_string("system prompt", system, MAX_SYSTEM_PROMPT_BYTES)?;
     }
     if let Some(temperature) = request.temperature {
-        if !temperature.is_finite() || !(0.0..=2.0).contains(&temperature) {
+        if !temperature.is_finite() || !(MIN_TEMPERATURE..=MAX_TEMPERATURE).contains(&temperature) {
             return Err(AiProviderError::InvalidRequest {
                 field: "temperature",
-                message: "must be finite and between 0 and 2".into(),
+                message: format!(
+                    "must be finite and between {MIN_TEMPERATURE} and {MAX_TEMPERATURE}"
+                ),
             });
         }
     }
@@ -185,6 +269,52 @@ pub fn validate_completion_request(request: &CompletionRequest) -> Result<(), Ai
             return Err(AiProviderError::InvalidRequest {
                 field: "maxTokens",
                 message: format!("must be between 1 and {MAX_COMPLETION_TOKENS}"),
+            });
+        }
+    }
+    if let Some(top_p) = request.top_p {
+        if !top_p.is_finite() || !(MIN_TOP_P..=MAX_TOP_P).contains(&top_p) {
+            return Err(AiProviderError::InvalidRequest {
+                field: "topP",
+                message: format!("must be finite and between {MIN_TOP_P} and {MAX_TOP_P}"),
+            });
+        }
+    }
+    if let Some(top_k) = request.top_k {
+        if !(MIN_TOP_K..=MAX_TOP_K).contains(&top_k) {
+            return Err(AiProviderError::InvalidRequest {
+                field: "topK",
+                message: format!("must be between {MIN_TOP_K} and {MAX_TOP_K}"),
+            });
+        }
+    }
+    for (field, penalty) in [
+        ("frequencyPenalty", request.frequency_penalty),
+        ("presencePenalty", request.presence_penalty),
+    ] {
+        if let Some(penalty) = penalty {
+            if !penalty.is_finite()
+                || !(MIN_SAMPLING_PENALTY..=MAX_SAMPLING_PENALTY).contains(&penalty)
+            {
+                return Err(AiProviderError::InvalidRequest {
+                    field,
+                    message: format!(
+                        "must be finite and between {MIN_SAMPLING_PENALTY} and {MAX_SAMPLING_PENALTY}"
+                    ),
+                });
+            }
+        }
+    }
+    if let Some(stop) = &request.stop {
+        validate_stop_sequences(stop)?;
+    }
+    if let Some(timeout_ms) = request.timeout_ms {
+        if !(MIN_REQUEST_TIMEOUT_MS..=MAX_REQUEST_TIMEOUT_MS).contains(&timeout_ms) {
+            return Err(AiProviderError::InvalidRequest {
+                field: "timeoutMs",
+                message: format!(
+                    "must be between {MIN_REQUEST_TIMEOUT_MS} and {MAX_REQUEST_TIMEOUT_MS}"
+                ),
             });
         }
     }
@@ -258,6 +388,42 @@ pub fn parse_tool_arguments(arguments: &str) -> Result<Value, AiProviderError> {
             "complete tool-call arguments were invalid JSON: {error}"
         ))
     })
+}
+
+/// Apply a configured request timeout to a one-shot call.
+///
+/// reqwest's per-request timeout covers connect, headers *and* body, which is
+/// exactly the bound a non-streaming completion wants.
+pub(crate) fn with_total_timeout(
+    builder: reqwest::RequestBuilder,
+    timeout_ms: Option<u32>,
+) -> reqwest::RequestBuilder {
+    match timeout_ms {
+        Some(ms) => builder.timeout(std::time::Duration::from_millis(u64::from(ms))),
+        None => builder,
+    }
+}
+
+/// Send a streaming request, bounding only the wait for the response head.
+///
+/// The same reqwest timeout would cover the response body, so a 30-second
+/// setting would cut off a 60-second generation mid-sentence. The streamed
+/// body stays bounded by [`MAX_STREAM_BYTES`] and by the turn's own
+/// cancellation instead.
+pub(crate) async fn send_head_bounded(
+    builder: reqwest::RequestBuilder,
+    timeout_ms: Option<u32>,
+) -> Result<reqwest::Response, AiProviderError> {
+    let Some(ms) = timeout_ms else {
+        return builder.send().await.map_err(AiProviderError::Http);
+    };
+    tokio::time::timeout(
+        std::time::Duration::from_millis(u64::from(ms)),
+        builder.send(),
+    )
+    .await
+    .map_err(|_| AiProviderError::Timeout { ms })?
+    .map_err(AiProviderError::Http)
 }
 
 pub(crate) async fn read_body_limited(
@@ -453,6 +619,13 @@ mod tests {
             temperature: Some(0.7),
             max_tokens: Some(128),
             system: None,
+            top_p: None,
+            top_k: None,
+            stop: None,
+            seed: None,
+            frequency_penalty: None,
+            presence_penalty: None,
+            timeout_ms: None,
         }
     }
 
@@ -588,6 +761,133 @@ mod tests {
             })
         ));
         assert_eq!(body.into_vec().len(), MAX_ERROR_BODY_BYTES);
+    }
+
+    /// The last gate before an advanced control reaches a provider body. The
+    /// agent configuration validates the same ranges first; this is what stops
+    /// a request assembled anywhere else from carrying a value the API rejects.
+    #[test]
+    fn advanced_control_boundaries_are_accepted_and_one_step_past_is_not() {
+        let mut request = request_with_text("ok".into());
+        request.top_p = Some(MAX_TOP_P);
+        request.top_k = Some(MAX_TOP_K);
+        request.frequency_penalty = Some(MAX_SAMPLING_PENALTY);
+        request.presence_penalty = Some(MIN_SAMPLING_PENALTY);
+        request.seed = Some(u32::MAX);
+        request.stop = Some(vec![
+            "x".repeat(MAX_STOP_SEQUENCE_BYTES);
+            MAX_STOP_SEQUENCES
+        ]);
+        request.timeout_ms = Some(MAX_REQUEST_TIMEOUT_MS);
+        validate_completion_request(&request).expect("exact advanced boundaries");
+
+        request.timeout_ms = Some(MIN_REQUEST_TIMEOUT_MS);
+        validate_completion_request(&request).expect("timeout floor");
+
+        let out_of_range = [
+            ("topP", {
+                let mut invalid = request_with_text("ok".into());
+                invalid.top_p = Some(MAX_TOP_P + 0.1);
+                invalid
+            }),
+            ("topP", {
+                let mut invalid = request_with_text("ok".into());
+                invalid.top_p = Some(f32::NAN);
+                invalid
+            }),
+            ("topP", {
+                let mut invalid = request_with_text("ok".into());
+                invalid.top_p = Some(MIN_TOP_P - 0.1);
+                invalid
+            }),
+            ("temperature", {
+                let mut invalid = request_with_text("ok".into());
+                invalid.temperature = Some(MIN_TEMPERATURE - 0.1);
+                invalid
+            }),
+            ("temperature", {
+                let mut invalid = request_with_text("ok".into());
+                invalid.temperature = Some(MAX_TEMPERATURE + 0.1);
+                invalid
+            }),
+            ("topK", {
+                let mut invalid = request_with_text("ok".into());
+                invalid.top_k = Some(MIN_TOP_K - 1);
+                invalid
+            }),
+            ("topK", {
+                let mut invalid = request_with_text("ok".into());
+                invalid.top_k = Some(MAX_TOP_K + 1);
+                invalid
+            }),
+            ("frequencyPenalty", {
+                let mut invalid = request_with_text("ok".into());
+                invalid.frequency_penalty = Some(MAX_SAMPLING_PENALTY + 0.1);
+                invalid
+            }),
+            ("presencePenalty", {
+                let mut invalid = request_with_text("ok".into());
+                invalid.presence_penalty = Some(MIN_SAMPLING_PENALTY - 0.1);
+                invalid
+            }),
+            ("timeoutMs", {
+                let mut invalid = request_with_text("ok".into());
+                invalid.timeout_ms = Some(MIN_REQUEST_TIMEOUT_MS - 1);
+                invalid
+            }),
+            ("timeoutMs", {
+                let mut invalid = request_with_text("ok".into());
+                invalid.timeout_ms = Some(MAX_REQUEST_TIMEOUT_MS + 1);
+                invalid
+            }),
+        ];
+        for (name, invalid) in out_of_range {
+            match validate_completion_request(&invalid) {
+                Err(AiProviderError::InvalidRequest { field, .. }) => assert_eq!(field, name),
+                other => panic!("{name} out of range must be refused, got {other:?}"),
+            }
+        }
+
+        let mut invalid = request_with_text("ok".into());
+        invalid.stop = Some(vec!["x".into(); MAX_STOP_SEQUENCES + 1]);
+        assert!(matches!(
+            validate_completion_request(&invalid),
+            Err(AiProviderError::LimitExceeded {
+                resource: "stop sequences",
+                ..
+            })
+        ));
+    }
+
+    /// The penalty bounds used to be `-MAX..=MAX`, which made symmetry
+    /// structural. They are two literals now so each can be read without
+    /// evaluating an expression, so the symmetry needs pinning instead.
+    #[test]
+    fn the_sampling_penalty_bounds_stay_a_symmetric_pair() {
+        assert_eq!(MIN_SAMPLING_PENALTY, -MAX_SAMPLING_PENALTY);
+    }
+
+    /// A stop sequence is user text that ends up inside a provider body, and
+    /// the rules are the intersection of the three protocols rather than any
+    /// one of them — see [`validate_stop_sequences`].
+    #[test]
+    fn stop_sequences_keep_newlines_but_refuse_empty_blank_and_control_text() {
+        validate_stop_sequences(&["\nUser:".into(), "END\t".into(), "\r\n#".into()])
+            .expect("newline-bearing sequences are the common case");
+
+        for refused in [
+            "",
+            "\n\n",
+            "   ",
+            "stop\u{0}",
+            "stop\u{1b}[0m",
+            &"x".repeat(MAX_STOP_SEQUENCE_BYTES + 1),
+        ] {
+            assert!(
+                validate_stop_sequences(&[refused.to_string()]).is_err(),
+                "stop sequence {refused:?} must be refused"
+            );
+        }
     }
 
     #[test]

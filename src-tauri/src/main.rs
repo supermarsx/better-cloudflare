@@ -343,6 +343,7 @@ fn main() {
             ai_commands::ai_list_models,
             ai_commands::ai_get_config,
             ai_commands::ai_set_config,
+            ai_commands::ai_protocol_capabilities,
             ai_commands::ai_create_conversation,
             ai_commands::ai_list_conversations,
             ai_commands::ai_get_conversation,
