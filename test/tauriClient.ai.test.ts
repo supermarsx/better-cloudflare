@@ -9,7 +9,14 @@ import {
   getTauriInvokeTimeoutMs,
   TauriClient,
 } from "../src/lib/api/tauri-client";
-import type { AgentConfig, AgentEvent, ProviderConfig } from "../src/types/ai";
+import type {
+  AgentConfig,
+  AgentEvent,
+  AiPermissionsSnapshot,
+  AiPersona,
+  AiPersonaInput,
+  ProviderConfig,
+} from "../src/types/ai";
 
 type Call = { command: string; payload: Record<string, unknown> | undefined };
 
@@ -39,6 +46,9 @@ const AGENT_CONFIG: AgentConfig = {
   toolsEnabled: false,
   stream: true,
   preset: "dns-assistant",
+  temperature: 0.7,
+  topP: 1,
+  personaId: null,
 };
 
 afterEach(() => {
@@ -75,10 +85,26 @@ test("every AI method throws a clear error off desktop", async () => {
     () => TauriClient.aiListPresets(),
     () => TauriClient.aiGetPreset("p1"),
     () => TauriClient.aiExportConversation("c1"),
+    () => TauriClient.aiGetPermissions(),
+    () => TauriClient.aiSetPermissions({ mode: "ask", tools: {} }),
+    () => TauriClient.aiListPersonas(),
+    () =>
+      TauriClient.aiCreatePersona({
+        name: "n",
+        description: "d",
+        systemPrompt: "s",
+      }),
+    () =>
+      TauriClient.aiUpdatePersona("p1", {
+        name: "n",
+        description: "d",
+        systemPrompt: "s",
+      }),
+    () => TauriClient.aiDeletePersona("p1"),
     () => TauriClient.onAiEvent(() => {}),
   ];
-  // Seventeen commands plus the event subscription.
-  assert.equal(attempts.length, 18);
+  // Twenty-three commands plus the event subscription.
+  assert.equal(attempts.length, 24);
   for (const attempt of attempts) {
     await assert.rejects(attempt, { message: AI_DESKTOP_ONLY });
   }
@@ -215,6 +241,109 @@ test("all seventeen commands use the camelCase Tauri contract", async () => {
     model: "gpt-4o",
     title: null,
     systemPrompt: null,
+  });
+});
+
+test("permission and persona commands use the camelCase Tauri contract", async () => {
+  desktop();
+  const snapshot: AiPermissionsSnapshot = {
+    mode: "ask",
+    tools: { cf_delete_dns_record: "deny" },
+    catalog: [
+      {
+        name: "cf_list_dns_records",
+        classification: "read",
+        description: "List records",
+        permission: "allow",
+      },
+    ],
+  };
+  const persona: AiPersona = {
+    id: "custom-1",
+    name: "Zone reviewer",
+    description: "Reads a zone and reports on it",
+    systemPrompt: "You review DNS zones.",
+    builtin: false,
+  };
+  const calls = recordCalls((command) => {
+    switch (command) {
+      case "ai_get_permissions":
+        return snapshot;
+      case "ai_set_permissions":
+        return { mode: snapshot.mode, tools: snapshot.tools };
+      case "ai_list_personas":
+        return [persona];
+      case "ai_create_persona":
+      case "ai_update_persona":
+        return persona;
+      case "ai_delete_persona":
+        return true;
+      default:
+        throw new Error(`Unexpected Tauri command: ${command}`);
+    }
+  });
+
+  const input: AiPersonaInput = {
+    name: persona.name,
+    description: persona.description,
+    systemPrompt: persona.systemPrompt,
+  };
+  const read = await TauriClient.aiGetPermissions();
+  const stored = await TauriClient.aiSetPermissions({
+    mode: "readOnly",
+    tools: { cf_delete_dns_record: "deny" },
+  });
+  const listed = await TauriClient.aiListPersonas();
+  await TauriClient.aiCreatePersona(input);
+  await TauriClient.aiUpdatePersona("custom-1", input);
+  const deleted = await TauriClient.aiDeletePersona("custom-1");
+
+  assert.deepEqual(
+    calls.map((call) => call.command),
+    [
+      "ai_get_permissions",
+      "ai_set_permissions",
+      "ai_list_personas",
+      "ai_create_persona",
+      "ai_update_persona",
+      "ai_delete_persona",
+    ],
+  );
+
+  // The catalog's `permission` is the effective value, so it is carried
+  // through untouched: the client must not resolve or normalize it.
+  assert.deepEqual(read, snapshot);
+  assert.deepEqual(stored, { mode: "ask", tools: snapshot.tools });
+  assert.deepEqual(listed, [persona]);
+  assert.equal(deleted, true);
+
+  const byCommand = (command: string) =>
+    calls.filter((call) => call.command === command);
+  // A read takes no arguments at all.
+  assert.deepEqual(byCommand("ai_get_permissions")[0].payload, {});
+  assert.deepEqual(byCommand("ai_set_permissions")[0].payload, {
+    permissions: {
+      mode: "readOnly",
+      tools: { cf_delete_dns_record: "deny" },
+    },
+  });
+  assert.deepEqual(byCommand("ai_create_persona")[0].payload, {
+    persona: {
+      name: "Zone reviewer",
+      description: "Reads a zone and reports on it",
+      systemPrompt: "You review DNS zones.",
+    },
+  });
+  assert.deepEqual(byCommand("ai_update_persona")[0].payload, {
+    id: "custom-1",
+    persona: {
+      name: "Zone reviewer",
+      description: "Reads a zone and reports on it",
+      systemPrompt: "You review DNS zones.",
+    },
+  });
+  assert.deepEqual(byCommand("ai_delete_persona")[0].payload, {
+    id: "custom-1",
   });
 });
 

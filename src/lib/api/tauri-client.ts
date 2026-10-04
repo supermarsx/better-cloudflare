@@ -21,6 +21,10 @@ import {
 import type {
   AgentConfig,
   AgentEvent,
+  AiPermissions,
+  AiPermissionsSnapshot,
+  AiPersona,
+  AiPersonaInput,
   Conversation,
   ConversationMeta,
   Model,
@@ -1875,6 +1879,60 @@ export class TauriClient {
   static async aiExportConversation(id: string): Promise<string> {
     TauriClient.requireAiDesktop();
     return invoke("ai_export_conversation", { id });
+  }
+
+  // ─── Permissions and personas ───────────────────────────────────────────
+  // Six further commands. The permission *decision* is made behind this
+  // boundary: these methods report it and request changes to it, and nothing
+  // the renderer does with the result can let a denied tool run.
+
+  /**
+   * The stored policy (mode plus explicit per-tool overrides) and the tool
+   * catalog it resolves over. Each descriptor's `permission` is the effective
+   * resolved value, so it already accounts for the mode — an absent override is
+   * not an absent decision.
+   */
+  static async aiGetPermissions(): Promise<AiPermissionsSnapshot> {
+    TauriClient.requireAiDesktop();
+    return invoke("ai_get_permissions");
+  }
+
+  /**
+   * Replace the policy. Resolves with what was **stored**, which is not
+   * necessarily what was sent — the backend normalizes, so re-read
+   * {@link aiGetPermissions} for the catalog's new effective values rather than
+   * deriving them locally.
+   */
+  static async aiSetPermissions(
+    permissions: AiPermissions,
+  ): Promise<AiPermissions> {
+    TauriClient.requireAiDesktop();
+    return invoke("ai_set_permissions", { permissions });
+  }
+
+  static async aiListPersonas(): Promise<AiPersona[]> {
+    TauriClient.requireAiDesktop();
+    return invoke("ai_list_personas");
+  }
+
+  /** Resolves with the created persona, including the id the backend assigned. */
+  static async aiCreatePersona(persona: AiPersonaInput): Promise<AiPersona> {
+    TauriClient.requireAiDesktop();
+    return invoke("ai_create_persona", { persona });
+  }
+
+  /** Builtins are immutable; updating one is refused by the backend. */
+  static async aiUpdatePersona(
+    id: string,
+    persona: AiPersonaInput,
+  ): Promise<AiPersona> {
+    TauriClient.requireAiDesktop();
+    return invoke("ai_update_persona", { id, persona });
+  }
+
+  static async aiDeletePersona(id: string): Promise<boolean> {
+    TauriClient.requireAiDesktop();
+    return invoke("ai_delete_persona", { id });
   }
 
   /**

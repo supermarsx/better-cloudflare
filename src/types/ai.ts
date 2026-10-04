@@ -159,13 +159,91 @@ export interface Conversation {
 
 // ─── Agent Types ───────────────────────────────────────────────────────────
 
-/** Configuration for the AI agent loop. */
+/**
+ * Configuration for the AI agent loop.
+ *
+ * `maxToolRounds`, `maxTokensPerTurn`, `toolsEnabled`, `stream` and `preset`
+ * mirror Rust `AgentConfig` (`bc-ai-agent/src/config.rs:13-25`) and are bounded
+ * by `AgentConfig::validate` — see `AI_AGENT_LIMITS` for the numbers.
+ *
+ * `temperature`, `topP` and `personaId` are the three fields the sampling and
+ * persona work adds to `ai_get_config` / `ai_set_config`. `preset` is kept
+ * because it is still a required field on the Rust struct; a backend that
+ * replaces it with `personaId` simply ignores the extra key, whereas omitting a
+ * field that is still required would fail deserialization.
+ */
 export interface AgentConfig {
   maxToolRounds: number;
   maxTokensPerTurn: number;
   toolsEnabled: boolean;
   stream: boolean;
   preset: string;
+  /** 0.0–2.0. */
+  temperature: number;
+  /** 0.0–1.0. */
+  topP: number;
+  /** The selected {@link AiPersona}, or `null` for the preset system prompt. */
+  personaId: string | null;
+}
+
+// ─── Permissions ───────────────────────────────────────────────────────────
+
+/**
+ * How the agent treats a tool that has no explicit per-tool override.
+ *
+ * `readOnly` runs read-only tools and **denies** everything else outright — it
+ * does not prompt. `ask` runs reads and prompts for writes. `autonomous` runs
+ * everything. Enforcement is server-side; see `resolveAiToolPermission` for the
+ * order these rules apply in.
+ */
+export type AiPermissionMode = "readOnly" | "ask" | "autonomous";
+
+/** The decision for one tool: run it, prompt first, or refuse. */
+export type AiToolPermission = "allow" | "ask" | "deny";
+
+/** Whether a tool only reads, or can change something. */
+export type AiToolClassification = "read" | "write";
+
+/**
+ * One tool as the backend describes it.
+ *
+ * `permission` is the **effective** resolved value, not the override — a tool
+ * with no override still reports whatever the mode produced for it.
+ */
+export interface AiToolDescriptor {
+  name: string;
+  classification: AiToolClassification;
+  description: string;
+  permission: AiToolPermission;
+}
+
+/** The stored policy: a mode plus the explicit per-tool overrides only. */
+export interface AiPermissions {
+  mode: AiPermissionMode;
+  tools: Record<string, AiToolPermission>;
+}
+
+/** `ai_get_permissions`: the stored policy plus the catalog it resolves over. */
+export interface AiPermissionsSnapshot extends AiPermissions {
+  catalog: AiToolDescriptor[];
+}
+
+// ─── Personas ──────────────────────────────────────────────────────────────
+
+/** A named system prompt. Builtins are immutable. */
+export interface AiPersona {
+  id: string;
+  name: string;
+  description: string;
+  systemPrompt: string;
+  builtin: boolean;
+}
+
+/** The writable half of a persona — what create and update accept. */
+export interface AiPersonaInput {
+  name: string;
+  description: string;
+  systemPrompt: string;
 }
 
 /** Events emitted by the agent during execution. */
