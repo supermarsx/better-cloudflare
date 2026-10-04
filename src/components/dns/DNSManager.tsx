@@ -81,6 +81,15 @@ import { RecordRow } from "./RecordRow";
 import { SpecialIpAuditFindings } from "./SpecialIpAuditFindings";
 import { NotificationsPanel } from "./NotificationsPanel";
 import { AiAssistantPanel } from "@/components/ai/AiAssistantPanel";
+import {
+  AiAssistantRelocatedNotice,
+  AiAssistantSurface,
+} from "@/components/ai/AiAssistantSurface";
+import {
+  AI_ASSISTANT_PRESENTATIONS,
+  isAiAssistantPresentation,
+  type AiAssistantPresentation,
+} from "@/lib/ai/presentation";
 import { toastAllowed } from "@/lib/notifications/notification-settings";
 import { parseCSVRecords, parseBINDZone } from "@/lib/dns/dns-parsers";
 import {
@@ -1645,6 +1654,67 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const [closeTabOnMiddleClick, setCloseTabOnMiddleClick] = useState(
     storageManager.getCloseTabOnMiddleClick(),
   );
+  /**
+   * Where the assistant appears, and whether its dock or bubble is showing.
+   *
+   * Both live here rather than inside the assistant because both the dock and
+   * the bubble have to outlive a workspace tab switch: the tab body is
+   * re-rendered per active tab, so state owned down there would be reset by
+   * moving between zones.
+   *
+   * The preference round-trips the same way every other UI preference here
+   * does — `storageManager` for the browser copy, and the session settings
+   * profile for the desktop copy. It is deliberately *not* added to
+   * `persistDnsPreferenceFields`: `AppConfigStore::merge` rejects any field the
+   * Rust `Preferences` struct does not declare
+   * (`src-tauri/src/app_config.rs:174-180`), so a new top-level key would fail
+   * the whole preference write, every other preference included.
+   * `session_settings_profiles` is a free-form `HashMap<String, Value>` there,
+   * which is why the profile carries this without a backend change.
+   */
+  const [assistantPresentation, setAssistantPresentation] =
+    useState<AiAssistantPresentation>(() =>
+      storageManager.getAiAssistantPresentation(),
+    );
+  const [assistantOpen, setAssistantOpen] = useState(false);
+  const assistantPlacementLabels: Record<
+    AiAssistantPresentation,
+    { label: string; hint: string; saved: string }
+  > = {
+    panel: {
+      label: t("Workspace tab", "Workspace tab"),
+      hint: t(
+        "Opens as its own tab alongside zones and settings.",
+        "Opens as its own tab alongside zones and settings.",
+      ),
+      saved: t(
+        "Assistant opens as a workspace tab.",
+        "Assistant opens as a workspace tab.",
+      ),
+    },
+    sidebar: {
+      label: t("Docked sidebar", "Docked sidebar"),
+      hint: t(
+        "Stays beside the workspace while you move between tabs. In a narrow window it slides over the workspace instead of shrinking it.",
+        "Stays beside the workspace while you move between tabs. In a narrow window it slides over the workspace instead of shrinking it.",
+      ),
+      saved: t(
+        "Assistant docked beside the workspace.",
+        "Assistant docked beside the workspace.",
+      ),
+    },
+    bubble: {
+      label: t("Floating bubble", "Floating bubble"),
+      hint: t(
+        "A button in the corner that opens a small chat window over the workspace. Escape closes it.",
+        "A button in the corner that opens a small chat window over the workspace. Escape closes it.",
+      ),
+      saved: t(
+        "Assistant floats over the workspace.",
+        "Assistant floats over the workspace.",
+      ),
+    },
+  };
   const [mcpServerEnabled, setMcpServerEnabled] = useState(
     storageManager.getMcpServerEnabled(),
   );
@@ -2087,6 +2157,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
         idleLogoutMs,
         confirmWindowClose,
         closeTabOnMiddleClick,
+        assistantPresentation,
         mcpServerEnabled,
         mcpServerHost,
         mcpServerPort,
@@ -2132,6 +2203,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       idleLogoutMs,
       confirmWindowClose,
       closeTabOnMiddleClick,
+      assistantPresentation,
       mcpServerEnabled,
       mcpServerHost,
       mcpServerPort,
@@ -2218,6 +2290,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       }
       if (typeof profile.closeTabOnMiddleClick === "boolean") {
         setCloseTabOnMiddleClick(profile.closeTabOnMiddleClick);
+      }
+      if (isAiAssistantPresentation(profile.assistantPresentation)) {
+        setAssistantPresentation(profile.assistantPresentation);
       }
       if (typeof profile.mcpServerEnabled === "boolean") {
         setMcpServerEnabled(profile.mcpServerEnabled);
@@ -2749,6 +2824,22 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     setActiveTabId(id);
     setSelectedZoneId("");
   }, []);
+
+  /**
+   * One entry point for "show me the assistant", whichever chrome it is wearing.
+   *
+   * The command-bar button, and the pointer the assistant tab shows when the
+   * assistant lives elsewhere, both route through here, so there is no path
+   * that opens a second copy: in tab mode it activates the tab, otherwise it
+   * opens the dock or the bubble.
+   */
+  const revealAssistant = useCallback(() => {
+    if (assistantPresentation === "panel") {
+      openActionTab("assistant");
+      return;
+    }
+    setAssistantOpen(true);
+  }, [assistantPresentation, openActionTab]);
 
   /**
    * "Check registration" from an expiry notice: open the Registry workspace
@@ -4061,6 +4152,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     setIdleLogoutMs(storageManager.getIdleLogoutMs());
     setConfirmWindowClose(storageManager.getConfirmWindowClose());
     setCloseTabOnMiddleClick(storageManager.getCloseTabOnMiddleClick());
+    setAssistantPresentation(storageManager.getAiAssistantPresentation());
     setMcpServerEnabled(storageManager.getMcpServerEnabled());
     setMcpServerHost(storageManager.getMcpServerHost());
     setMcpServerPort(storageManager.getMcpServerPort());
@@ -4361,6 +4453,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     storageManager.setIdleLogoutMs(idleLogoutMs);
     storageManager.setConfirmWindowClose(confirmWindowClose);
     storageManager.setCloseTabOnMiddleClick(closeTabOnMiddleClick);
+    storageManager.setAiAssistantPresentation(assistantPresentation);
     storageManager.setMcpServerEnabled(mcpServerEnabled);
     storageManager.setMcpServerHost(mcpServerHost);
     storageManager.setMcpServerPort(mcpServerPort);
@@ -4474,6 +4567,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     idleLogoutMs,
     confirmWindowClose,
     closeTabOnMiddleClick,
+    assistantPresentation,
     mcpServerEnabled,
     mcpServerHost,
     mcpServerPort,
@@ -6779,6 +6873,18 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
 
   return (
     <AuthenticatedAppShell
+      // One assistant surface, declared above the per-tab switch so neither the
+      // dock nor the bubble is torn down by moving between workspace tabs. It
+      // renders the dock into this slot; in bubble mode it renders nothing here
+      // and portals to `document.body` instead, and in tab mode it renders
+      // nothing at all because the tab body owns the panel.
+      sidebar={
+        <AiAssistantSurface
+          presentation={assistantPresentation}
+          open={assistantOpen}
+          onOpenChange={setAssistantOpen}
+        />
+      }
       commandBar={
         <DnsAppCommandBar
           accountLabel={
@@ -6795,7 +6901,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
           unreadCount={notificationsBadge ? notificationsUnread : 0}
           onOpenNotifications={() => openActionTab("notifications")}
           showAssistant={isDesktop()}
-          onOpenAssistant={() => openActionTab("assistant")}
+          onOpenAssistant={revealAssistant}
           onOpenAudit={() => openActionTab("audit")}
           onOpenRegistry={() => openActionTab("registry")}
           onOpenSettings={() => openActionTab("settings")}
@@ -10286,7 +10392,20 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                   registrarDomains={registrarMonitor.domains}
                 />
               )}
-              {activeTab.kind === "assistant" && <AiAssistantPanel />}
+              {activeTab.kind === "assistant" &&
+                (assistantPresentation === "panel" ? (
+                  <AiAssistantPanel />
+                ) : (
+                  // The tab can still be open — restored from
+                  // `reopen_last_tabs`, or opened before the preference
+                  // changed. Rendering a second panel here would mean two
+                  // conversations and two `ai:event` subscriptions, so it
+                  // points at the real one instead.
+                  <AiAssistantRelocatedNotice
+                    presentation={assistantPresentation}
+                    onReveal={revealAssistant}
+                  />
+                ))}
               {activeTab.kind === "settings" && (
                 <Card className="border-border/60 bg-card/70">
                   <CardHeader>
@@ -10674,6 +10793,52 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                               )}
                             </div>
                           </div>
+                        </div>
+                        <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr]">
+                          <div className="font-medium">
+                            {t("Assistant placement", "Assistant placement")}
+                          </div>
+                          <fieldset
+                            className="min-w-0 space-y-2"
+                            data-testid="assistant-placement"
+                            data-presentation={assistantPresentation}
+                          >
+                            <legend className="sr-only">
+                              {t("Assistant placement", "Assistant placement")}
+                            </legend>
+                            {AI_ASSISTANT_PRESENTATIONS.map((option) => (
+                              <label
+                                key={option}
+                                className="flex min-w-0 items-start gap-3"
+                              >
+                                <input
+                                  type="radio"
+                                  name="assistant-presentation"
+                                  className="checkbox-themed mt-1 shrink-0"
+                                  value={option}
+                                  checked={assistantPresentation === option}
+                                  onChange={() => {
+                                    setAssistantPresentation(option);
+                                    // Moving the assistant should not also
+                                    // pop it open; the command-bar button and
+                                    // the tab's pointer both still do that.
+                                    setAssistantOpen(false);
+                                    notifySaved(
+                                      assistantPlacementLabels[option].saved,
+                                    );
+                                  }}
+                                />
+                                <span className="min-w-0 flex-1">
+                                  <span className="block">
+                                    {assistantPlacementLabels[option].label}
+                                  </span>
+                                  <span className="block text-xs text-muted-foreground">
+                                    {assistantPlacementLabels[option].hint}
+                                  </span>
+                                </span>
+                              </label>
+                            ))}
+                          </fieldset>
                         </div>
                         <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
                           <div className="font-medium">

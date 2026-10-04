@@ -32,6 +32,11 @@ export interface BrowserSessionSettingsProfile {
   idleLogoutMs?: number | null;
   confirmWindowClose?: boolean;
   closeTabOnMiddleClick?: boolean;
+  /**
+   * Where the AI assistant appears: the workspace tab, a dock, or a floating
+   * bubble. See `src/lib/ai/presentation.ts`; absent means the workspace tab.
+   */
+  assistantPresentation?: "panel" | "sidebar" | "bubble";
   rewriteCopiedRecordDomains?: boolean;
   mcpServerEnabled?: boolean;
   mcpServerHost?: string;
@@ -242,6 +247,7 @@ const SESSION_PROFILE_SCHEMA = {
   idleLogoutMs: "nullable-number",
   confirmWindowClose: "boolean",
   closeTabOnMiddleClick: "boolean",
+  assistantPresentation: ["panel", "sidebar", "bubble"],
   rewriteCopiedRecordDomains: "boolean",
   mcpServerEnabled: "boolean",
   mcpServerHost: "string",

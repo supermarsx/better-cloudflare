@@ -116,6 +116,9 @@ function installBackend(options: BackendOptions = {}): Backend {
     toolsEnabled: false,
     stream: true,
     preset: "default",
+    temperature: 0.7,
+    topP: 1,
+    personaId: null,
     ...options.config,
   };
 

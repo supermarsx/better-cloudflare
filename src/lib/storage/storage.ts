@@ -6,6 +6,10 @@ import {
 } from "../../types/dns";
 import { CryptoManager } from "../auth/crypto";
 import {
+  normalizeAiAssistantPresentation,
+  type AiAssistantPresentation,
+} from "../ai/presentation";
+import {
   DEFAULT_MCP_ENABLED_TOOL_IDS,
   MCP_PERMISSION_POLICY_VERSION,
   capMcpPermissionDiagnosticIds,
@@ -1215,6 +1219,18 @@ export class StorageManager {
     return this.data.closeTabOnMiddleClick !== false;
   }
 
+  setAiAssistantPresentation(presentation: AiAssistantPresentation): void {
+    const next = normalizeAiAssistantPresentation(presentation);
+    this.data.assistantPresentation = next;
+    this.save();
+    this.dispatchPreferencesChanged({ assistantPresentation: next });
+  }
+
+  /** The workspace tab unless something else was explicitly stored. */
+  getAiAssistantPresentation(): AiAssistantPresentation {
+    return normalizeAiAssistantPresentation(this.data.assistantPresentation);
+  }
+
   setRewriteCopiedRecordDomains(enabled: boolean): void {
     this.data.rewriteCopiedRecordDomains = enabled;
     this.save();
@@ -2082,6 +2098,7 @@ export class StorageManager {
     delete this.data.idleLogoutMs;
     delete this.data.confirmWindowClose;
     delete this.data.closeTabOnMiddleClick;
+    delete this.data.assistantPresentation;
     delete this.data.rewriteCopiedRecordDomains;
     delete this.data.mcpServerEnabled;
     delete this.data.mcpServerHost;

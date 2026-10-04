@@ -1,13 +1,22 @@
 /**
- * The AI assistant workspace tab.
+ * The AI assistant.
  *
- * Chat-only by design. Tool dispatch is denied at a crate boundary
+ * This is the *only* assistant implementation. The tab, the dock and the
+ * floating bubble are three chromes around this one component — see
+ * `AiAssistantSurface` — so the conversation, its event subscription and its
+ * settings exist once no matter where the user put them. `presentation` changes
+ * sizing, scrolling and whether a dismiss affordance exists; it changes nothing
+ * about what the assistant can do.
+ *
+ * Chat is tool-free by design. Tool dispatch is denied at a crate boundary
  * (`bc_mcp::tools::execute_tool` always returns an error and the real
  * dispatcher is `pub(crate)`), so this panel never offers an approve action —
  * it turns tool use off instead, which makes the whole broken path unreachable
- * rather than merely hidden. See `AiToolNotice` and `AiTranscript`.
+ * rather than merely hidden. See `AiToolNotice` and `AiTranscript`. The
+ * permission settings describe what the desktop service would decide; they do
+ * not claim the dispatch path is open.
  *
- * Desktop only: all seventeen `ai_*` commands are Tauri commands and
+ * Desktop only: every `ai_*` command is a Tauri command and
  * `server-client.ts` has no HTTP fallback for any of them.
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -20,7 +29,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Download } from "lucide-react";
+import { Download, X } from "lucide-react";
 import {
   AI_STREAM_STALLED_MESSAGE,
   useAiChat,
@@ -30,11 +39,16 @@ import {
 } from "@/hooks/ai/use-ai-chat";
 import { useI18n } from "@/hooks/use-i18n";
 import { usePrefersReducedMotion } from "@/hooks/use-prefers-reduced-motion";
+import type { AiAssistantPresentation } from "@/lib/ai/presentation";
 import { withObjectUrl } from "@/lib/runtime/resource-scope";
-import type { ProviderKind } from "@/types/ai";
+import { cn } from "@/lib/utils";
+import type { AgentConfig, ProviderKind } from "@/types/ai";
 
+import { AiAgentSettings } from "./AiAgentSettings";
 import { AiComposer } from "./AiComposer";
 import { AiConversationList } from "./AiConversationList";
+import { ConnectedAiPermissionSettings } from "./AiPermissionSettings";
+import { ConnectedAiPersonaSettings } from "./AiPersonaSettings";
 import { AiProviderSettings } from "./AiProviderSettings";
 import { AiToolNotice, type AiToolPosture } from "./AiToolNotice";
 import { AiTranscript } from "./AiTranscript";
@@ -42,8 +56,33 @@ import { describeAiError } from "./ai-error";
 
 export type AiAssistantView = "chat" | "settings";
 
+/**
+ * Settings sub-sections. `providers` is first and is the default: it is the
+ * only one that can be *required* before the assistant works at all, and
+ * landing anywhere else would make an unconfigured install look broken.
+ */
+export type AiSettingsSection =
+  "providers" | "permissions" | "personas" | "responses";
+
+const SETTINGS_SECTIONS: readonly AiSettingsSection[] = [
+  "providers",
+  "permissions",
+  "personas",
+  "responses",
+] as const;
+
 export interface AiAssistantPanelProps {
   initialView?: AiAssistantView;
+  /**
+   * Which chrome to wear. `panel` is the workspace tab and the default, so
+   * every existing call site keeps the layout it had.
+   */
+  presentation?: AiAssistantPresentation;
+  /**
+   * Renders a dismiss affordance in the header. Omitted for the tab, which is
+   * closed by the workspace tab bar instead.
+   */
+  onDismiss?: () => void;
   /**
    * Overrides the hook's stall watchdog. Exists so a test can reach the
    * stalled-run branch without waiting 90 s; production never passes it.
@@ -53,12 +92,26 @@ export interface AiAssistantPanelProps {
 
 export function AiAssistantPanel({
   initialView = "chat",
+  presentation = "panel",
+  onDismiss,
   watchdogMs,
 }: AiAssistantPanelProps = {}) {
   const { t } = useI18n();
   const reducedMotion = usePrefersReducedMotion();
 
+  /** The tab scrolls with the workspace; the dock and bubble scroll inside. */
+  const framed = presentation !== "panel";
+
+  const settingsSectionLabels: Record<AiSettingsSection, string> = {
+    providers: t("Providers", "Providers"),
+    permissions: t("Permissions", "Permissions"),
+    personas: t("Personas", "Personas"),
+    responses: t("Responses", "Responses"),
+  };
+
   const [view, setView] = useState<AiAssistantView>(initialView);
+  const [settingsSection, setSettingsSection] =
+    useState<AiSettingsSection>("providers");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [newProvider, setNewProvider] = useState<ProviderKind | null>(null);
   const [modelByProvider, setModelByProvider] = useState<
@@ -68,6 +121,7 @@ export function AiAssistantPanel({
   const [panelError, setPanelError] = useState<string | null>(null);
   const [preflightError, setPreflightError] = useState<string | null>(null);
   const [disablingTools, setDisablingTools] = useState(false);
+  const [savingAgentConfig, setSavingAgentConfig] = useState(false);
   const [lastSent, setLastSent] = useState<string | null>(null);
   // There is no reject command and `ai_cancel_generation` does not clear
   // `pending_tool_calls`, so a stopped run would otherwise leave its approval
@@ -167,6 +221,43 @@ export function AiAssistantPanel({
       );
     });
   }, [agentConfig, t]);
+
+  /**
+   * The persona lives in agent config, not in the persona list, so selecting
+   * one is an `ai_set_config` write. The whole config is carried through: a
+   * partial write would reset whatever the other sections last stored.
+   */
+  const handlePersonaSelect = useCallback(
+    (personaId: string | null) => {
+      const current = agentConfig.config;
+      if (!current) return;
+      setSavingAgentConfig(true);
+      setPanelError(null);
+      void agentConfig
+        .update({ ...current, personaId })
+        .catch((error) => {
+          setPanelError(
+            describeAiError(
+              error,
+              t(
+                "The persona could not be selected.",
+                "The persona could not be selected.",
+              ),
+            ).message,
+          );
+        })
+        .finally(() => setSavingAgentConfig(false));
+    },
+    [agentConfig, t],
+  );
+
+  /** Rejects on refusal so the form can show the backend's own message. */
+  const handleAgentConfigSave = useCallback(
+    async (next: AgentConfig) => {
+      await agentConfig.update(next);
+    },
+    [agentConfig],
+  );
 
   const handleCreate = useCallback(() => {
     if (!newProvider) return;
@@ -285,13 +376,34 @@ export function AiAssistantPanel({
     });
   }, [chat, t]);
 
+  const dismissButton = onDismiss ? (
+    <Button
+      type="button"
+      variant="ghost"
+      size="icon"
+      className="h-8 w-8"
+      aria-label={t("Close assistant", "Close assistant")}
+      onClick={onDismiss}
+    >
+      <X aria-hidden="true" className="h-4 w-4" />
+    </Button>
+  ) : null;
+
   if (!chat.available) {
     return (
-      <Card className="border-border/60 bg-card/70" data-testid="ai-panel">
-        <CardHeader>
+      <Card
+        className={cn(
+          "border-border/60 bg-card/70",
+          framed && "flex h-full min-h-0 flex-col",
+        )}
+        data-testid="ai-panel"
+        data-presentation={presentation}
+      >
+        <CardHeader className="flex flex-row items-start justify-between gap-2">
           <CardTitle className="text-lg">
             {t("Assistant", "Assistant")}
           </CardTitle>
+          {dismissButton}
         </CardHeader>
         <CardContent className="text-sm text-muted-foreground">
           {t(
@@ -327,31 +439,46 @@ export function AiAssistantPanel({
   const stalled = chat.error?.message === AI_STREAM_STALLED_MESSAGE;
 
   return (
-    <Card className="border-border/60 bg-card/70" data-testid="ai-panel">
-      <CardHeader className="space-y-3">
+    <Card
+      className={cn(
+        "border-border/60 bg-card/70",
+        framed && "flex h-full min-h-0 flex-col",
+      )}
+      data-testid="ai-panel"
+      data-presentation={presentation}
+    >
+      <CardHeader className={cn("space-y-3", framed && "shrink-0 p-4")}>
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="min-w-0">
-            <CardTitle className="text-lg">
+            <CardTitle className={framed ? "text-base" : "text-lg"}>
               {t("Assistant", "Assistant")}
             </CardTitle>
-            <CardDescription className="mt-1">
-              {t(
-                "Chat with a configured model. The assistant cannot change anything in your account.",
-                "Chat with a configured model. The assistant cannot change anything in your account.",
-              )}
-            </CardDescription>
+            {/* The dock and the bubble pay for every header row in transcript
+                height, so the standing explanation is kept for the tab only.
+                The same claim is restated by `AiToolNotice` in every chrome. */}
+            {framed ? null : (
+              <CardDescription className="mt-1">
+                {t(
+                  "Chat with a configured model. The assistant cannot change anything in your account.",
+                  "Chat with a configured model. The assistant cannot change anything in your account.",
+                )}
+              </CardDescription>
+            )}
           </div>
-          <Button
-            type="button"
-            variant="outline"
-            size="icon"
-            className="h-8 w-8"
-            disabled={selectedId === null}
-            aria-label={t("Export conversation", "Export conversation")}
-            onClick={handleExport}
-          >
-            <Download aria-hidden="true" className="h-3.5 w-3.5" />
-          </Button>
+          <div className="flex shrink-0 items-center gap-1">
+            <Button
+              type="button"
+              variant="outline"
+              size="icon"
+              className="h-8 w-8"
+              disabled={selectedId === null}
+              aria-label={t("Export conversation", "Export conversation")}
+              onClick={handleExport}
+            >
+              <Download aria-hidden="true" className="h-3.5 w-3.5" />
+            </Button>
+            {dismissButton}
+          </div>
         </div>
         <div
           role="toolbar"
@@ -378,7 +505,13 @@ export function AiAssistantPanel({
           </button>
         </div>
       </CardHeader>
-      <CardContent className="space-y-4">
+      <CardContent
+        className={cn(
+          "space-y-4",
+          framed &&
+            "scrollbar-themed min-h-0 flex-1 overflow-x-hidden overflow-y-auto p-4 pt-0",
+        )}
+      >
         <AiToolNotice
           posture={posture}
           busy={disablingTools}
@@ -437,13 +570,61 @@ export function AiAssistantPanel({
         ) : null}
 
         {view === "settings" ? (
-          <AiProviderSettings
-            providers={providers.providers}
-            loading={providers.loading}
-            toolsEnabled={agentConfig.config?.toolsEnabled ?? false}
-            onConfigure={providers.configure}
-            onConfigured={rememberModel}
-          />
+          <div className="space-y-4" data-testid="ai-settings-view">
+            <div
+              role="toolbar"
+              aria-label={t("Assistant settings", "Assistant settings")}
+              className="glass-surface glass-sheen glass-fade ui-segment-group scrollbar-themed"
+            >
+              {SETTINGS_SECTIONS.map((section) => (
+                <button
+                  key={section}
+                  type="button"
+                  className="ui-segment"
+                  data-active={settingsSection === section}
+                  aria-pressed={settingsSection === section}
+                  onClick={() => setSettingsSection(section)}
+                >
+                  {settingsSectionLabels[section]}
+                </button>
+              ))}
+            </div>
+
+            {/* Each section is mounted only while it is shown: the permission
+                catalog and the persona list are separate commands, and reading
+                them because a provider form is open would be a round trip the
+                user did not ask for. */}
+            {settingsSection === "providers" ? (
+              <AiProviderSettings
+                providers={providers.providers}
+                loading={providers.loading}
+                toolsEnabled={agentConfig.config?.toolsEnabled ?? false}
+                onConfigure={providers.configure}
+                onConfigured={rememberModel}
+              />
+            ) : null}
+
+            {settingsSection === "permissions" ? (
+              <ConnectedAiPermissionSettings
+                toolsEnabled={agentConfig.config?.toolsEnabled ?? false}
+              />
+            ) : null}
+
+            {settingsSection === "personas" ? (
+              <ConnectedAiPersonaSettings
+                selectedId={agentConfig.config?.personaId ?? null}
+                selectionBusy={savingAgentConfig}
+                onSelect={handlePersonaSelect}
+              />
+            ) : null}
+
+            {settingsSection === "responses" ? (
+              <AiAgentSettings
+                config={agentConfig.config}
+                onSave={handleAgentConfigSave}
+              />
+            ) : null}
+          </div>
         ) : (
           <div className="space-y-4">
             <AiConversationList

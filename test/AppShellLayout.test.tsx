@@ -84,10 +84,49 @@ test("authenticated shell keeps command bar, tabs, and one body scroll region in
   assert.match(connectionBar.className, /\bsticky\b/);
   assert.match(connectionBar.className, /\bbottom-0\b/);
   assert.doesNotMatch(connectionBar.className, /\b(?:absolute|fixed)\b/);
-  assert.equal(scrollRegion.nextElementSibling, connectionBar);
+
+  // The body region sits in a row with the assistant dock, so the row - not the
+  // scroll region - is the element the footer follows. The row exists even with
+  // no dock mounted: making it conditional would remount the whole workspace
+  // the first time a dock appeared.
+  const bodyRow = screen.getByTestId("dns-workspace-body-row");
+  assert.equal(scrollRegion.parentElement, bodyRow);
+  assert.match(bodyRow.className, /\bflex\b/);
+  assert.match(bodyRow.className, /\bmin-h-0\b/);
+  assert.match(bodyRow.className, /\bflex-1\b/);
+  assert.equal(bodyRow.nextElementSibling, connectionBar);
+  // Nothing but the scroll region unless a dock is passed.
+  assert.equal(bodyRow.children.length, 1);
   assert.equal(
     connectionBar.getAttribute("aria-label"),
     "DNS session and workspace context",
+  );
+});
+
+test("the assistant dock sits beside the body region, not inside it", () => {
+  render(
+    <AuthenticatedAppShell
+      commandBar={<button type="button">Command</button>}
+      workspaceTabs={<div role="tablist">Tabs</div>}
+      connectionBar={<div>Session context</div>}
+      sidebar={<aside data-testid="dock">Dock</aside>}
+    >
+      <div role="tabpanel">Workspace</div>
+    </AuthenticatedAppShell>,
+  );
+
+  const scrollRegion = screen.getByTestId("dns-workspace-scroll-region");
+  const dock = screen.getByTestId("dock");
+  const bodyRow = screen.getByTestId("dns-workspace-body-row");
+
+  // Inside the scroll region the dock would scroll away with the workspace and
+  // be re-rendered by whichever tab is active; beside it, it stays put.
+  assert.equal(scrollRegion.contains(dock), false);
+  assert.equal(dock.parentElement, bodyRow);
+  assert.equal(scrollRegion.nextElementSibling, dock);
+  assert.equal(
+    screen.getByTestId("authenticated-app-shell").lastElementChild,
+    screen.getByTestId("dns-connection-bar"),
   );
 });
 
