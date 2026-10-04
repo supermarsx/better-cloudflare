@@ -344,6 +344,12 @@ fn main() {
             ai_commands::ai_cancel_generation,
             ai_commands::ai_list_presets,
             ai_commands::ai_get_preset,
+            ai_commands::ai_get_permissions,
+            ai_commands::ai_set_permissions,
+            ai_commands::ai_list_personas,
+            ai_commands::ai_create_persona,
+            ai_commands::ai_update_persona,
+            ai_commands::ai_delete_persona,
             ai_commands::ai_export_conversation,
             // Notifications
             notifications::notifications_start,
@@ -495,6 +501,21 @@ mod tests {
             production.contains("tauri::RunEvent::Exit"),
             "app exit must drop the notification service token"
         );
+    }
+
+    #[test]
+    fn every_ai_command_is_registered() {
+        let source = include_str!("main.rs");
+        let production = source
+            .split_once("#[cfg(test)]")
+            .map(|(production, _)| production)
+            .expect("main.rs should retain a separate test module");
+        for command in ai_commands::COMMAND_NAMES {
+            assert!(
+                production.contains(&format!("ai_commands::{command},")),
+                "{command} must be registered in the invoke handler"
+            );
+        }
     }
 
     #[test]

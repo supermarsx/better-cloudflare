@@ -1,7 +1,13 @@
-//! Safety policies for tool execution.
+//! Tool classification, and the pre-permission safety policy.
 //!
-//! Classifies tools as read-only (auto-approve) or destructive (require
-//! user confirmation before execution).
+//! Classifies tools as read-only or destructive by name prefix. That
+//! classification is what [`crate::permissions`] resolves a mode against.
+//!
+//! [`SafetyPolicy`] is the older two-flag policy. It is kept for callers that
+//! only need its yes/no answer; the executor resolves
+//! [`crate::permissions::AiPermissions`] instead, because a mode plus explicit
+//! per-tool overrides expresses everything this policy could and adds
+//! outright denial, which `ToolApproval` cannot represent.
 
 use serde::{Deserialize, Serialize};
 
@@ -59,7 +65,7 @@ impl SafetyPolicy {
 }
 
 /// Categorise a tool as read-only by name prefix/pattern.
-fn is_read_only(name: &str) -> bool {
+pub fn is_read_only(name: &str) -> bool {
     // Read patterns: list, get, export, parse, compose, check, resolve, simulate, validate
     let read_prefixes = [
         "cf_list_",
@@ -81,7 +87,7 @@ fn is_read_only(name: &str) -> bool {
 }
 
 /// Categorise a tool as destructive (creates, updates, or deletes resources).
-fn is_destructive(name: &str) -> bool {
+pub fn is_destructive(name: &str) -> bool {
     let write_patterns = [
         "cf_create_",
         "cf_update_",

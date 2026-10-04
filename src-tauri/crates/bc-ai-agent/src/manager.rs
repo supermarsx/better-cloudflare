@@ -12,12 +12,14 @@ use bc_ai_provider::ollama::OllamaProvider;
 use bc_ai_provider::openai::OpenAiProvider;
 use bc_ai_provider::{AiProvider, ProviderConfig, ProviderKind};
 use bc_ai_tools::executor::ToolExecutor;
+use bc_ai_tools::permissions::{AiPermissions, AiToolDescriptor};
 use bc_ai_tools::ToolRegistry;
 
 use crate::agent;
-use crate::config::{AgentConfig, AGENT_EVENT_CHANNEL_CAPACITY};
+use crate::config::{AgentConfig, AGENT_EVENT_CHANNEL_CAPACITY, DEFAULT_PERSONA_ID};
 use crate::error::AgentError;
 use crate::events::AgentEvent;
+use crate::personas::{AiPersona, AiPersonaInput, PersonaStore};
 
 const APPROVED_TOOL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 
@@ -59,19 +61,24 @@ pub struct AgentManager {
     pub registry: Arc<ToolRegistry>,
     pub executor: Arc<ToolExecutor>,
     pub chat: Arc<ChatManager>,
+    pub personas: Arc<PersonaStore>,
     active_turns: Arc<Mutex<HashMap<Uuid, ActiveTurn>>>,
     active_approvals: Arc<Mutex<HashMap<Uuid, ActiveApproval>>>,
 }
 
 impl Default for AgentManager {
     fn default() -> Self {
+        // One enabled-tool set: the executor resolves permissions against the
+        // same registry the provider tool list is built from.
+        let registry = Arc::new(ToolRegistry::default());
         Self {
             providers: RwLock::new(HashMap::new()),
             configs: RwLock::new(HashMap::new()),
             agent_config: RwLock::new(AgentConfig::default()),
-            registry: Arc::new(ToolRegistry::default()),
-            executor: Arc::new(ToolExecutor::default()),
+            executor: Arc::new(ToolExecutor::with_registry(Arc::clone(&registry))),
+            registry,
             chat: Arc::new(ChatManager::default()),
+            personas: Arc::new(PersonaStore::default()),
             active_turns: Arc::new(Mutex::new(HashMap::new())),
             active_approvals: Arc::new(Mutex::new(HashMap::new())),
         }
@@ -112,7 +119,59 @@ impl AgentManager {
 
     pub async fn try_set_agent_config(&self, config: AgentConfig) -> Result<(), AgentError> {
         config.validate()?;
+        let tools_enabled = config.tools_enabled;
         *self.agent_config.write().await = config;
+        // Enforcement happens at dispatch, so the executor needs this flag too.
+        self.executor.set_tools_enabled(tools_enabled).await;
+        Ok(())
+    }
+
+    /// Current tool permission configuration.
+    pub async fn permissions(&self) -> AiPermissions {
+        self.executor.permissions().await
+    }
+
+    /// Validate and store a tool permission configuration, returning what was
+    /// stored. The executor owns it, so a stored change takes effect at once.
+    pub async fn try_set_permissions(
+        &self,
+        permissions: AiPermissions,
+    ) -> Result<AiPermissions, AgentError> {
+        Ok(self.executor.try_set_permissions(permissions).await?)
+    }
+
+    /// Every registered tool with its effective permission resolved.
+    ///
+    /// Deliberately does not touch the registry: reading the catalogue must
+    /// not change which tools are enabled.
+    pub async fn tool_catalog(&self) -> Vec<AiToolDescriptor> {
+        self.executor.catalog().await
+    }
+
+    pub async fn list_personas(&self) -> Vec<AiPersona> {
+        self.personas.list().await
+    }
+
+    pub async fn create_persona(&self, input: AiPersonaInput) -> Result<AiPersona, AgentError> {
+        self.personas.create(input).await
+    }
+
+    pub async fn update_persona(
+        &self,
+        id: &str,
+        input: AiPersonaInput,
+    ) -> Result<AiPersona, AgentError> {
+        self.personas.update(id, input).await
+    }
+
+    /// Delete a custom persona, and stop pointing the configuration at it so a
+    /// deletion cannot leave a dangling selection behind.
+    pub async fn delete_persona(&self, id: &str) -> Result<(), AgentError> {
+        self.personas.delete(id).await?;
+        let mut config = self.agent_config.write().await;
+        if config.persona_id == id {
+            config.persona_id = DEFAULT_PERSONA_ID.to_string();
+        }
         Ok(())
     }
 
@@ -140,6 +199,8 @@ impl AgentManager {
             .ok_or(bc_ai_chat::ChatError::ConversationNotFound(conversation_id))?;
 
         self.registry.init_all().await;
+        self.executor.set_tools_enabled(config.tools_enabled).await;
+        let persona_prompt = self.personas.system_prompt(&config.persona_id).await;
         let (event_tx, event_rx) = mpsc::channel(AGENT_EVENT_CHANNEL_CAPACITY);
         let (cancellation_tx, cancellation_rx) = watch::channel(false);
         let generation = Uuid::new_v4();
@@ -174,6 +235,7 @@ impl AgentManager {
                 registry.as_ref(),
                 executor.as_ref(),
                 &config,
+                persona_prompt,
                 conversation_id,
                 task_event_tx.clone(),
                 cancellation_rx,
@@ -260,32 +322,39 @@ impl AgentManager {
         match result {
             bc_ai_tools::executor::ExecutionResult::Success(result)
             | bc_ai_tools::executor::ExecutionResult::Error(result) => {
-                if result.content.len() > bc_ai_provider::limits::MAX_TOOL_RESULT_BYTES {
-                    return Err(AgentError::ToolOutputLimit {
-                        limit: bc_ai_provider::limits::MAX_TOOL_RESULT_BYTES,
-                        actual: result.content.len(),
-                    });
-                }
-                let message = bc_ai_chat::ChatMessage {
-                    id: Uuid::new_v4(),
-                    message: bc_ai_provider::Message::tool_result(
-                        result.tool_call_id,
-                        result.content,
-                        result.is_error,
-                    ),
-                    status: bc_ai_chat::MessageStatus::Complete,
-                    created_at: chrono::Utc::now(),
-                    usage: None,
-                    pending_tool_calls: Vec::new(),
-                };
-                self.chat.try_push_message(conversation_id, message).await?;
+                self.push_tool_result(conversation_id, result).await?;
                 Ok(())
+            }
+            // The permission changed while the call was pending. Record the
+            // refusal so the transcript stays answerable, then fail the command
+            // rather than reporting an approval that ran nothing.
+            bc_ai_tools::executor::ExecutionResult::Denied(result) => {
+                let reason = result.content.clone();
+                self.push_tool_result(conversation_id, result).await?;
+                Err(AgentError::ToolDenied { reason })
             }
             bc_ai_tools::executor::ExecutionResult::NeedsApproval { .. } => {
                 Err(AgentError::UnexpectedApproval)
             }
             bc_ai_tools::executor::ExecutionResult::Rejected(error) => Err(error.into()),
         }
+    }
+
+    async fn push_tool_result(
+        &self,
+        conversation_id: Uuid,
+        result: bc_ai_provider::ToolResult,
+    ) -> Result<(), AgentError> {
+        if result.content.len() > bc_ai_provider::limits::MAX_TOOL_RESULT_BYTES {
+            return Err(AgentError::ToolOutputLimit {
+                limit: bc_ai_provider::limits::MAX_TOOL_RESULT_BYTES,
+                actual: result.content.len(),
+            });
+        }
+        self.chat
+            .try_push_message(conversation_id, agent::tool_result_message(result))
+            .await?;
+        Ok(())
     }
 
     async fn run_approved_operation<F>(
@@ -711,6 +780,154 @@ mod tests {
             Err(AgentError::Cancelled)
         ));
         assert_eq!(manager.active_approval_count().await, 0);
+    }
+
+    fn persona_input(name: &str) -> AiPersonaInput {
+        AiPersonaInput {
+            name: name.into(),
+            description: "Bounded".into(),
+            system_prompt: "You are bounded.".into(),
+        }
+    }
+
+    /// `toolsEnabled` is configuration, but it has to be enforced where tools
+    /// are dispatched. Setting it must move the gate, not just the record.
+    #[tokio::test]
+    async fn disabling_tools_in_the_configuration_reaches_the_dispatch_gate() {
+        let manager = AgentManager::default();
+        manager.registry.init_all().await;
+        assert_eq!(
+            manager.executor.decision("cf_list_zones").await,
+            bc_ai_tools::permissions::PermissionDecision::Allow
+        );
+
+        let mut config = manager.agent_config().await;
+        config.tools_enabled = false;
+        manager
+            .try_set_agent_config(config.clone())
+            .await
+            .expect("valid config");
+        assert!(matches!(
+            manager.executor.decision("cf_list_zones").await,
+            bc_ai_tools::permissions::PermissionDecision::Deny { .. }
+        ));
+
+        config.tools_enabled = true;
+        manager
+            .try_set_agent_config(config)
+            .await
+            .expect("valid config");
+        assert_eq!(
+            manager.executor.decision("cf_list_zones").await,
+            bc_ai_tools::permissions::PermissionDecision::Allow
+        );
+    }
+
+    #[tokio::test]
+    async fn permissions_round_trip_and_an_unknown_tool_is_not_stored() {
+        let manager = AgentManager::default();
+        let stored = manager
+            .try_set_permissions(AiPermissions {
+                mode: bc_ai_tools::permissions::AiPermissionMode::ReadOnly,
+                tools: std::collections::BTreeMap::from([(
+                    "cf_delete_dns_record".to_string(),
+                    bc_ai_tools::permissions::AiToolPermission::Deny,
+                )]),
+            })
+            .await
+            .expect("valid permissions");
+        assert_eq!(stored, manager.permissions().await);
+
+        let error = manager
+            .try_set_permissions(AiPermissions {
+                mode: bc_ai_tools::permissions::AiPermissionMode::Autonomous,
+                tools: std::collections::BTreeMap::from([(
+                    "cf_not_a_tool".to_string(),
+                    bc_ai_tools::permissions::AiToolPermission::Allow,
+                )]),
+            })
+            .await
+            .expect_err("unknown tool names must be refused");
+        assert!(matches!(error, AgentError::Tool(_)));
+        assert_eq!(manager.permissions().await, stored);
+    }
+
+    #[tokio::test]
+    async fn deleting_the_selected_persona_resets_the_configuration() {
+        let manager = AgentManager::default();
+        let persona = manager
+            .create_persona(persona_input("Selected"))
+            .await
+            .expect("create");
+
+        let mut config = manager.agent_config().await;
+        config.persona_id = persona.id.clone();
+        manager
+            .try_set_agent_config(config)
+            .await
+            .expect("a custom persona id is a valid selection");
+        assert_eq!(
+            manager.personas.system_prompt(&persona.id).await.as_deref(),
+            Some("You are bounded.")
+        );
+
+        manager.delete_persona(&persona.id).await.expect("delete");
+        assert_eq!(manager.agent_config().await.persona_id, DEFAULT_PERSONA_ID);
+        assert_eq!(manager.personas.system_prompt(&persona.id).await, None);
+    }
+
+    #[tokio::test]
+    async fn deleting_an_unselected_persona_leaves_the_selection_alone() {
+        let manager = AgentManager::default();
+        let keep = manager
+            .create_persona(persona_input("Keep"))
+            .await
+            .expect("create");
+        let drop = manager
+            .create_persona(persona_input("Drop"))
+            .await
+            .expect("create");
+
+        let mut config = manager.agent_config().await;
+        config.persona_id = keep.id.clone();
+        manager.try_set_agent_config(config).await.expect("valid");
+
+        manager.delete_persona(&drop.id).await.expect("delete");
+        assert_eq!(manager.agent_config().await.persona_id, keep.id);
+    }
+
+    #[tokio::test]
+    async fn a_builtin_persona_survives_delete_attempts_through_the_manager() {
+        let manager = AgentManager::default();
+        assert!(matches!(
+            manager.delete_persona("dns-expert").await,
+            Err(AgentError::PersonaImmutable)
+        ));
+        assert!(matches!(
+            manager
+                .update_persona("dns-expert", persona_input("Hijacked"))
+                .await,
+            Err(AgentError::PersonaImmutable)
+        ));
+        assert!(manager
+            .list_personas()
+            .await
+            .iter()
+            .any(|persona| persona.id == "dns-expert" && persona.builtin));
+        assert_eq!(manager.agent_config().await.persona_id, DEFAULT_PERSONA_ID);
+    }
+
+    #[tokio::test]
+    async fn the_catalog_covers_every_registered_tool() {
+        let manager = AgentManager::default();
+        let catalog = manager.tool_catalog().await;
+        assert_eq!(
+            catalog.len(),
+            manager.registry.available_descriptors().len()
+        );
+        assert!(catalog
+            .iter()
+            .any(|descriptor| descriptor.name == "cf_list_zones"));
     }
 
     #[tokio::test]

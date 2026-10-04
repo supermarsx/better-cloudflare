@@ -142,7 +142,7 @@ async fn stream_completion(
     Ok(response)
 }
 
-fn tool_result_message(result: bc_ai_provider::ToolResult) -> ChatMessage {
+pub(crate) fn tool_result_message(result: bc_ai_provider::ToolResult) -> ChatMessage {
     ChatMessage {
         id: Uuid::new_v4(),
         message: Message::tool_result(result.tool_call_id, result.content, result.is_error),
@@ -173,7 +173,13 @@ async fn execute_tool_calls(
         .await?;
 
         match result {
-            ExecutionResult::Success(result) | ExecutionResult::Error(result) => {
+            // A refusal is a result like any other: the model is told the call
+            // was refused, in the same turn, so it can answer the user instead
+            // of stalling or retrying. Because the round continues normally,
+            // refused calls count against `max_tool_rounds`.
+            ExecutionResult::Success(result)
+            | ExecutionResult::Error(result)
+            | ExecutionResult::Denied(result) => {
                 if result.content.len() > MAX_TOOL_RESULT_BYTES {
                     return Err(AgentError::ToolOutputLimit {
                         limit: MAX_TOOL_RESULT_BYTES,
@@ -234,13 +240,16 @@ pub async fn run_turn(
     registry: &ToolRegistry,
     executor: &ToolExecutor,
     config: &AgentConfig,
+    persona_prompt: Option<String>,
     conversation_id: Uuid,
     event_tx: mpsc::Sender<AgentEvent>,
     mut cancellation: watch::Receiver<bool>,
     mut disposal: watch::Receiver<bool>,
 ) -> Result<Uuid, AgentError> {
     config.validate()?;
-    let system_prompt = chat.system_prompt(conversation_id).await;
+    // A prompt chosen for this conversation wins; the configured persona is
+    // the fallback, so selecting one actually changes how the agent behaves.
+    let system_prompt = chat.system_prompt(conversation_id).await.or(persona_prompt);
     let model = chat
         .model(conversation_id)
         .await
@@ -260,7 +269,7 @@ pub async fn run_turn(
             model: model.clone(),
             messages,
             system: system_prompt.clone(),
-            temperature: None,
+            temperature: Some(config.temperature),
             max_tokens: Some(config.max_tokens_per_turn),
             tools: tools.clone(),
         };
@@ -357,4 +366,427 @@ pub async fn run_turn(
     }
 
     Err(AgentError::ToolRoundLimit(config.max_tool_rounds))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    use async_trait::async_trait;
+    use bc_ai_provider::{AiProviderError, Model, Role};
+    use bc_ai_tools::permissions::{
+        AiPermissionMode, AiPermissions, AiToolPermission, PERMISSION_REFUSAL_PREFIX,
+    };
+
+    use super::*;
+
+    const READ_TOOL: &str = "dns_parse_spf";
+    const WRITE_TOOL: &str = "cf_delete_dns_record";
+
+    /// Asks for the same tool on every round, like a model that will not take
+    /// a refusal for an answer.
+    struct ToolLoopProvider {
+        tool_name: &'static str,
+        rounds: Arc<AtomicUsize>,
+    }
+
+    impl ToolLoopProvider {
+        fn new(tool_name: &'static str) -> Self {
+            Self {
+                tool_name,
+                rounds: Arc::new(AtomicUsize::new(0)),
+            }
+        }
+
+        fn response(&self) -> CompletionResponse {
+            let round = self.rounds.fetch_add(1, Ordering::SeqCst);
+            CompletionResponse {
+                message: Message {
+                    role: Role::Assistant,
+                    content: MessageContent::ToolUse {
+                        tool_calls: vec![ToolCall {
+                            id: format!("call-{round}"),
+                            name: self.tool_name.into(),
+                            arguments: serde_json::json!({ "content": "v=spf1 -all" }),
+                        }],
+                    },
+                    tool_call_id: None,
+                },
+                usage: None,
+                model: "mock".into(),
+                finish_reason: Some("tool_use".into()),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl AiProvider for ToolLoopProvider {
+        fn kind(&self) -> &str {
+            "mock"
+        }
+
+        async fn complete(
+            &self,
+            _request: CompletionRequest,
+        ) -> Result<CompletionResponse, AiProviderError> {
+            Ok(self.response())
+        }
+
+        async fn stream(
+            &self,
+            _request: CompletionRequest,
+            _tx: mpsc::Sender<StreamDelta>,
+        ) -> Result<CompletionResponse, AiProviderError> {
+            Ok(self.response())
+        }
+
+        async fn list_models(&self) -> Result<Vec<Model>, AiProviderError> {
+            Ok(Vec::new())
+        }
+
+        async fn health_check(&self) -> Result<(), AiProviderError> {
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct CapturingProvider {
+        request: std::sync::Mutex<Option<CompletionRequest>>,
+    }
+
+    #[async_trait]
+    impl AiProvider for CapturingProvider {
+        fn kind(&self) -> &str {
+            "mock"
+        }
+
+        async fn complete(
+            &self,
+            request: CompletionRequest,
+        ) -> Result<CompletionResponse, AiProviderError> {
+            *self.request.lock().expect("request") = Some(request);
+            Ok(CompletionResponse {
+                message: Message::assistant("done"),
+                usage: None,
+                model: "mock".into(),
+                finish_reason: Some("stop".into()),
+            })
+        }
+
+        async fn stream(
+            &self,
+            request: CompletionRequest,
+            _tx: mpsc::Sender<StreamDelta>,
+        ) -> Result<CompletionResponse, AiProviderError> {
+            self.complete(request).await
+        }
+
+        async fn list_models(&self) -> Result<Vec<Model>, AiProviderError> {
+            Ok(Vec::new())
+        }
+
+        async fn health_check(&self) -> Result<(), AiProviderError> {
+            Ok(())
+        }
+    }
+
+    struct Harness {
+        chat: ChatManager,
+        registry: Arc<ToolRegistry>,
+        executor: ToolExecutor,
+        conversation_id: Uuid,
+    }
+
+    impl Harness {
+        async fn new(permissions: AiPermissions) -> Self {
+            let chat = ChatManager::default();
+            let conversation_id = chat
+                .try_create_conversation(
+                    bc_ai_provider::ProviderKind::Ollama,
+                    "mock".into(),
+                    None,
+                    None,
+                )
+                .await
+                .expect("conversation")
+                .id;
+            chat.try_push_message(conversation_id, ChatMessage::user("do the thing"))
+                .await
+                .expect("user message");
+
+            let registry = Arc::new(ToolRegistry::default());
+            registry.init_all().await;
+            let executor = ToolExecutor::with_registry(Arc::clone(&registry));
+            executor
+                .try_set_permissions(permissions)
+                .await
+                .expect("valid permissions");
+
+            Self {
+                chat,
+                registry,
+                executor,
+                conversation_id,
+            }
+        }
+
+        async fn run(
+            &self,
+            provider: &dyn AiProvider,
+            config: &AgentConfig,
+            persona_prompt: Option<String>,
+        ) -> Result<Uuid, AgentError> {
+            let disposal = self
+                .chat
+                .subscribe_disposal(self.conversation_id)
+                .await
+                .expect("disposal subscription");
+            let (_cancellation_tx, cancellation_rx) = watch::channel(false);
+            let (event_tx, _event_rx) = mpsc::channel(256);
+            run_turn(
+                provider,
+                &self.chat,
+                self.registry.as_ref(),
+                &self.executor,
+                config,
+                persona_prompt,
+                self.conversation_id,
+                event_tx,
+                cancellation_rx,
+                disposal,
+            )
+            .await
+        }
+
+        async fn tool_results(&self) -> Vec<(String, bool)> {
+            self.chat
+                .get_conversation(self.conversation_id)
+                .await
+                .expect("conversation")
+                .messages
+                .iter()
+                .filter_map(|message| match &message.message.content {
+                    MessageContent::ToolResult {
+                        content, is_error, ..
+                    } => Some((content.clone(), *is_error)),
+                    _ => None,
+                })
+                .collect()
+        }
+    }
+
+    fn config(max_tool_rounds: u32) -> AgentConfig {
+        AgentConfig {
+            max_tool_rounds,
+            stream: false,
+            ..AgentConfig::default()
+        }
+    }
+
+    /// The point of the feature: a denied call does not run, the model is told
+    /// so, and the refusals are bounded by the existing round limit instead of
+    /// letting the model spin forever.
+    #[tokio::test]
+    async fn denied_tool_calls_are_refused_fed_back_and_consume_tool_rounds() {
+        let harness = Harness::new(AiPermissions {
+            mode: AiPermissionMode::ReadOnly,
+            tools: BTreeMap::new(),
+        })
+        .await;
+        let provider = ToolLoopProvider::new(WRITE_TOOL);
+        let rounds = 3;
+
+        let error = harness
+            .run(&provider, &config(rounds), None)
+            .await
+            .expect_err("a model that only calls denied tools must hit the round limit");
+
+        assert!(matches!(error, AgentError::ToolRoundLimit(limit) if limit == rounds));
+        assert_eq!(provider.rounds.load(Ordering::SeqCst), rounds as usize);
+
+        let results = harness.tool_results().await;
+        assert_eq!(results.len(), rounds as usize);
+        for (content, is_error) in results {
+            assert!(
+                content.starts_with(PERMISSION_REFUSAL_PREFIX),
+                "the model must be told the call was refused: {content}"
+            );
+            assert!(content.contains("read-only"));
+            assert!(is_error);
+        }
+    }
+
+    #[tokio::test]
+    async fn an_explicit_deny_refuses_a_read_tool_too() {
+        let harness = Harness::new(AiPermissions {
+            mode: AiPermissionMode::Autonomous,
+            tools: BTreeMap::from([(READ_TOOL.to_string(), AiToolPermission::Deny)]),
+        })
+        .await;
+        let provider = ToolLoopProvider::new(READ_TOOL);
+
+        let error = harness
+            .run(&provider, &config(1), None)
+            .await
+            .expect_err("round limit");
+        assert!(matches!(error, AgentError::ToolRoundLimit(1)));
+        let (content, is_error) = harness
+            .tool_results()
+            .await
+            .pop()
+            .expect("one refusal was recorded");
+        assert!(content.starts_with(PERMISSION_REFUSAL_PREFIX));
+        assert!(is_error);
+    }
+
+    /// The counterpart: a permitted call is *not* refused by us. In-process MCP
+    /// dispatch is denied without canonical grants, so what this pins is that
+    /// the permission gate passed the call through to the dispatch boundary.
+    #[tokio::test]
+    async fn a_permitted_tool_call_reaches_dispatch() {
+        let harness = Harness::new(AiPermissions {
+            mode: AiPermissionMode::Ask,
+            tools: BTreeMap::new(),
+        })
+        .await;
+        let provider = ToolLoopProvider::new(READ_TOOL);
+
+        let error = harness
+            .run(&provider, &config(1), None)
+            .await
+            .expect_err("round limit");
+        assert!(matches!(error, AgentError::ToolRoundLimit(1)));
+        let (content, _) = harness
+            .tool_results()
+            .await
+            .pop()
+            .expect("the call produced a result");
+        assert!(
+            !content.starts_with(PERMISSION_REFUSAL_PREFIX),
+            "a permitted read tool must not be refused: {content}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_tool_needing_approval_pauses_the_turn_without_a_result() {
+        let harness = Harness::new(AiPermissions {
+            mode: AiPermissionMode::Ask,
+            tools: BTreeMap::new(),
+        })
+        .await;
+        let provider = ToolLoopProvider::new(WRITE_TOOL);
+
+        harness
+            .run(&provider, &config(3), None)
+            .await
+            .expect("the turn pauses for approval rather than failing");
+        assert_eq!(provider.rounds.load(Ordering::SeqCst), 1);
+        assert!(
+            harness.tool_results().await.is_empty(),
+            "a paused call has no result yet"
+        );
+    }
+
+    #[tokio::test]
+    async fn disabling_tool_use_refuses_calls_the_model_makes_anyway() {
+        let harness = Harness::new(AiPermissions {
+            mode: AiPermissionMode::Autonomous,
+            tools: BTreeMap::new(),
+        })
+        .await;
+        harness.executor.set_tools_enabled(false).await;
+        let provider = ToolLoopProvider::new(READ_TOOL);
+
+        let mut config = config(1);
+        config.tools_enabled = false;
+        let error = harness
+            .run(&provider, &config, None)
+            .await
+            .expect_err("round limit");
+        assert!(matches!(error, AgentError::ToolRoundLimit(1)));
+        let (content, _) = harness
+            .tool_results()
+            .await
+            .pop()
+            .expect("the refusal was recorded");
+        assert!(content.contains("disabled"));
+    }
+
+    #[tokio::test]
+    async fn the_configured_persona_prompt_and_temperature_reach_the_provider() {
+        let harness = Harness::new(AiPermissions::default()).await;
+        let provider = CapturingProvider::default();
+
+        harness
+            .run(&provider, &config(2), Some("You are the persona.".into()))
+            .await
+            .expect("plain text turn completes");
+
+        let request = provider
+            .request
+            .lock()
+            .expect("request")
+            .clone()
+            .expect("the provider was called");
+        assert_eq!(request.system.as_deref(), Some("You are the persona."));
+        assert_eq!(
+            request.temperature,
+            Some(AgentConfig::default().temperature)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_conversation_prompt_outranks_the_persona_prompt() {
+        let harness = Harness::new(AiPermissions::default()).await;
+        let conversation_id = harness
+            .chat
+            .try_create_conversation(
+                bc_ai_provider::ProviderKind::Ollama,
+                "mock".into(),
+                None,
+                Some("Conversation prompt.".into()),
+            )
+            .await
+            .expect("conversation")
+            .id;
+        harness
+            .chat
+            .try_push_message(conversation_id, ChatMessage::user("hi"))
+            .await
+            .expect("user message");
+
+        let provider = CapturingProvider::default();
+        let disposal = harness
+            .chat
+            .subscribe_disposal(conversation_id)
+            .await
+            .expect("disposal subscription");
+        let (_cancellation_tx, cancellation_rx) = watch::channel(false);
+        let (event_tx, _event_rx) = mpsc::channel(256);
+
+        run_turn(
+            &provider,
+            &harness.chat,
+            harness.registry.as_ref(),
+            &harness.executor,
+            &config(2),
+            Some("You are the persona.".into()),
+            conversation_id,
+            event_tx,
+            cancellation_rx,
+            disposal,
+        )
+        .await
+        .expect("turn completes");
+
+        let request = provider
+            .request
+            .lock()
+            .expect("request")
+            .clone()
+            .expect("the provider was called");
+        assert_eq!(request.system.as_deref(), Some("Conversation prompt."));
+    }
 }

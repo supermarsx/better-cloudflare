@@ -23,6 +23,24 @@ pub enum AgentError {
         message: String,
     },
 
+    #[error("invalid persona field {field}: {message}")]
+    InvalidPersona {
+        field: &'static str,
+        message: String,
+    },
+
+    #[error("the requested persona does not exist")]
+    PersonaNotFound,
+
+    #[error("builtin personas cannot be modified or removed")]
+    PersonaImmutable,
+
+    #[error("custom persona limit of {limit} reached (actual: {actual})")]
+    PersonaLimit { limit: usize, actual: usize },
+
+    #[error("tool call refused by the permission policy: {reason}")]
+    ToolDenied { reason: String },
+
     #[error("conversation disposed while generation was active: {0}")]
     ConversationDisposed(Uuid),
 
@@ -105,6 +123,19 @@ impl AgentError {
             Self::Tool(_) => "The AI tool call was rejected by local safety checks.".into(),
             Self::InvalidConfig { field, .. } => {
                 format!("Invalid AI agent configuration field: {field}.")
+            }
+            Self::InvalidPersona { field, .. } => {
+                format!("Invalid AI persona field: {field}.")
+            }
+            Self::PersonaNotFound => "The AI persona was not found.".into(),
+            Self::PersonaImmutable => "Built-in AI personas cannot be changed.".into(),
+            Self::PersonaLimit { limit, .. } => {
+                format!("The custom AI persona limit ({limit}) was reached.")
+            }
+            // The reason is composed locally from a bounded tool name and the
+            // configured mode, so it carries no provider or request detail.
+            Self::ToolDenied { reason } => {
+                format!("The AI tool call was refused: {reason}.")
             }
             Self::ConversationDisposed(_) => "The AI conversation was closed.".into(),
             Self::ConsumerDropped => "The AI event consumer disconnected.".into(),
