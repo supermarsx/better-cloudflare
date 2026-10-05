@@ -37,6 +37,18 @@ export interface BrowserSessionSettingsProfile {
    * bubble. See `src/lib/ai/presentation.ts`; absent means the workspace tab.
    */
   assistantPresentation?: "panel" | "sidebar" | "bubble";
+  /**
+   * Where the floating assistant bubble was left, as pixel insets from the
+   * viewport's bottom-right corner -- the same corner its default position is
+   * measured from, so "nothing stored" and "stored at the default" are the
+   * same place. Absent means the default corner.
+   *
+   * Stored unclamped on purpose: it records where the user put the bubble, and
+   * a window they made small for a minute must not rewrite that. Clamping the
+   * point into the current viewport is done on the way to the screen.
+   */
+  assistantBubbleRight?: number;
+  assistantBubbleBottom?: number;
   rewriteCopiedRecordDomains?: boolean;
   mcpServerEnabled?: boolean;
   mcpServerHost?: string;
@@ -248,6 +260,8 @@ const SESSION_PROFILE_SCHEMA = {
   confirmWindowClose: "boolean",
   closeTabOnMiddleClick: "boolean",
   assistantPresentation: ["panel", "sidebar", "bubble"],
+  assistantBubbleRight: "number",
+  assistantBubbleBottom: "number",
   rewriteCopiedRecordDomains: "boolean",
   mcpServerEnabled: "boolean",
   mcpServerHost: "string",

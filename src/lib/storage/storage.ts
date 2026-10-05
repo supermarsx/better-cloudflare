@@ -105,6 +105,20 @@ function utf8Bytes(value: string, stopAfterBytes = MAX_STORAGE_BYTES): number {
   return bytes;
 }
 
+/**
+ * A bubble inset is usable only if it is a finite, non-negative pixel count.
+ *
+ * `0` is legitimate -- the bubble flush against an edge -- so this rejects on
+ * sign and finiteness rather than on falsiness. No upper bound: a point larger
+ * than the current window is still a real choice the user made on a bigger
+ * one, and it is clamped when it is drawn rather than when it is stored.
+ */
+function normalizeBubbleInset(value: unknown): number | null {
+  if (typeof value !== "number") return null;
+  if (!Number.isFinite(value) || value < 0) return null;
+  return value;
+}
+
 function boundedStorageFailureMessage(error: unknown): string {
   const message =
     error instanceof Error && error.message.trim()
@@ -1229,6 +1243,45 @@ export class StorageManager {
   /** The workspace tab unless something else was explicitly stored. */
   getAiAssistantPresentation(): AiAssistantPresentation {
     return normalizeAiAssistantPresentation(this.data.assistantPresentation);
+  }
+
+  /**
+   * Remember where the floating assistant bubble was dragged to, as pixel
+   * insets from the viewport's bottom-right corner.
+   *
+   * Only a finished gesture should reach here. The value is kept exactly as
+   * given, including a point that no longer fits the current window: it is the
+   * user's choice of where the bubble lives, and whoever renders it clamps for
+   * the viewport it is drawing into.
+   */
+  setAiAssistantBubblePosition(position: {
+    right: number;
+    bottom: number;
+  }): void {
+    const right = normalizeBubbleInset(position.right);
+    const bottom = normalizeBubbleInset(position.bottom);
+    if (right === null || bottom === null) return;
+    this.data.assistantBubbleRight = right;
+    this.data.assistantBubbleBottom = bottom;
+    this.save();
+    this.dispatchPreferencesChanged({
+      assistantBubbleRight: right,
+      assistantBubbleBottom: bottom,
+    });
+  }
+
+  /**
+   * Where the bubble was left, or `null` for the default corner.
+   *
+   * Both insets are required. A profile carrying one without the other is a
+   * partial, not a position -- honouring half of it would place the bubble
+   * somewhere the user never put it, which is worse than the default.
+   */
+  getAiAssistantBubblePosition(): { right: number; bottom: number } | null {
+    const right = normalizeBubbleInset(this.data.assistantBubbleRight);
+    const bottom = normalizeBubbleInset(this.data.assistantBubbleBottom);
+    if (right === null || bottom === null) return null;
+    return { right, bottom };
   }
 
   setRewriteCopiedRecordDomains(enabled: boolean): void {
