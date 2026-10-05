@@ -27,7 +27,10 @@ import {
   within,
 } from "@testing-library/react";
 
-import { AiAssistantSurface } from "../src/components/ai/AiAssistantSurface";
+import {
+  AiAssistantSurface,
+  type AiAssistantBubblePosition,
+} from "../src/components/ai/AiAssistantSurface";
 import { TauriClient } from "../src/lib/api/tauri-client";
 import type { AiAssistantPresentation } from "../src/lib/ai/presentation";
 import type { AgentConfig, AiPlan, ConversationMeta } from "../src/types/ai";
@@ -179,6 +182,10 @@ interface HarnessProps {
   initiallyOpen?: boolean;
   /** Wired through so the plan's MCP pointer can be observed from outside. */
   onOpenMcpPermissions?: () => void;
+  /** A restored bubble position, as the host hands one over after hydration. */
+  bubblePosition?: AiAssistantBubblePosition | null;
+  /** Observes what the host would be asked to persist, and how often. */
+  onBubblePositionChange?: (position: AiAssistantBubblePosition) => void;
 }
 
 /**
@@ -193,6 +200,8 @@ function Harness({
   presentation,
   initiallyOpen = false,
   onOpenMcpPermissions,
+  bubblePosition,
+  onBubblePositionChange,
 }: HarnessProps) {
   const [open, setOpen] = React.useState(initiallyOpen);
   const [, setTick] = React.useState(0);
@@ -208,6 +217,8 @@ function Harness({
         presentation={presentation}
         open={open}
         onOpenChange={setOpen}
+        bubblePosition={bubblePosition}
+        onBubblePositionChange={onBubblePositionChange}
         onOpenMcpPermissions={onOpenMcpPermissions}
       />
     </div>
@@ -217,6 +228,127 @@ function Harness({
 function assertAbsent(node: Element | null, label: string): void {
   // Comparing to `null` first: see the same helper in AiPersonaSettings.test.tsx.
   assert.ok(node === null, `expected no ${label}`);
+}
+
+// ── Geometry, which jsdom does not have ────────────────────────────────────
+
+/** Undoes whatever {@link stubLayout} patched. Cleared in `afterEach`. */
+let restoreLayout: (() => void) | null = null;
+
+/**
+ * Give every element a box and the window a size.
+ *
+ * jsdom lays nothing out: `getBoundingClientRect` answers all zeros and
+ * `offsetWidth` is zero. The drag reads exactly those plus
+ * `window.innerWidth`/`innerHeight`, so without this the position tests would
+ * be asserting arithmetic on zeros and the clamp would have no size to clamp
+ * against. Patched on the prototype rather than on one node because the
+ * mount-time clamp has to be observable, and at that moment the node to patch
+ * does not exist yet.
+ */
+function stubLayout(
+  box: { right: number; bottom: number; width: number; height: number },
+  viewport: { width: number; height: number },
+): void {
+  const proto = HTMLElement.prototype as unknown as Record<string, unknown>;
+  const rect = Object.getOwnPropertyDescriptor(
+    Element.prototype,
+    "getBoundingClientRect",
+  );
+  const width = Object.getOwnPropertyDescriptor(proto, "offsetWidth");
+  const height = Object.getOwnPropertyDescriptor(proto, "offsetHeight");
+  const innerWidth = Object.getOwnPropertyDescriptor(window, "innerWidth");
+  const innerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
+
+  Element.prototype.getBoundingClientRect = () =>
+    ({
+      x: box.right - box.width,
+      y: box.bottom - box.height,
+      left: box.right - box.width,
+      top: box.bottom - box.height,
+      right: box.right,
+      bottom: box.bottom,
+      width: box.width,
+      height: box.height,
+      toJSON: () => ({}),
+    }) as DOMRect;
+  Object.defineProperty(proto, "offsetWidth", {
+    configurable: true,
+    get: () => box.width,
+  });
+  Object.defineProperty(proto, "offsetHeight", {
+    configurable: true,
+    get: () => box.height,
+  });
+  Object.defineProperty(window, "innerWidth", {
+    configurable: true,
+    value: viewport.width,
+  });
+  Object.defineProperty(window, "innerHeight", {
+    configurable: true,
+    value: viewport.height,
+  });
+
+  restoreLayout = () => {
+    if (rect)
+      Object.defineProperty(Element.prototype, "getBoundingClientRect", rect);
+    if (width) Object.defineProperty(proto, "offsetWidth", width);
+    if (height) Object.defineProperty(proto, "offsetHeight", height);
+    if (innerWidth) Object.defineProperty(window, "innerWidth", innerWidth);
+    if (innerHeight) Object.defineProperty(window, "innerHeight", innerHeight);
+  };
+}
+
+/**
+ * Resize the window without re-stubbing the element boxes.
+ *
+ * `new window.Event`, not `new Event`. Node has had a global `Event` since v18,
+ * and `test/node-test-env.ts` copies jsdom's globals across only where the name
+ * is still free — so a bare `Event` here is Node's, from the wrong realm, and
+ * jsdom's `dispatchEvent` rejects it. The same harness wraps
+ * `window.dispatchEvent` in a `try`/`catch` that returns `true`, so the throw
+ * is swallowed and the dispatch looks like it worked while no listener ever
+ * runs. `MouseEvent` is unaffected because Node has no global of that name.
+ */
+function resizeWindow(width: number, height: number): void {
+  Object.defineProperty(window, "innerWidth", {
+    configurable: true,
+    value: width,
+  });
+  Object.defineProperty(window, "innerHeight", {
+    configurable: true,
+    value: height,
+  });
+  act(() => {
+    window.dispatchEvent(new window.Event("resize"));
+  });
+}
+
+/**
+ * Dispatch one step of a pointer gesture.
+ *
+ * Built from `MouseEvent`, not `PointerEvent`: jsdom does not implement the
+ * latter, and the drag only reads `button`, `clientX` and `clientY`, all of
+ * which a `MouseEvent` carries. `WindowControls.test.tsx` does the same for the
+ * same reason. The move and release go to `document.body` so they bubble to the
+ * `window` listeners the drag installs for the rest of the gesture — which is
+ * how a real drag survives the pointer leaving a 44px button.
+ */
+function pointer(
+  type: "pointerdown" | "pointermove" | "pointerup" | "pointercancel",
+  target: EventTarget,
+  point: { clientX: number; clientY: number },
+): void {
+  act(() => {
+    target.dispatchEvent(
+      new MouseEvent(type, {
+        bubbles: true,
+        cancelable: true,
+        button: 0,
+        ...point,
+      }),
+    );
+  });
 }
 
 beforeEach(async () => {
@@ -230,6 +362,8 @@ beforeEach(async () => {
 afterEach(() => {
   cleanup();
   mock.restoreAll();
+  restoreLayout?.();
+  restoreLayout = null;
   delete (window as unknown as { __TAURI__?: unknown }).__TAURI__;
 });
 
@@ -316,6 +450,220 @@ test("an open bubble holds exactly one panel, wearing the bubble's chrome", asyn
   assert.ok(launcher, "the launcher must report its expanded state");
   assert.equal(launcher.getAttribute("aria-expanded"), "true");
   assert.equal(screen.getByTestId("ai-assistant-bubble").dataset.open, "true");
+});
+
+// ── Moving the bubble ──────────────────────────────────────────────────────
+
+/** The launcher, which is also the grab handle. */
+function bubbleLauncher(): HTMLElement {
+  return screen.getByTestId("ai-assistant-bubble-launcher");
+}
+
+test("an undragged bubble paints no position of its own", () => {
+  installBackend();
+  render(<Harness presentation="bubble" />);
+
+  // No inline style at all, so the responsive `right-4 bottom-16` corner is
+  // still what decides. A default re-expressed in pixels would quietly stop
+  // tracking the root font size.
+  const bubble = screen.getByTestId("ai-assistant-bubble");
+  assert.equal(bubble.style.right, "");
+  assert.equal(bubble.style.bottom, "");
+  assert.match(bubble.className, /(?:^|\s)right-4(?:$|\s)/);
+  assert.match(bubble.className, /(?:^|\s)bottom-16(?:$|\s)/);
+});
+
+test("dragging the bubble moves it and never toggles the assistant", () => {
+  installBackend();
+  // A 44px launcher sitting in the default corner of a 1000x800 window:
+  // 1000-984 = 16px from the right, 800-736 = 64px from the bottom.
+  stubLayout(
+    { right: 984, bottom: 736, width: 44, height: 44 },
+    { width: 1000, height: 800 },
+  );
+  const stored: AiAssistantBubblePosition[] = [];
+  render(
+    <Harness
+      presentation="bubble"
+      onBubblePositionChange={(p) => stored.push(p)}
+    />,
+  );
+  const bubble = screen.getByTestId("ai-assistant-bubble");
+  const launcher = bubbleLauncher();
+
+  pointer("pointerdown", launcher, { clientX: 900, clientY: 700 });
+  pointer("pointermove", document.body, { clientX: 700, clientY: 300 });
+  // Following the pointer, not waiting for release: 200px left of where it
+  // started is 200px further from the right edge.
+  assert.equal(bubble.style.right, "216px");
+  assert.equal(bubble.style.bottom, "464px");
+  assert.equal(bubble.dataset.dragging, "true");
+
+  pointer("pointerup", launcher, { clientX: 700, clientY: 300 });
+  assert.equal(bubble.dataset.dragging, "false");
+  // One write for the whole gesture, not one per pointer move.
+  assert.deepEqual(stored, [{ right: 216, bottom: 464 }]);
+
+  // The browser fires a click after a release over a button whatever the
+  // pointer did in between. Moving the assistant must not open it — otherwise
+  // there is no way to move it at all.
+  act(() => {
+    fireEvent.click(launcher);
+  });
+  assert.equal(bubble.dataset.open, "false");
+  assertAbsent(screen.queryByTestId("ai-panel"), "panel opened by a drag");
+});
+
+test("a press that barely travels is still a click, not a drag", () => {
+  installBackend();
+  stubLayout(
+    { right: 984, bottom: 736, width: 44, height: 44 },
+    { width: 1000, height: 800 },
+  );
+  const stored: AiAssistantBubblePosition[] = [];
+  render(
+    <Harness
+      presentation="bubble"
+      onBubblePositionChange={(p) => stored.push(p)}
+    />,
+  );
+  const bubble = screen.getByTestId("ai-assistant-bubble");
+  const launcher = bubbleLauncher();
+
+  // Two pixels of jitter is what a real click off a trackpad looks like.
+  pointer("pointerdown", launcher, { clientX: 900, clientY: 700 });
+  pointer("pointermove", document.body, { clientX: 901, clientY: 701 });
+  pointer("pointerup", launcher, { clientX: 901, clientY: 701 });
+  act(() => {
+    fireEvent.click(launcher);
+  });
+
+  assert.equal(bubble.dataset.open, "true");
+  assert.deepEqual(stored, [], "a click is not a position to remember");
+  assert.equal(bubble.style.right, "", "and it moved nothing");
+});
+
+test("a drag that ends off the launcher does not swallow the next activation", async () => {
+  installBackend();
+  stubLayout(
+    { right: 984, bottom: 736, width: 44, height: 44 },
+    { width: 1000, height: 800 },
+  );
+  render(<Harness presentation="bubble" />);
+  const bubble = screen.getByTestId("ai-assistant-bubble");
+  const launcher = bubbleLauncher();
+
+  // Released away from the handle, so no click follows and the suppression
+  // that a finished drag arms is never consumed.
+  pointer("pointerdown", launcher, { clientX: 900, clientY: 700 });
+  pointer("pointermove", document.body, { clientX: 500, clientY: 200 });
+  pointer("pointerup", document.body, { clientX: 500, clientY: 200 });
+  // 400px left and 500px up from the default 16/64 corner.
+  assert.equal(bubble.style.right, "416px");
+  assert.equal(bubble.style.bottom, "564px");
+
+  // A later activation is a different gesture — and a keyboard one produces a
+  // click with no pointer events in front of it, so a suppression left armed
+  // would make the bubble unopenable from the keyboard.
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+  act(() => {
+    fireEvent.click(launcher);
+  });
+  assert.equal(bubble.dataset.open, "true");
+});
+
+test("a bubble stored past the edge of the window is pulled back on screen", () => {
+  installBackend();
+  stubLayout(
+    { right: 984, bottom: 736, width: 44, height: 44 },
+    { width: 1000, height: 800 },
+  );
+  const stored: AiAssistantBubblePosition[] = [];
+  render(
+    <Harness
+      presentation="bubble"
+      // What a wide monitor leaves behind once the window is small again.
+      bubblePosition={{ right: 4000, bottom: 3000 }}
+      onBubblePositionChange={(p) => stored.push(p)}
+    />,
+  );
+
+  // Clamped to the far edge less the bubble's own size, so the launcher is
+  // still on screen and still grabbable. Stranded off-screen with the point
+  // persisted, it would be unrecoverable without clearing settings.
+  const bubble = screen.getByTestId("ai-assistant-bubble");
+  assert.equal(bubble.style.right, "956px");
+  assert.equal(bubble.style.bottom, "756px");
+  // And the stored point is left alone: a window the user made small for a
+  // minute must not rewrite where they decided the bubble lives.
+  assert.deepEqual(stored, []);
+});
+
+test("shrinking the window pulls the bubble back without rewriting what was stored", () => {
+  installBackend();
+  stubLayout(
+    { right: 984, bottom: 736, width: 44, height: 44 },
+    { width: 1000, height: 800 },
+  );
+  const stored: AiAssistantBubblePosition[] = [];
+  render(
+    <Harness
+      presentation="bubble"
+      bubblePosition={{ right: 900, bottom: 700 }}
+      onBubblePositionChange={(p) => stored.push(p)}
+    />,
+  );
+  const bubble = screen.getByTestId("ai-assistant-bubble");
+  assert.equal(bubble.style.right, "900px");
+
+  resizeWindow(500, 400);
+
+  assert.equal(bubble.style.right, "456px");
+  assert.equal(bubble.style.bottom, "356px");
+  assert.deepEqual(stored, []);
+});
+
+test("a position that arrives after mount is adopted", async () => {
+  installBackend();
+  stubLayout(
+    { right: 984, bottom: 736, width: 44, height: 44 },
+    { width: 1000, height: 800 },
+  );
+  const { rerender } = render(<Harness presentation="bubble" />);
+  const bubble = screen.getByTestId("ai-assistant-bubble");
+  assert.equal(bubble.style.right, "");
+
+  // Preference hydration is asynchronous in the host, so the stored point
+  // lands a tick or two after the first render. Ignoring it then would make
+  // the bubble forget its position on every launch.
+  await act(async () => {
+    rerender(
+      <Harness
+        presentation="bubble"
+        bubblePosition={{ right: 300, bottom: 200 }}
+      />,
+    );
+  });
+  assert.equal(bubble.style.right, "300px");
+  assert.equal(bubble.style.bottom, "200px");
+});
+
+test("the dock is not movable", async () => {
+  installBackend();
+  render(<Harness presentation="sidebar" initiallyOpen />);
+  await screen.findByTestId("ai-panel");
+
+  // A dock takes part in the layout it docks into; a free-floating one would
+  // just be the bubble. There is no handle and no inline position.
+  assertAbsent(
+    screen.queryByTestId("ai-assistant-bubble-launcher"),
+    "a drag handle on the dock",
+  );
+  const dock = screen.getByTestId("ai-assistant-sidebar");
+  assert.equal(dock.style.right, "");
+  assert.equal(dock.style.bottom, "");
 });
 
 // ── Dismissal, and what survives it ────────────────────────────────────────

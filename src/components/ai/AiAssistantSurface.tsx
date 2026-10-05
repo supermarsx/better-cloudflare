@@ -25,6 +25,14 @@
  * every render makes the page unusable — and returns to whatever opened it when
  * it closes.
  *
+ * **Movement.** The bubble is draggable by its launcher and remembers where it
+ * was put. Two things that make it more than a `mousemove` handler: a drag must
+ * not read as a click, or moving the assistant would open and close it; and the
+ * point must be clamped to the viewport, or a bubble dragged to an edge and
+ * then persisted survives a window resize as something the user cannot reach
+ * or un-stick without clearing their settings. See {@link useBubbleDrag}. The
+ * dock is deliberately not movable — it is docked.
+ *
  * **State across tabs.** Once opened, the panel stays mounted and is hidden
  * with the `hidden` attribute rather than unmounted. Closing the bubble during
  * a streaming turn therefore does not abandon the run, and the first open does
@@ -43,11 +51,14 @@
  * message still arrives with the refresh that `turnComplete` triggers.
  */
 import {
+  useCallback,
   useEffect,
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
   type KeyboardEvent as ReactKeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
   type RefObject,
 } from "react";
 import { createPortal } from "react-dom";
@@ -63,10 +74,43 @@ import { cn } from "@/lib/utils";
 
 import { AiAssistantPanel, type AiSettingsSection } from "./AiAssistantPanel";
 
+/**
+ * Where the floating bubble sits: pixel insets from the viewport's
+ * bottom-right corner.
+ *
+ * That corner rather than the top-left, for two reasons. It is the one the
+ * default `right-4 bottom-16` already measures from, so "nothing stored" and
+ * "stored at the default" describe the same place. And the stack grows *away*
+ * from it — the panel opens upwards and leftwards out of the launcher — so
+ * insets from this corner leave the launcher exactly where it is when the
+ * panel opens. A top-left origin would slide the thing under the user's
+ * pointer down by the height of the panel every time they opened it.
+ */
+export interface AiAssistantBubblePosition {
+  right: number;
+  bottom: number;
+}
+
 export interface AiAssistantSurfaceProps {
   presentation: AiAssistantPresentation;
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  /**
+   * The stored bubble position, or `null`/absent to keep the default corner.
+   *
+   * Restored rather than controlled: the drag runs on local state so that a
+   * pointer move does not round-trip through the host and into user settings
+   * sixty times a second. The host sees one `onPositionChange` per gesture.
+   * A value arriving after mount is adopted, because preference hydration is
+   * asynchronous and lands a tick or two after the first render.
+   */
+  bubblePosition?: AiAssistantBubblePosition | null;
+  /**
+   * Store a bubble position. Called once per drag, on release, with the
+   * already-clamped point — so what is persisted is always somewhere the user
+   * can reach it again.
+   */
+  onBubblePositionChange?: (position: AiAssistantBubblePosition) => void;
   /**
    * Forwarded to the panel: the app's MCP tool permissions, which a blocked
    * plan step refused by `mcpGrants` has to point at and which nothing under
@@ -121,6 +165,207 @@ function useSurfaceFocus(
   }, [containerRef, open]);
 }
 
+/** Below this much travel a pointer gesture is a click, not a drag. */
+const BUBBLE_DRAG_SLOP_PX = 4;
+
+/**
+ * Hold an inset inside the viewport.
+ *
+ * `extent - size` goes negative whenever the surface is bigger than the window
+ * — an open panel is up to 40rem tall — and clamping that ceiling at zero pins
+ * the bubble flush to the corner instead of inverting the range and throwing
+ * the bubble to the opposite edge.
+ */
+function clampInset(value: number, extent: number, size: number): number {
+  return Math.min(Math.max(value, 0), Math.max(extent - size, 0));
+}
+
+interface BubbleDrag {
+  /** The positioning override, or `undefined` to leave the default corner. */
+  style: CSSProperties | undefined;
+  dragging: boolean;
+  /** Attach to the element the user grabs. */
+  onPointerDown: (event: ReactPointerEvent<HTMLElement>) => void;
+  /**
+   * True exactly once, for the click a finished drag leaves behind. Call it
+   * from the handle's own `onClick` and do nothing else when it answers true.
+   */
+  consumeDragClick: () => boolean;
+  /** The positioned container, measured for clamping. */
+  attach: (node: HTMLElement | null) => void;
+}
+
+/**
+ * Make the bubble movable, and keep it somewhere the user can get it back.
+ *
+ * Two properties this is built around:
+ *
+ * **A drag is not a click.** The launcher is a real button, so a pointer
+ * release over it produces a `click` whatever the pointer did in between. A
+ * gesture that travelled is reported through {@link BubbleDrag.consumeDragClick}
+ * so the toggle can decline it — otherwise the assistant would open or close
+ * every time it was moved, and there would be no way to move it without that.
+ *
+ * **It cannot be stranded.** The point is clamped against the viewport on
+ * release, on mount, on resize and whenever the panel opens or closes (which
+ * changes the surface's height by up to 40rem). Only the release clamp is
+ * persisted: a window the user temporarily made small must not quietly rewrite
+ * where they put the bubble, so the stored point stays their intent and the
+ * clamp is applied on the way to the screen.
+ */
+function useBubbleDrag(
+  enabled: boolean,
+  surfaceVisible: boolean,
+  position: AiAssistantBubblePosition | null | undefined,
+  onPositionChange: ((position: AiAssistantBubblePosition) => void) | undefined,
+): BubbleDrag {
+  const nodeRef = useRef<HTMLElement | null>(null);
+  const [placed, setPlaced] = useState<AiAssistantBubblePosition | null>(
+    position ?? null,
+  );
+  const [dragging, setDragging] = useState(false);
+  // Written when a gesture ends having moved, read by the handle's click
+  // handler in the same task. A ref because the click is dispatched before any
+  // re-render a state update could cause.
+  const draggedRef = useRef(false);
+
+  const restoredRight = position?.right ?? null;
+  const restoredBottom = position?.bottom ?? null;
+
+  /**
+   * Adopt a restored point.
+   *
+   * Keyed on the two numbers, not on the object: the host rebuilds it from two
+   * stored fields, so an identity dependency would fire on every unrelated
+   * host render and throw away the drag the user had just finished.
+   */
+  useEffect(() => {
+    if (restoredRight === null || restoredBottom === null) return;
+    setPlaced({ right: restoredRight, bottom: restoredBottom });
+  }, [restoredBottom, restoredRight]);
+
+  const clampToViewport = useCallback(() => {
+    const node = nodeRef.current;
+    if (node === null || typeof window === "undefined") return;
+    setPlaced((current) => {
+      if (current === null) return null;
+      const right = clampInset(
+        current.right,
+        window.innerWidth,
+        node.offsetWidth,
+      );
+      const bottom = clampInset(
+        current.bottom,
+        window.innerHeight,
+        node.offsetHeight,
+      );
+      return right === current.right && bottom === current.bottom
+        ? current
+        : { right, bottom };
+    });
+  }, []);
+
+  // Mount, every resize, and every open or close. The last one matters as much
+  // as the resize: a bubble parked near the top of a short window has room for
+  // its launcher and none for the panel that appears above it.
+  useEffect(() => {
+    if (!enabled || typeof window === "undefined") return;
+    clampToViewport();
+    window.addEventListener("resize", clampToViewport);
+    return () => window.removeEventListener("resize", clampToViewport);
+  }, [clampToViewport, enabled, surfaceVisible]);
+
+  const onPointerDown = useCallback(
+    (event: ReactPointerEvent<HTMLElement>) => {
+      // Primary button only: a right-click still belongs to the context menu,
+      // and a middle-click is not a drag either.
+      if (!enabled || event.button !== 0) return;
+      const node = nodeRef.current;
+      if (node === null || typeof window === "undefined") return;
+
+      // Measured, not read back from `placed`, so the first drag starts from
+      // wherever the default corner actually put it — that default is a rem
+      // inset and this works in pixels.
+      const rect = node.getBoundingClientRect();
+      const origin: AiAssistantBubblePosition = {
+        right: window.innerWidth - rect.right,
+        bottom: window.innerHeight - rect.bottom,
+      };
+      const startX = event.clientX;
+      const startY = event.clientY;
+      let moved = false;
+      let latest = origin;
+      draggedRef.current = false;
+
+      const move = (moveEvent: PointerEvent) => {
+        const dx = moveEvent.clientX - startX;
+        const dy = moveEvent.clientY - startY;
+        if (!moved && Math.abs(dx) + Math.abs(dy) < BUBBLE_DRAG_SLOP_PX) return;
+        moved = true;
+        setDragging(true);
+        // Insets shrink as the pointer travels towards their own edge.
+        latest = {
+          right: clampInset(
+            origin.right - dx,
+            window.innerWidth,
+            node.offsetWidth,
+          ),
+          bottom: clampInset(
+            origin.bottom - dy,
+            window.innerHeight,
+            node.offsetHeight,
+          ),
+        };
+        setPlaced(latest);
+      };
+
+      const finish = () => {
+        window.removeEventListener("pointermove", move);
+        window.removeEventListener("pointerup", finish);
+        window.removeEventListener("pointercancel", finish);
+        setDragging(false);
+        if (!moved) return;
+        draggedRef.current = true;
+        // Disarmed on the next task. The click that follows a release over the
+        // handle is dispatched in this one, so anything later is a different
+        // gesture — including a keyboard activation, which must still toggle
+        // even if this drag ended somewhere off the handle entirely.
+        setTimeout(() => {
+          draggedRef.current = false;
+        }, 0);
+        onPositionChange?.(latest);
+      };
+
+      // On `window` rather than through pointer capture: the gesture has to
+      // survive the pointer leaving a 44px button, and `setPointerCapture` is
+      // not implemented everywhere this renders.
+      window.addEventListener("pointermove", move);
+      window.addEventListener("pointerup", finish);
+      window.addEventListener("pointercancel", finish);
+    },
+    [enabled, onPositionChange],
+  );
+
+  const consumeDragClick = useCallback(() => {
+    if (!draggedRef.current) return false;
+    draggedRef.current = false;
+    return true;
+  }, []);
+
+  return {
+    style:
+      placed === null
+        ? undefined
+        : { right: `${placed.right}px`, bottom: `${placed.bottom}px` },
+    dragging,
+    onPointerDown,
+    consumeDragClick,
+    attach: (node) => {
+      nodeRef.current = node;
+    },
+  };
+}
+
 /** A body-level host for the bubble, created once and cleaned up on unmount. */
 function usePortalHost(enabled: boolean): HTMLElement | null {
   const host = useMemo(() => {
@@ -145,6 +390,8 @@ export function AiAssistantSurface({
   presentation,
   open,
   onOpenChange,
+  bubblePosition,
+  onBubblePositionChange,
   onOpenMcpPermissions,
   onOpenAssistantSettings,
   linkNavigation,
@@ -177,6 +424,12 @@ export function AiAssistantSurface({
 
   useSurfaceFocus(visible, containerRef);
   const host = usePortalHost(presentation === "bubble");
+  const drag = useBubbleDrag(
+    presentation === "bubble",
+    visible,
+    bubblePosition,
+    onBubblePositionChange,
+  );
 
   // The workspace tab needs no chrome of its own: the tab bar is its frame and
   // its dismissal, and `DNSManager` renders the panel there directly.
@@ -241,11 +494,17 @@ export function AiAssistantSurface({
 
   return createPortal(
     <div
+      ref={drag.attach}
       data-testid="ai-assistant-bubble"
       data-open={open}
-      // Clear of the connection bar, which is `sticky bottom-0` and about
-      // 2.5rem tall; there is no CSS variable for its height to read.
+      data-dragging={drag.dragging}
+      // The utility insets are the default corner, clear of the connection bar
+      // — `sticky bottom-0` and about 2.5rem tall, with no CSS variable for its
+      // height to read. Once the user has moved the bubble the inline style
+      // from the drag outranks them; until then there is no inline style at
+      // all, so an undragged bubble keeps exactly the corner it always had.
       className="pointer-events-none fixed right-4 bottom-16 z-[60] flex max-w-[calc(100vw-2rem)] flex-col items-end gap-2"
+      style={drag.style}
     >
       {panel === null ? null : (
         <div
@@ -265,13 +524,33 @@ export function AiAssistantSurface({
           {panel}
         </div>
       )}
+      {/* The launcher is also the grab handle. `touch-none` keeps a touch drag
+          from scrolling the page out from under it, and `cursor-grab` says the
+          thing is movable before anyone tries. It stays a real button, so
+          Enter and Space still toggle the assistant; `pointerdown` is
+          deliberately not default-prevented, which would take the click focus
+          with it. */}
       <Button
         type="button"
         size="icon"
-        className="pointer-events-auto h-11 w-11 shrink-0 rounded-full shadow-lg"
+        data-testid="ai-assistant-bubble-launcher"
+        className={cn(
+          "pointer-events-auto h-11 w-11 shrink-0 touch-none rounded-full shadow-lg",
+          drag.dragging ? "cursor-grabbing select-none" : "cursor-grab",
+        )}
         aria-expanded={open}
         aria-label={open ? t("Close assistant", "Close assistant") : label}
-        onClick={() => onOpenChange(!open)}
+        onPointerDown={drag.onPointerDown}
+        onClick={(event) => {
+          // A drag that ends over the launcher still produces a click. Letting
+          // it through would mean the assistant opened or closed every time it
+          // was moved — and that there was no way to move it without that.
+          if (drag.consumeDragClick()) {
+            event.preventDefault();
+            return;
+          }
+          onOpenChange(!open);
+        }}
       >
         <Sparkles aria-hidden="true" className="h-5 w-5" />
       </Button>
