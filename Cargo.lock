@@ -467,6 +467,7 @@ dependencies = [
  "bc-ai-provider",
  "bc-ai-tools",
  "bc-mcp",
+ "bc-notify",
  "chrono",
  "serde",
  "serde_json",
@@ -618,6 +619,7 @@ name = "bc-notify"
 version = "0.1.0"
 dependencies = [
  "bc-cloudflare-api",
+ "bc-domain-audit",
  "bc-registrar",
  "chrono",
  "chrono-tz",

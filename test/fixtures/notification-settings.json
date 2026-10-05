@@ -8,6 +8,7 @@
       "catchUpOnLaunch": true,
       "recordPollMinutes": 15,
       "expiryPollMinutes": 360,
+      "auditPollMinutes": 1440,
       "rdapCacheHours": 24,
       "maxZonesPerPass": 200,
       "backoffMaxMinutes": 120
@@ -29,7 +30,14 @@
           "type"
         ]
       },
-      "service": { "enabled": true, "severity": "info", "osNotify": false }
+      "service": { "enabled": true, "severity": "info", "osNotify": false },
+      "auditFinding": {
+        "enabled": false,
+        "severity": "auto",
+        "osNotify": false,
+        "minFindingSeverity": "warn",
+        "categories": ["email", "security", "hygiene"]
+      }
     },
     "expiry": {
       "milestones": [90, 60, 30, 14, 7, 3, 1],
@@ -59,6 +67,7 @@
     "service": {
       "recordPollMinutes": [5, 1440],
       "expiryPollMinutes": [60, 10080],
+      "auditPollMinutes": [60, 10080],
       "rdapCacheHours": [6, 168],
       "maxZonesPerPass": [1, 1000],
       "backoffMaxMinutes": [5, 1440]
@@ -91,6 +100,7 @@
           "catchUpOnLaunch": true,
           "recordPollMinutes": 15,
           "expiryPollMinutes": 360,
+          "auditPollMinutes": 1440,
           "rdapCacheHours": 24,
           "maxZonesPerPass": 200,
           "backoffMaxMinutes": 120
@@ -121,6 +131,7 @@
           "catchUpOnLaunch": true,
           "recordPollMinutes": 5,
           "expiryPollMinutes": 60,
+          "auditPollMinutes": 1440,
           "rdapCacheHours": 6,
           "maxZonesPerPass": 1,
           "backoffMaxMinutes": 5
@@ -157,6 +168,7 @@
           "catchUpOnLaunch": true,
           "recordPollMinutes": 1440,
           "expiryPollMinutes": 10080,
+          "auditPollMinutes": 1440,
           "rdapCacheHours": 168,
           "maxZonesPerPass": 1000,
           "backoffMaxMinutes": 1440
@@ -302,6 +314,13 @@
             "enabled": true,
             "severity": "warning",
             "osNotify": true
+          },
+          "auditFinding": {
+            "enabled": false,
+            "severity": "auto",
+            "osNotify": false,
+            "minFindingSeverity": "warn",
+            "categories": ["email", "security", "hygiene"]
           }
         },
         "inApp": { "toastMinSeverity": "never", "badge": false }
@@ -405,6 +424,128 @@
       "name": "version is always rewritten to 1",
       "input": { "version": 7 },
       "expectedNormalized": "$defaults"
+    },
+    {
+      "name": "audit poll below the floor is clamped up",
+      "input": { "service": { "auditPollMinutes": 1 } },
+      "expectedNormalized": {
+        "$defaults": true,
+        "service": {
+          "enabled": true,
+          "paused": false,
+          "catchUpOnLaunch": true,
+          "recordPollMinutes": 15,
+          "expiryPollMinutes": 360,
+          "auditPollMinutes": 60,
+          "rdapCacheHours": 24,
+          "maxZonesPerPass": 200,
+          "backoffMaxMinutes": 120
+        }
+      }
+    },
+    {
+      "name": "audit poll above the ceiling is clamped down",
+      "input": { "service": { "auditPollMinutes": 99999 } },
+      "expectedNormalized": {
+        "$defaults": true,
+        "service": {
+          "enabled": true,
+          "paused": false,
+          "catchUpOnLaunch": true,
+          "recordPollMinutes": 15,
+          "expiryPollMinutes": 360,
+          "auditPollMinutes": 10080,
+          "rdapCacheHours": 24,
+          "maxZonesPerPass": 200,
+          "backoffMaxMinutes": 120
+        }
+      }
+    },
+    {
+      "name": "unusable audit threshold and category filter fall back, enabled is kept",
+      "input": {
+        "kinds": {
+          "auditFinding": {
+            "enabled": true,
+            "minFindingSeverity": "warning",
+            "categories": ["pigeon"]
+          }
+        }
+      },
+      "expectedNormalized": {
+        "$defaults": true,
+        "kinds": {
+          "domainExpiry": {
+            "enabled": true,
+            "severity": "auto",
+            "osNotify": true
+          },
+          "recordChange": {
+            "enabled": true,
+            "severity": "auto",
+            "osNotify": true,
+            "changes": { "added": true, "changed": true, "removed": true },
+            "fields": [
+              "content",
+              "ttl",
+              "proxied",
+              "priority",
+              "comment",
+              "name",
+              "type"
+            ]
+          },
+          "service": { "enabled": true, "severity": "info", "osNotify": false },
+          "auditFinding": {
+            "enabled": true,
+            "severity": "auto",
+            "osNotify": false,
+            "minFindingSeverity": "warn",
+            "categories": ["email", "security", "hygiene"]
+          }
+        }
+      }
+    },
+    {
+      "name": "audit categories dedupe into canonical order",
+      "input": {
+        "kinds": {
+          "auditFinding": { "categories": ["hygiene", "email", "email"] }
+        }
+      },
+      "expectedNormalized": {
+        "$defaults": true,
+        "kinds": {
+          "domainExpiry": {
+            "enabled": true,
+            "severity": "auto",
+            "osNotify": true
+          },
+          "recordChange": {
+            "enabled": true,
+            "severity": "auto",
+            "osNotify": true,
+            "changes": { "added": true, "changed": true, "removed": true },
+            "fields": [
+              "content",
+              "ttl",
+              "proxied",
+              "priority",
+              "comment",
+              "name",
+              "type"
+            ]
+          },
+          "service": { "enabled": true, "severity": "info", "osNotify": false },
+          "auditFinding": {
+            "enabled": false,
+            "severity": "auto",
+            "osNotify": false,
+            "minFindingSeverity": "warn",
+            "categories": ["email", "hygiene"]
+          }
+        }
+      }
     }
   ]
 }

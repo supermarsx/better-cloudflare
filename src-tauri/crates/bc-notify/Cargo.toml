@@ -6,6 +6,7 @@ description = "Background notification logic for Better Cloudflare: expiry miles
 
 [dependencies]
 bc-cloudflare-api = { path = "../bc-cloudflare-api" }
+bc-domain-audit = { path = "../bc-domain-audit" }
 bc-registrar = { path = "../bc-registrar" }
 chrono = { version = "0.4", features = ["serde"] }
 chrono-tz = "0.10"

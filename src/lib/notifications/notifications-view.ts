@@ -40,6 +40,7 @@ export const NOTIFICATION_SCOPES: readonly {
 const KIND_LABELS: Record<NotificationKind, string> = {
   domain_expiry: "Domain expiry",
   record_change: "Record change",
+  audit_finding: "Audit finding",
   service: "Service",
 };
 

@@ -47,6 +47,37 @@ pub struct DomainExpiryState {
     pub last_error_at: Option<String>,
 }
 
+/// One audit finding's current episode for one zone.
+///
+/// An *episode* is a continuous stretch during which the audit keeps reporting
+/// the same finding at the same severity. It opens the first time the finding is
+/// seen, and closes when a pass no longer reports it. `first_seen_at` is the
+/// changing input of the dedupe key, so a finding that is fixed and later
+/// regresses opens a new episode and notifies again.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct AuditFindingState {
+    /// The audit severity this episode was opened at (`info` | `warn` | `fail`).
+    /// Stored as a string so a severity added by a later version does not make
+    /// the whole state file unreadable.
+    pub severity: String,
+    pub first_seen_at: String,
+    pub last_seen_at: String,
+    /// Set when a pass stopped reporting the finding; cleared on regression.
+    pub resolved_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ZoneAuditState {
+    pub last_audited_at: Option<String>,
+    /// Why the last audit of this zone failed. Kept apart from
+    /// `ZoneState::last_error` so the two passes cannot overwrite each other's.
+    pub last_error: Option<String>,
+    /// Keyed by `bc-domain-audit` finding id (`spf-missing`, `dmarc-no-rua`, …).
+    pub findings: BTreeMap<String, AuditFindingState>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct ZoneState {
@@ -63,11 +94,17 @@ pub struct NotifyState {
     pub version: u32,
     pub last_record_check_at: Option<String>,
     pub last_expiry_check_at: Option<String>,
+    pub last_audit_check_at: Option<String>,
     /// Round-robin cursor for `service.maxZonesPerPass`.
     pub zone_cursor: u32,
+    /// The audit pass's own round-robin cursor: sharing one with the record
+    /// pass would let each advance the other past zones it never looked at.
+    pub audit_zone_cursor: u32,
     pub zones: BTreeMap<String, ZoneState>,
     /// Keyed by apex domain (= zone name).
     pub expiry: BTreeMap<String, DomainExpiryState>,
+    /// Open and recently resolved audit findings, keyed by zone id.
+    pub audit: BTreeMap<String, ZoneAuditState>,
     /// Items buffered during quiet hours with `behaviour = hold`.
     pub held: Vec<Notification>,
 }
@@ -78,9 +115,12 @@ impl Default for NotifyState {
             version: STATE_VERSION,
             last_record_check_at: None,
             last_expiry_check_at: None,
+            last_audit_check_at: None,
             zone_cursor: 0,
+            audit_zone_cursor: 0,
             zones: BTreeMap::new(),
             expiry: BTreeMap::new(),
+            audit: BTreeMap::new(),
             held: Vec::new(),
         }
     }
@@ -494,6 +534,13 @@ impl NotifyStore {
 
     pub fn clear_expiry_state(&mut self) -> Result<(), StoreError> {
         self.state.expiry.clear();
+        self.save_state()
+    }
+
+    /// Forget every audit episode. The next audit pass then treats every
+    /// finding it sees as new and notifies about it again.
+    pub fn clear_audit_state(&mut self) -> Result<(), StoreError> {
+        self.state.audit.clear();
         self.save_state()
     }
 

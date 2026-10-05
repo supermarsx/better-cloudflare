@@ -9,6 +9,8 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
+use bc_domain_audit::{AuditCategories, AuditCategory, AuditItem, AuditOptions, AuditSeverity};
+
 use crate::diff::{ChangeKind, DiffField};
 use crate::model::{parse_ts, NotificationKind, Severity};
 
@@ -16,6 +18,12 @@ pub const SETTINGS_VERSION: u32 = 1;
 
 pub const RECORD_POLL_MINUTES: (u32, u32) = (5, 1440);
 pub const EXPIRY_POLL_MINUTES: (u32, u32) = (60, 10080);
+/// Audit poll bounds. The floor is an hour, twelve times the record floor: an
+/// audit pass re-reads every record of every monitored zone and then reports on
+/// the zone's *configuration*, which changes when someone edits it rather than
+/// on its own. Polling it minutely would buy nothing a record diff does not
+/// already catch sooner, at the price of a full zone read each time.
+pub const AUDIT_POLL_MINUTES: (u32, u32) = (60, 10080);
 pub const RDAP_CACHE_HOURS: (u32, u32) = (6, 168);
 pub const MAX_ZONES_PER_PASS: (u32, u32) = (1, 1000);
 pub const BACKOFF_MAX_MINUTES: (u32, u32) = (5, 1440);
@@ -227,6 +235,7 @@ pub struct ServiceSettings {
     pub catch_up_on_launch: bool,
     pub record_poll_minutes: u32,
     pub expiry_poll_minutes: u32,
+    pub audit_poll_minutes: u32,
     pub rdap_cache_hours: u32,
     pub max_zones_per_pass: u32,
     pub backoff_max_minutes: u32,
@@ -240,6 +249,7 @@ impl Default for ServiceSettings {
             catch_up_on_launch: true,
             record_poll_minutes: 15,
             expiry_poll_minutes: 360,
+            audit_poll_minutes: 1440,
             rdap_cache_hours: 24,
             max_zones_per_pass: 200,
             backoff_max_minutes: 120,
@@ -251,6 +261,7 @@ impl ServiceSettings {
     fn normalize(mut self) -> Self {
         self.record_poll_minutes = clamp(self.record_poll_minutes, RECORD_POLL_MINUTES);
         self.expiry_poll_minutes = clamp(self.expiry_poll_minutes, EXPIRY_POLL_MINUTES);
+        self.audit_poll_minutes = clamp(self.audit_poll_minutes, AUDIT_POLL_MINUTES);
         self.rdap_cache_hours = clamp(self.rdap_cache_hours, RDAP_CACHE_HOURS);
         self.max_zones_per_pass = clamp(self.max_zones_per_pass, MAX_ZONES_PER_PASS);
         self.backoff_max_minutes = clamp(self.backoff_max_minutes, BACKOFF_MAX_MINUTES);
@@ -357,6 +368,124 @@ impl RecordChangeKindSettings {
     }
 }
 
+/// Minimum `bc-domain-audit` severity worth a notification. `pass` is not an
+/// option: a check that passed has nothing to tell anyone.
+///
+/// This is the audit's own scale (`info` | `warn` | `fail`), not the
+/// notification scale that [`MinSeverity`] uses (`info` | `warning` |
+/// `critical`). They are different vocabularies measuring different things —
+/// how bad the *finding* is, against how loud the *notification* is — which is
+/// why the field it fills is `minFindingSeverity` rather than a second
+/// `minSeverity`. [`NotificationSettings::severity_for_audit`] is the bridge.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AuditMinSeverity {
+    Info,
+    #[default]
+    Warn,
+    Fail,
+}
+
+impl AuditMinSeverity {
+    fn floor_rank(self) -> u8 {
+        match self {
+            AuditMinSeverity::Info => AuditSeverity::Info.rank(),
+            AuditMinSeverity::Warn => AuditSeverity::Warn.rank(),
+            AuditMinSeverity::Fail => AuditSeverity::Fail.rank(),
+        }
+    }
+
+    pub fn allows(self, severity: AuditSeverity) -> bool {
+        severity.rank() >= self.floor_rank()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct AuditFindingKindSettings {
+    /// Off by default. A pass costs a full record read of every monitored zone,
+    /// so an upgrade must not start making calls nobody asked for.
+    pub enabled: bool,
+    #[serde(deserialize_with = "lenient")]
+    pub severity: SeverityMode,
+    pub os_notify: bool,
+    /// Findings below this audit severity are not notified at all. Takes the
+    /// audit's own grades (`info` | `warn` | `fail`) — see [`AuditMinSeverity`].
+    #[serde(deserialize_with = "lenient")]
+    pub min_finding_severity: AuditMinSeverity,
+    /// Audit categories to run and report (`email`, `security`, `hygiene`).
+    /// Empty resets to all three, the way `recordChange.fields` does.
+    #[serde(deserialize_with = "lenient_string_list")]
+    pub categories: Vec<String>,
+}
+
+impl Default for AuditFindingKindSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            severity: SeverityMode::Auto,
+            os_notify: false,
+            min_finding_severity: AuditMinSeverity::Warn,
+            categories: AuditCategory::all()
+                .iter()
+                .map(|c| c.as_str().to_string())
+                .collect(),
+        }
+    }
+}
+
+impl AuditFindingKindSettings {
+    fn normalize(mut self) -> Self {
+        let selected: Vec<String> = AuditCategory::all()
+            .iter()
+            .filter(|category| self.categories.iter().any(|name| name == category.as_str()))
+            .map(|category| category.as_str().to_string())
+            .collect();
+        self.categories = if selected.is_empty() {
+            Self::default().categories
+        } else {
+            selected
+        };
+        self
+    }
+
+    /// The categories that participate in the audit.
+    pub fn audit_categories(&self) -> Vec<AuditCategory> {
+        self.categories
+            .iter()
+            .filter_map(|c| AuditCategory::parse(c))
+            .collect()
+    }
+
+    /// Options for `bc_domain_audit::run_domain_audit`: only the selected
+    /// categories run, so a user who only cares about email authentication does
+    /// not pay for the hygiene checks either.
+    ///
+    /// `domain_expires_at` is deliberately left unset. The audit's
+    /// `domain-expiry` finding covers the same ground as the `domain_expiry`
+    /// notification kind, which has its own schedule, milestones and registrar
+    /// fallback; feeding the date in here would notify twice for one fact.
+    pub fn audit_options(&self) -> AuditOptions {
+        let categories = self.audit_categories();
+        AuditOptions {
+            include_categories: AuditCategories {
+                email: categories.contains(&AuditCategory::Email),
+                security: categories.contains(&AuditCategory::Security),
+                hygiene: categories.contains(&AuditCategory::Hygiene),
+            },
+            domain_expires_at: None,
+        }
+    }
+
+    /// Whether this finding passes the severity threshold and category filter.
+    /// `Pass` findings never qualify.
+    pub fn allows(&self, item: &AuditItem) -> bool {
+        item.severity != AuditSeverity::Pass
+            && self.min_finding_severity.allows(item.severity)
+            && self.audit_categories().contains(&item.category)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct ServiceKindSettings {
@@ -385,6 +514,8 @@ pub struct KindSettings {
     pub record_change: RecordChangeKindSettings,
     #[serde(deserialize_with = "lenient")]
     pub service: ServiceKindSettings,
+    #[serde(deserialize_with = "lenient")]
+    pub audit_finding: AuditFindingKindSettings,
 }
 
 impl KindSettings {
@@ -393,6 +524,7 @@ impl KindSettings {
             NotificationKind::DomainExpiry => self.domain_expiry.enabled,
             NotificationKind::RecordChange => self.record_change.enabled,
             NotificationKind::Service => self.service.enabled,
+            NotificationKind::AuditFinding => self.audit_finding.enabled,
         }
     }
 
@@ -401,6 +533,7 @@ impl KindSettings {
             NotificationKind::DomainExpiry => self.domain_expiry.os_notify,
             NotificationKind::RecordChange => self.record_change.os_notify,
             NotificationKind::Service => self.service.os_notify,
+            NotificationKind::AuditFinding => self.audit_finding.os_notify,
         }
     }
 }
@@ -471,11 +604,13 @@ pub struct ZoneKindOverride {
     pub domain_expiry: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "lenient")]
     pub record_change: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "lenient")]
+    pub audit_finding: Option<bool>,
 }
 
 impl ZoneKindOverride {
     fn is_empty(&self) -> bool {
-        self.domain_expiry.is_none() && self.record_change.is_none()
+        self.domain_expiry.is_none() && self.record_change.is_none() && self.audit_finding.is_none()
     }
 
     pub fn get(&self, kind: NotificationKind) -> Option<bool> {
@@ -483,6 +618,7 @@ impl ZoneKindOverride {
             NotificationKind::DomainExpiry => self.domain_expiry,
             NotificationKind::RecordChange => self.record_change,
             NotificationKind::Service => None,
+            NotificationKind::AuditFinding => self.audit_finding,
         }
     }
 }
@@ -791,6 +927,7 @@ impl NotificationSettings {
                 domain_expiry: self.kinds.domain_expiry,
                 record_change: self.kinds.record_change.normalize(),
                 service: self.kinds.service,
+                audit_finding: self.kinds.audit_finding.normalize(),
             },
             expiry: self.expiry.normalize(),
             zones: self.zones.normalize(now),
@@ -868,6 +1005,20 @@ impl NotificationSettings {
 
     pub fn severity_for_service(&self) -> Severity {
         self.kinds.service.severity.resolve()
+    }
+
+    /// Severity for an audit finding: the audit's own grade unless the kind
+    /// pins one. `Pass` findings are filtered out before this is reached, so
+    /// they map to `info` only as a safe fallback.
+    pub fn severity_for_audit(&self, severity: AuditSeverity) -> Severity {
+        if let Some(fixed) = self.kinds.audit_finding.severity.fixed() {
+            return fixed;
+        }
+        match severity {
+            AuditSeverity::Fail => Severity::Critical,
+            AuditSeverity::Warn => Severity::Warning,
+            AuditSeverity::Info | AuditSeverity::Pass => Severity::Info,
+        }
     }
 
     /// Whether an OS notification may be shown for this item right now.

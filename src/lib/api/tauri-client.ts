@@ -2367,10 +2367,17 @@ export const NOTIFICATIONS_STATUS_EVENT = "notifications://status";
 export const NOTIFICATIONS_DESKTOP_ONLY =
   "Notifications are only available in the desktop app.";
 
-export type NotificationKind = "domain_expiry" | "record_change" | "service";
+export type NotificationKind =
+  "domain_expiry" | "record_change" | "service" | "audit_finding";
 export type NotificationSeverityLevel = "info" | "warning" | "critical";
 export type NotificationScope = "all" | "unread" | "archived";
-export type NotificationCheckKind = "records" | "expiry" | "all";
+/** What a caller may ask `notifications_check_now` to run. */
+export type NotificationCheckKind = "records" | "expiry" | "audit" | "all";
+/**
+ * What a completed pass reports it was. Never `"all"`: that is a request for
+ * several passes, not the identity of one.
+ */
+export type NotificationPassKind = "records" | "expiry" | "audit";
 
 export interface RecordChangeSnapshot {
   content?: string;
@@ -2425,7 +2432,7 @@ export interface NotificationQuery {
 }
 
 export interface NotificationPassSummary {
-  kind: NotificationCheckKind;
+  kind: NotificationPassKind;
   startedAt: string;
   durationMs: number;
   zonesChecked: number;
@@ -2442,8 +2449,10 @@ export interface NotificationServiceStatus {
   unread: number;
   lastRecordCheckAt?: string | null;
   lastExpiryCheckAt?: string | null;
+  lastAuditCheckAt?: string | null;
   nextRecordCheckAt?: string | null;
   nextExpiryCheckAt?: string | null;
+  nextAuditCheckAt?: string | null;
   /** Legacy alias of `nextRecordCheckAt` kept for the status line. */
   nextCheckAt?: string | null;
   backoffUntil?: string | null;

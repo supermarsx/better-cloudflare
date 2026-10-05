@@ -15,6 +15,8 @@ pub enum NotificationKind {
     DomainExpiry,
     RecordChange,
     Service,
+    /// A finding raised by the scheduled domain audit (`bc-domain-audit`).
+    AuditFinding,
 }
 
 impl NotificationKind {
@@ -23,6 +25,7 @@ impl NotificationKind {
             NotificationKind::DomainExpiry => "domain_expiry",
             NotificationKind::RecordChange => "record_change",
             NotificationKind::Service => "service",
+            NotificationKind::AuditFinding => "audit_finding",
         }
     }
 
@@ -31,6 +34,7 @@ impl NotificationKind {
             "domain_expiry" => Some(NotificationKind::DomainExpiry),
             "record_change" => Some(NotificationKind::RecordChange),
             "service" => Some(NotificationKind::Service),
+            "audit_finding" => Some(NotificationKind::AuditFinding),
             _ => None,
         }
     }
@@ -139,7 +143,8 @@ pub enum Scope {
 #[serde(default, rename_all = "camelCase")]
 pub struct NotificationQuery {
     pub scope: Scope,
-    /// Kind filter (`domain_expiry` | `record_change` | `service`). Unknown values match nothing.
+    /// Kind filter (`domain_expiry` | `record_change` | `service` | `audit_finding`).
+    /// Unknown values match nothing.
     pub kind: Option<String>,
     pub zone_id: Option<String>,
     /// Page size, clamped to `MAX_QUERY_LIMIT`; default `DEFAULT_QUERY_LIMIT`.

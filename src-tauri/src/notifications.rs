@@ -244,7 +244,7 @@ impl<R: Runtime> NotificationHost for TauriHost<R> {
 
 // ── pass runner (erases the zone source type) ────────────────────────────────
 
-/// Runs the two `bc-notify` passes against one API token.
+/// Runs the three `bc-notify` passes against one API token.
 pub trait PassRunner: Send + Sync {
     fn run_record<'a>(
         &'a self,
@@ -258,6 +258,22 @@ pub trait PassRunner: Send + Sync {
     fn run_expiry<'a>(
         &'a self,
         registrar_domains: &'a [DomainInfo],
+        store: &'a mut NotifyStore,
+        settings: &'a NotificationSettings,
+        now: DateTime<Utc>,
+    ) -> BoxFuture<'a, PassReport>;
+
+    /// Run the scheduled domain audit over the monitored zones.
+    ///
+    /// Takes neither the change ledger nor the registrar domains, unlike the
+    /// other two, and that is deliberate. A finding is a statement about the
+    /// zone's *current* configuration: suppressing "SPF is missing" because
+    /// this application is what deleted the record would hide a live problem
+    /// from the person who needs to hear it — whereas for the record pass a
+    /// self-inflicted edit is exactly the noise the ledger exists to filter.
+    /// Registrar data only carries expiry dates, which no audit check reads.
+    fn run_audit<'a>(
+        &'a self,
         store: &'a mut NotifyStore,
         settings: &'a NotificationSettings,
         now: DateTime<Utc>,
@@ -298,6 +314,15 @@ impl PassRunner for CloudflareClient {
             now,
         ))
     }
+
+    fn run_audit<'a>(
+        &'a self,
+        store: &'a mut NotifyStore,
+        settings: &'a NotificationSettings,
+        now: DateTime<Utc>,
+    ) -> BoxFuture<'a, PassReport> {
+        Box::pin(bc_notify::run_audit_pass(self, store, settings, now))
+    }
 }
 
 // ── wire types ───────────────────────────────────────────────────────────────
@@ -307,6 +332,7 @@ impl PassRunner for CloudflareClient {
 pub enum CheckKind {
     Records,
     Expiry,
+    Audit,
     All,
 }
 
@@ -316,6 +342,9 @@ impl CheckKind {
     }
     fn expiry(self) -> bool {
         matches!(self, CheckKind::Expiry | CheckKind::All)
+    }
+    fn audit(self) -> bool {
+        matches!(self, CheckKind::Audit | CheckKind::All)
     }
 }
 
@@ -354,8 +383,10 @@ pub struct NotificationServiceStatus {
     pub unread: u32,
     pub last_record_check_at: Option<String>,
     pub last_expiry_check_at: Option<String>,
+    pub last_audit_check_at: Option<String>,
     pub next_record_check_at: Option<String>,
     pub next_expiry_check_at: Option<String>,
+    pub next_audit_check_at: Option<String>,
     /// Alias of `next_record_check_at` for the status line.
     pub next_check_at: Option<String>,
     pub backoff_until: Option<String>,
@@ -394,8 +425,10 @@ struct Schedule {
     settings: NotificationSettings,
     next_record: Option<Instant>,
     next_expiry: Option<Instant>,
+    next_audit: Option<Instant>,
     last_record_run: Option<Instant>,
     last_expiry_run: Option<Instant>,
+    last_audit_run: Option<Instant>,
     backoff_until: Option<Instant>,
     backoff: Duration,
     last_pass: Option<PassSummary>,
@@ -408,8 +441,10 @@ impl Default for Schedule {
             settings: NotificationSettings::default(),
             next_record: None,
             next_expiry: None,
+            next_audit: None,
             last_record_run: None,
             last_expiry_run: None,
+            last_audit_run: None,
             backoff_until: None,
             backoff: Duration::ZERO,
             last_pass: None,
@@ -426,13 +461,30 @@ fn expiry_interval(settings: &NotificationSettings) -> Duration {
     Duration::from_secs(u64::from(settings.service.expiry_poll_minutes) * 60)
 }
 
+/// The audit's own cadence (`service.auditPollMinutes`, daily by default).
+///
+/// Separate from [`record_interval`] on purpose: an audit re-reads every
+/// monitored zone's records in full, so running it on the record pass's
+/// 15-minute cadence would multiply the account's API traffic for findings that
+/// change on the timescale of a DNS edit someone makes by hand.
+fn audit_interval(settings: &NotificationSettings) -> Duration {
+    Duration::from_secs(u64::from(settings.service.audit_poll_minutes) * 60)
+}
+
 impl Schedule {
-    /// Re-arm both timers from the last run (or from now) with the current intervals.
+    /// Re-arm every timer from its own last run (or from now) with the current
+    /// intervals.
     fn rearm(&mut self, now: Instant) {
         let record = record_interval(&self.settings);
         let expiry = expiry_interval(&self.settings);
+        let audit = audit_interval(&self.settings);
         self.next_record = Some(self.last_record_run.map_or(now, |t| t + record).max(now));
         self.next_expiry = Some(self.last_expiry_run.map_or(now, |t| t + expiry).max(now));
+        // The audit alone has no "never ran, so run now" case: it does not catch
+        // up at launch (see `start_with`), and re-arming is also what an
+        // unrelated settings save goes through — neither is a reason to spend a
+        // full-account audit this second.
+        self.next_audit = Some((self.last_audit_run.unwrap_or(now) + audit).max(now));
     }
 
     fn note_pass(&mut self, report: &PassReport, now: Instant) {
@@ -444,6 +496,10 @@ impl Schedule {
             PassKind::Expiry => {
                 self.last_expiry_run = Some(now);
                 self.next_expiry = Some(now + expiry_interval(&self.settings));
+            }
+            PassKind::Audit => {
+                self.last_audit_run = Some(now);
+                self.next_audit = Some(now + audit_interval(&self.settings));
             }
         }
         if report.backoff {
@@ -620,6 +676,16 @@ impl NotificationManager {
                 schedule.next_record = Some(now + record_interval(&settings));
                 schedule.next_expiry = Some(now + expiry_interval(&settings));
             }
+            // `catchUpOnLaunch` deliberately does not cover the audit: it reads
+            // every monitored zone's records in full (up to `maxZonesPerPass`),
+            // which at launch competes with the record pass doing the same reads
+            // and with the UI's own first load, and a 429 there would back the
+            // record pass off too. A daily pass also has little to catch up on —
+            // a finding describes the configuration as it stands, so the next
+            // tick reports it just as faithfully. `checkNow` is the way to ask
+            // for one immediately.
+            schedule.last_audit_run = None;
+            schedule.next_audit = Some(now + audit_interval(&settings));
         }
         {
             let mut store = self.store.lock().await;
@@ -708,11 +774,26 @@ impl NotificationManager {
         if kind.records() {
             ctx.run(PassKind::Records, &settings).await;
         }
+        // Last, and heaviest. Asking for an audit is also the only way to get
+        // one promptly after enabling the kind, since the timer is armed a full
+        // interval out; it still costs nothing while `auditFinding` is off,
+        // because the pass itself returns skipped before any network call.
+        if kind.audit() {
+            ctx.run(PassKind::Audit, &settings).await;
+        }
         self.status().await
     }
 
     pub async fn status(&self) -> Result<NotificationServiceStatus, String> {
-        let (settings, next_record, next_expiry, backoff_until, last_pass, mut last_error) = {
+        let (
+            settings,
+            next_record,
+            next_expiry,
+            next_audit,
+            backoff_until,
+            last_pass,
+            mut last_error,
+        ) = {
             let schedule = self
                 .shared
                 .schedule
@@ -722,6 +803,7 @@ impl NotificationManager {
                 schedule.settings.clone(),
                 schedule.next_record,
                 schedule.next_expiry,
+                schedule.next_audit,
                 schedule.backoff_until,
                 schedule.last_pass.clone(),
                 schedule.last_error.clone(),
@@ -736,14 +818,15 @@ impl NotificationManager {
         }
         let running = self.is_running();
         let store = self.store.lock().await;
-        let (zones_tracked, unread, last_record, last_expiry) = match store.as_ref() {
+        let (zones_tracked, unread, last_record, last_expiry, last_audit) = match store.as_ref() {
             Some(store) => (
                 store.state().zones.len() as u32,
                 store.unread_count(),
                 store.state().last_record_check_at.clone(),
                 store.state().last_expiry_check_at.clone(),
+                store.state().last_audit_check_at.clone(),
             ),
-            None => (0, 0, None, None),
+            None => (0, 0, None, None, None),
         };
         let active = running && settings.service.enabled && !settings.service.paused;
         let next_record = if active {
@@ -760,9 +843,15 @@ impl NotificationManager {
             unread,
             last_record_check_at: last_record,
             last_expiry_check_at: last_expiry,
+            last_audit_check_at: last_audit,
             next_record_check_at: next_record.clone(),
             next_expiry_check_at: if active {
                 instant_to_ts(next_expiry)
+            } else {
+                None
+            },
+            next_audit_check_at: if active {
+                instant_to_ts(next_audit)
             } else {
                 None
             },
@@ -1009,6 +1098,7 @@ impl PassContext<'_> {
                         .run_expiry(&registrar, store, settings, now)
                         .await
                 }
+                PassKind::Audit => self.runner.run_audit(store, settings, now).await,
             };
             let created: Vec<Notification> = store
                 .items()
@@ -1068,7 +1158,7 @@ async fn run_loop(ctx: LoopContext) {
         }
         let settings = ctx.host.load_settings().await;
         let now = Instant::now();
-        let (due_records, due_expiry, next_record, next_expiry) = {
+        let (due_records, due_expiry, due_audit, next_record, next_expiry, next_audit) = {
             let mut schedule = ctx
                 .shared
                 .schedule
@@ -1076,7 +1166,8 @@ async fn run_loop(ctx: LoopContext) {
                 .unwrap_or_else(|e| e.into_inner());
             let intervals_changed = record_interval(&schedule.settings)
                 != record_interval(&settings)
-                || expiry_interval(&schedule.settings) != expiry_interval(&settings);
+                || expiry_interval(&schedule.settings) != expiry_interval(&settings)
+                || audit_interval(&schedule.settings) != audit_interval(&settings);
             schedule.settings = settings.clone();
             if ctx.shared.reconfigure.swap(false, Ordering::SeqCst) || intervals_changed {
                 schedule.rearm(now);
@@ -1088,8 +1179,10 @@ async fn run_loop(ctx: LoopContext) {
             (
                 due(schedule.next_record),
                 due(schedule.next_expiry),
+                due(schedule.next_audit),
                 schedule.next_record,
                 schedule.next_expiry,
+                schedule.next_audit,
             )
         };
         if ctx.stop.load(Ordering::SeqCst) {
@@ -1108,6 +1201,13 @@ async fn run_loop(ctx: LoopContext) {
         if due_records {
             pass.run(PassKind::Records, &settings).await;
         }
+        // Audit last: the passes share one gate, so the cheap timers should not
+        // queue behind a full-account audit when they fall due on the same tick.
+        // Its own timer is re-armed by `note_pass` whatever the pass returned,
+        // so a failing or erroring audit delays nothing but the next audit.
+        if due_audit {
+            pass.run(PassKind::Audit, &settings).await;
+        }
 
         let active = settings.service.enabled && !settings.service.paused;
         let sleep_for = if !active {
@@ -1122,6 +1222,7 @@ async fn run_loop(ctx: LoopContext) {
             let candidates = [
                 schedule.next_record.or(next_record),
                 schedule.next_expiry.or(next_expiry),
+                schedule.next_audit.or(next_audit),
                 schedule.backoff_until,
             ];
             candidates
@@ -1405,6 +1506,12 @@ mod tests {
     struct FakeSource {
         record_calls: AtomicUsize,
         records: StdMutex<Vec<DNSRecord>>,
+        /// Times the scheduler dispatched an audit pass.
+        audit_passes: AtomicUsize,
+        /// Zones an audit pass actually read: still 0 when the kind is off.
+        audit_zones: AtomicUsize,
+        /// Make the audit pass come back as a failed pass.
+        audit_fails: AtomicBool,
     }
 
     impl ZoneSource for FakeSource {
@@ -1469,6 +1576,35 @@ mod tests {
                     bc_notify::evaluate_expiry_milestones(store, settings, now, &mut report);
                 store.state_mut().last_expiry_check_at = Some(format_ts(now));
                 let _ = store.save_state();
+                report
+            })
+        }
+
+        fn run_audit<'a>(
+            &'a self,
+            store: &'a mut NotifyStore,
+            settings: &'a NotificationSettings,
+            now: DateTime<Utc>,
+        ) -> BoxFuture<'a, PassReport> {
+            Box::pin(async move {
+                self.audit_passes.fetch_add(1, Ordering::SeqCst);
+                if self.audit_fails.load(Ordering::SeqCst) {
+                    // What a zone listing failure looks like to the scheduler.
+                    return PassReport {
+                        kind: PassKind::Audit,
+                        started_at: format_ts(now),
+                        duration_ms: 0,
+                        zones_checked: 0,
+                        notifications_created: 0,
+                        errors: 1,
+                        error_messages: vec!["list zones: boom".to_string()],
+                        skipped: false,
+                        backoff: false,
+                    };
+                }
+                let report = bc_notify::run_audit_pass(self, store, settings, now).await;
+                self.audit_zones
+                    .fetch_add(report.zones_checked as usize, Ordering::SeqCst);
                 report
             })
         }
@@ -1557,6 +1693,28 @@ mod tests {
         settings
     }
 
+    /// Audit findings on, at the fastest cadences the settings allow: a record
+    /// pass every 5 minutes against an audit every 60, so one cadence cannot
+    /// pass for the other.
+    fn audit_settings() -> NotificationSettings {
+        let mut settings = fast_settings();
+        settings.kinds.audit_finding.enabled = true;
+        settings.service.audit_poll_minutes = 60;
+        settings
+    }
+
+    /// Advance paused time in 10-minute steps, letting the loop run between
+    /// them so a long jump really does produce every tick inside it.
+    async fn advance_minutes(minutes: u64) {
+        let mut left = minutes;
+        while left > 0 {
+            let step = left.min(10);
+            tokio::time::advance(Duration::from_secs(step * 60)).await;
+            settle().await;
+            left -= step;
+        }
+    }
+
     #[tokio::test(start_paused = true)]
     async fn start_is_idempotent_for_the_same_token_and_stop_drops_it() {
         let h = harness().await;
@@ -1615,6 +1773,193 @@ mod tests {
         tokio::time::advance(Duration::from_secs(5 * 60 + 5)).await;
         settle().await;
         assert_eq!(h.source.record_calls.load(Ordering::SeqCst), 1);
+        h.manager.shutdown();
+    }
+
+    /// Mutation proof (a): make `audit_interval` read `record_poll_minutes`
+    /// (or arm `next_audit` from `record_interval` in `rearm`/`start_with`) and
+    /// this test fails on the first `audit_passes` assert.
+    #[tokio::test(start_paused = true)]
+    async fn audit_keeps_its_own_cadence_not_the_record_one() {
+        let h = harness_with(Some(audit_settings())).await;
+        h.manager
+            .start_with(h.source.clone(), "token".into())
+            .await
+            .expect("start");
+        settle().await;
+
+        // Ten record intervals pass. The audit's is 60 minutes, so none of them
+        // is an audit, however many times the record pass comes round.
+        advance_minutes(50).await;
+        let record_calls = h.source.record_calls.load(Ordering::SeqCst);
+        assert!(
+            record_calls >= 5,
+            "the record pass should have ticked repeatedly, saw {record_calls}"
+        );
+        assert_eq!(
+            h.source.audit_passes.load(Ordering::SeqCst),
+            0,
+            "an audit must not ride the record cadence"
+        );
+
+        // Past 60 minutes it fires, once, and does real work.
+        advance_minutes(20).await;
+        assert_eq!(h.source.audit_passes.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            h.source.audit_zones.load(Ordering::SeqCst),
+            1,
+            "the enabled pass audited the monitored zone"
+        );
+        {
+            let store = h.manager.store.lock().await;
+            let state = store.as_ref().unwrap().state();
+            assert!(state.audit.contains_key("zone1"), "episodes were recorded");
+            assert!(state.last_audit_check_at.is_some());
+        }
+        assert!(
+            h.manager
+                .list(NotificationQuery::default())
+                .await
+                .unwrap()
+                .iter()
+                .any(|n| n.kind == NotificationKind::AuditFinding),
+            "a wired-up audit raises its findings"
+        );
+
+        // And not again until the next interval.
+        advance_minutes(20).await;
+        assert_eq!(h.source.audit_passes.load(Ordering::SeqCst), 1);
+        advance_minutes(50).await;
+        assert_eq!(h.source.audit_passes.load(Ordering::SeqCst), 2);
+        h.manager.shutdown();
+    }
+
+    /// Mutation proof (b): flip `enabled` to `true` in
+    /// `AuditFindingKindSettings::default` and this test fails on `audit_zones`.
+    #[tokio::test(start_paused = true)]
+    async fn default_settings_do_no_audit_work() {
+        let mut settings = fast_settings();
+        // Only the cadence is shortened, to bring the daily timer within reach
+        // of the test; `kinds.auditFinding` keeps whatever the defaults say.
+        settings.service.audit_poll_minutes = 60;
+        assert!(
+            !settings.kinds.audit_finding.enabled,
+            "the kind must still be off by default"
+        );
+        let h = harness_with(Some(settings)).await;
+        h.manager
+            .start_with(h.source.clone(), "token".into())
+            .await
+            .expect("start");
+        settle().await;
+        advance_minutes(70).await;
+
+        assert!(
+            h.source.audit_passes.load(Ordering::SeqCst) >= 1,
+            "the timer should have come round"
+        );
+        assert_eq!(
+            h.source.audit_zones.load(Ordering::SeqCst),
+            0,
+            "a disabled kind must not read a single zone"
+        );
+        // Nor does asking for every pass by hand.
+        h.manager.check_now(CheckKind::All).await.expect("check");
+        assert_eq!(h.source.audit_zones.load(Ordering::SeqCst), 0);
+        {
+            let store = h.manager.store.lock().await;
+            assert!(store.as_ref().unwrap().state().audit.is_empty());
+        }
+        assert!(h
+            .manager
+            .list(NotificationQuery::default())
+            .await
+            .unwrap()
+            .iter()
+            .all(|n| n.kind != NotificationKind::AuditFinding));
+        h.manager.shutdown();
+    }
+
+    /// The audit is the one pass `catchUpOnLaunch` does not cover.
+    #[tokio::test(start_paused = true)]
+    async fn catch_up_on_launch_runs_records_but_not_the_audit() {
+        let settings = audit_settings();
+        assert!(settings.service.catch_up_on_launch, "fixture precondition");
+        let h = harness_with(Some(settings)).await;
+        h.manager
+            .start_with(h.source.clone(), "token".into())
+            .await
+            .expect("start");
+        settle().await;
+        assert_eq!(
+            h.source.record_calls.load(Ordering::SeqCst),
+            1,
+            "the record pass still catches up"
+        );
+        assert_eq!(
+            h.source.audit_passes.load(Ordering::SeqCst),
+            0,
+            "a full-account audit at launch is not what catch-up buys"
+        );
+        let status = h.manager.status().await.unwrap();
+        assert!(
+            status.next_audit_check_at.is_some(),
+            "it is armed, just not now"
+        );
+
+        // A settings save re-arms the timers; that must not conjure an audit
+        // either, even though this schedule has never run one.
+        h.manager
+            .update_settings(audit_settings())
+            .await
+            .expect("update settings");
+        settle().await;
+        assert_eq!(h.source.audit_passes.load(Ordering::SeqCst), 0);
+
+        // Asking for one directly is the way to get it immediately.
+        h.manager.check_now(CheckKind::Audit).await.expect("check");
+        assert_eq!(h.source.audit_passes.load(Ordering::SeqCst), 1);
+        assert_eq!(h.source.audit_zones.load(Ordering::SeqCst), 1);
+        h.manager.shutdown();
+    }
+
+    /// A failing audit is the audit's problem and nobody else's.
+    #[tokio::test(start_paused = true)]
+    async fn a_failing_audit_leaves_the_other_timers_running() {
+        let h = harness_with(Some(audit_settings())).await;
+        h.source.audit_fails.store(true, Ordering::SeqCst);
+        h.manager
+            .start_with(h.source.clone(), "token".into())
+            .await
+            .expect("start");
+        settle().await;
+        let records_before = h.source.record_calls.load(Ordering::SeqCst);
+
+        advance_minutes(70).await;
+        assert_eq!(
+            h.source.audit_passes.load(Ordering::SeqCst),
+            1,
+            "the audit ran and came back failed"
+        );
+        assert!(
+            h.source.record_calls.load(Ordering::SeqCst) > records_before,
+            "the record timer kept ticking through it"
+        );
+        let status = h.manager.status().await.unwrap();
+        assert!(status.next_record_check_at.is_some());
+        assert!(
+            status.next_audit_check_at.is_some(),
+            "re-armed after the failure, not abandoned"
+        );
+        assert!(status.backoff_until.is_none(), "an error is not a 429");
+
+        advance_minutes(70).await;
+        assert_eq!(
+            h.source.audit_passes.load(Ordering::SeqCst),
+            2,
+            "and it comes back round at its own interval"
+        );
+        assert_eq!(h.source.audit_zones.load(Ordering::SeqCst), 0);
         h.manager.shutdown();
     }
 
@@ -1960,6 +2305,8 @@ mod tests {
         assert!(request.expiry_ledger && !request.snapshots && !request.inbox);
         let kind: CheckKind = serde_json::from_value(json!("records")).expect("kind");
         assert_eq!(kind, CheckKind::Records);
+        let kind: CheckKind = serde_json::from_value(json!("audit")).expect("kind");
+        assert_eq!(kind, CheckKind::Audit);
         let status = serde_json::to_value(NotificationServiceStatus {
             running: true,
             enabled: true,
@@ -1969,16 +2316,33 @@ mod tests {
             unread: 0,
             last_record_check_at: None,
             last_expiry_check_at: None,
+            last_audit_check_at: None,
             next_record_check_at: None,
             next_expiry_check_at: None,
+            next_audit_check_at: None,
             next_check_at: None,
             backoff_until: None,
             last_error: None,
-            last_pass: None,
+            last_pass: Some(PassSummary::from(&PassReport {
+                kind: PassKind::Audit,
+                started_at: "2026-09-04T00:00:00.000Z".to_string(),
+                duration_ms: 0,
+                zones_checked: 0,
+                notifications_created: 0,
+                errors: 0,
+                error_messages: Vec::new(),
+                skipped: false,
+                backoff: false,
+            })),
         })
         .unwrap();
         assert!(status.get("quietHoursActive").is_some());
         assert!(status.get("nextRecordCheckAt").is_some());
+        assert!(status.get("nextAuditCheckAt").is_some());
+        assert!(status.get("lastAuditCheckAt").is_some());
+        // The audit's tag reaches the frontend through `lastPass`, unchanged by
+        // the collapse of its own kind enum into `PassKind`.
+        assert_eq!(status["lastPass"]["kind"], json!("audit"));
     }
 
     /// Host that only records what reaches the OS notification centre.

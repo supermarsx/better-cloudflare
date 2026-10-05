@@ -18,7 +18,11 @@ export type ToastMinSeverity = NotificationSeverity | "never";
 export type ExpirySource = "auto" | "rdap" | "registrar";
 export type ZoneMonitorMode = "all" | "allowlist";
 export type QuietHoursBehaviour = "silence" | "hold";
-export type NotificationKindKey = "domainExpiry" | "recordChange" | "service";
+export type NotificationKindKey =
+  "domainExpiry" | "recordChange" | "service" | "auditFinding";
+/** `pass` is deliberately absent: a check that passed has nothing to say. */
+export type AuditMinSeverity = "info" | "warn" | "fail";
+export type AuditCategory = "email" | "security" | "hygiene";
 export type RecordChangeKind = "added" | "changed" | "removed";
 export type RecordChangeField =
   "content" | "ttl" | "proxied" | "priority" | "comment" | "name" | "type";
@@ -32,6 +36,7 @@ export interface NotificationServiceSettings {
   catchUpOnLaunch: boolean;
   recordPollMinutes: number;
   expiryPollMinutes: number;
+  auditPollMinutes: number;
   rdapCacheHours: number;
   maxZonesPerPass: number;
   backoffMaxMinutes: number;
@@ -49,10 +54,18 @@ export interface RecordChangeKindSettings extends NotificationKindSettings {
   fields: RecordChangeField[];
 }
 
+export interface AuditFindingKindSettings extends NotificationKindSettings {
+  /** Findings below this audit severity are not notified at all. */
+  minFindingSeverity: AuditMinSeverity;
+  /** Canonical order. Empty resets to all three, the way `fields` does. */
+  categories: AuditCategory[];
+}
+
 export interface NotificationKindsSettings {
   domainExpiry: NotificationKindSettings;
   recordChange: RecordChangeKindSettings;
   service: NotificationKindSettings;
+  auditFinding: AuditFindingKindSettings;
 }
 
 export interface ExpirySettings {
@@ -137,6 +150,7 @@ interface NumberRange {
 export const NOTIFICATION_SETTING_LIMITS = {
   recordPollMinutes: { min: 5, max: 1440, default: 15 },
   expiryPollMinutes: { min: 60, max: 10080, default: 360 },
+  auditPollMinutes: { min: 60, max: 10080, default: 1440 },
   rdapCacheHours: { min: 6, max: 168, default: 24 },
   maxZonesPerPass: { min: 1, max: 1000, default: 200 },
   backoffMaxMinutes: { min: 5, max: 1440, default: 120 },
@@ -163,6 +177,18 @@ export const RECORD_CHANGE_FIELDS: readonly RecordChangeField[] = [
   "type",
 ];
 
+export const AUDIT_CATEGORIES: readonly AuditCategory[] = [
+  "email",
+  "security",
+  "hygiene",
+];
+
+export const AUDIT_MIN_SEVERITIES: readonly AuditMinSeverity[] = [
+  "info",
+  "warn",
+  "fail",
+];
+
 export const NOTIFICATION_SEVERITIES: readonly NotificationSeverity[] = [
   "info",
   "warning",
@@ -184,6 +210,7 @@ export function createDefaultNotificationSettings(): NotificationSettings {
       catchUpOnLaunch: true,
       recordPollMinutes: NOTIFICATION_SETTING_LIMITS.recordPollMinutes.default,
       expiryPollMinutes: NOTIFICATION_SETTING_LIMITS.expiryPollMinutes.default,
+      auditPollMinutes: NOTIFICATION_SETTING_LIMITS.auditPollMinutes.default,
       rdapCacheHours: NOTIFICATION_SETTING_LIMITS.rdapCacheHours.default,
       maxZonesPerPass: NOTIFICATION_SETTING_LIMITS.maxZonesPerPass.default,
       backoffMaxMinutes: NOTIFICATION_SETTING_LIMITS.backoffMaxMinutes.default,
@@ -198,6 +225,15 @@ export function createDefaultNotificationSettings(): NotificationSettings {
         fields: [...RECORD_CHANGE_FIELDS],
       },
       service: { enabled: true, severity: "info", osNotify: false },
+      auditFinding: {
+        // Off by default: a pass costs a record read of every monitored
+        // zone, so an upgrade must not start making calls nobody asked for.
+        enabled: false,
+        severity: "auto",
+        osNotify: false,
+        minFindingSeverity: "warn",
+        categories: [...AUDIT_CATEGORIES],
+      },
     },
     expiry: {
       milestones: [...DEFAULT_EXPIRY_MILESTONES],
@@ -265,6 +301,19 @@ function oneOf<T extends string>(
     (allowed as readonly string[]).includes(value)
     ? (value as T)
     : fallback;
+}
+
+/**
+ * Canonical order, unknown names dropped, and an empty selection resets to
+ * all three -- the same shape as `recordChange.fields`, and the same rule the
+ * Rust `AuditFindingKindSettings::normalize` applies.
+ */
+function normalizeAuditCategories(value: unknown): AuditCategory[] {
+  const requested = stringList(value);
+  const selected = AUDIT_CATEGORIES.filter((category) =>
+    requested.includes(category),
+  );
+  return selected.length > 0 ? selected : [...AUDIT_CATEGORIES];
 }
 
 function stringList(value: unknown): string[] {
@@ -393,6 +442,7 @@ export function clampNotificationSettings(
   const service = isRecord(raw.service) ? raw.service : {};
   const kinds = isRecord(raw.kinds) ? raw.kinds : {};
   const recordChange = isRecord(kinds.recordChange) ? kinds.recordChange : {};
+  const auditFinding = isRecord(kinds.auditFinding) ? kinds.auditFinding : {};
   const changes = isRecord(recordChange.changes) ? recordChange.changes : {};
   const expiry = isRecord(raw.expiry) ? raw.expiry : {};
   const sevBy = isRecord(expiry.severityByMilestone)
@@ -445,6 +495,7 @@ export function clampNotificationSettings(
         service.expiryPollMinutes,
         L.expiryPollMinutes,
       ),
+      auditPollMinutes: integer(service.auditPollMinutes, L.auditPollMinutes),
       rdapCacheHours: integer(service.rdapCacheHours, L.rdapCacheHours),
       maxZonesPerPass: integer(service.maxZonesPerPass, L.maxZonesPerPass),
       backoffMaxMinutes: integer(
@@ -464,6 +515,15 @@ export function clampNotificationSettings(
         fields: normalizeChangeFields(recordChange.fields),
       },
       service: normalizeKind(kinds.service, d.kinds.service),
+      auditFinding: {
+        ...normalizeKind(auditFinding, d.kinds.auditFinding),
+        minFindingSeverity: oneOf(
+          auditFinding.minFindingSeverity,
+          AUDIT_MIN_SEVERITIES,
+          d.kinds.auditFinding.minFindingSeverity,
+        ),
+        categories: normalizeAuditCategories(auditFinding.categories),
+      },
     },
     expiry: {
       milestones: normalizeMilestones(expiry.milestones),

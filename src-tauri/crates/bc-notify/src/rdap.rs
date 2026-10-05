@@ -103,7 +103,12 @@ pub fn is_valid_hostname(domain: &str) -> bool {
 
 /// Normalisation applied before validation: surrounding whitespace, the root
 /// label's trailing dot, and ASCII case.
-fn normalize_domain(domain: &str) -> String {
+/// The one definition of how a domain is folded before it is looked up.
+///
+/// Public because a registry *link* has to agree with a registry *lookup*
+/// about what counts as the same domain; `bc-ai-agent`'s link validation was
+/// mirroring these three operations inline, which is one copy too many.
+pub fn normalize_domain(domain: &str) -> String {
     domain.trim().trim_end_matches('.').to_ascii_lowercase()
 }
 

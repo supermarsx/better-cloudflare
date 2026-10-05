@@ -18,7 +18,7 @@ use std::net::IpAddr;
 // ── Public types ────────────────────────────────────────────────────────────
 
 /// Severity level for an audit finding.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum AuditSeverity {
     Pass,
@@ -27,13 +27,63 @@ pub enum AuditSeverity {
     Fail,
 }
 
+impl AuditSeverity {
+    /// The wire name, matching the serde representation.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AuditSeverity::Pass => "pass",
+            AuditSeverity::Info => "info",
+            AuditSeverity::Warn => "warn",
+            AuditSeverity::Fail => "fail",
+        }
+    }
+
+    /// How serious this finding is, low to high. Spelled out rather than derived
+    /// from the variant order so that reordering the enum cannot silently
+    /// reorder severity for callers that filter on a threshold.
+    pub fn rank(self) -> u8 {
+        match self {
+            AuditSeverity::Pass => 0,
+            AuditSeverity::Info => 1,
+            AuditSeverity::Warn => 2,
+            AuditSeverity::Fail => 3,
+        }
+    }
+}
+
 /// Audit category.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum AuditCategory {
     Email,
     Security,
     Hygiene,
+}
+
+impl AuditCategory {
+    pub const fn all() -> &'static [AuditCategory] {
+        &[
+            AuditCategory::Email,
+            AuditCategory::Security,
+            AuditCategory::Hygiene,
+        ]
+    }
+
+    /// The wire name, matching the serde representation.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AuditCategory::Email => "email",
+            AuditCategory::Security => "security",
+            AuditCategory::Hygiene => "hygiene",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        AuditCategory::all()
+            .iter()
+            .copied()
+            .find(|category| category.as_str() == value)
+    }
 }
 
 /// Optional suggestion to fix an issue.

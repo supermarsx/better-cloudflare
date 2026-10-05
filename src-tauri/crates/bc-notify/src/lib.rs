@@ -1,11 +1,13 @@
 //! Background notification logic for Better Cloudflare (no Tauri, no UI):
 //! domain-expiry milestones, out-of-app record change detection via snapshot
-//! diffs, dedupe, an on-disk inbox and the settings model shared with the UI.
+//! diffs, scheduled domain-audit findings, dedupe, an on-disk inbox and the
+//! settings model shared with the UI.
 //!
 //! The Tauri layer (`src-tauri/src/notifications.rs`) owns scheduling and the
-//! API token; this crate exposes two idempotent passes:
-//! [`run_record_pass`] and [`run_expiry_pass`].
+//! API token; this crate exposes three idempotent passes:
+//! [`run_record_pass`], [`run_expiry_pass`] and [`run_audit_pass`].
 
+pub mod audit;
 pub mod diff;
 pub mod expiry;
 pub mod ledger;
@@ -24,6 +26,10 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+pub use audit::{
+    audit_dedupe_key, build_audit_notification, reconcile_findings, AuditAlert,
+    EXCLUDED_FINDING_IDS, RESOLVED_EPISODE_RETENTION_DAYS,
+};
 pub use diff::{
     build_change_notification, change_dedupe_key, diff_snapshots, ChangeKind, DiffField,
     RecordChange, RecordFingerprint, RecordValues,
@@ -37,10 +43,14 @@ pub use model::{
     format_ts, parse_ts, Notification, NotificationKind, NotificationQuery, Scope, Severity,
 };
 pub use rdap::{
-    fetch_rdap_expiry, fetch_rdap_registration, is_valid_hostname, RdapError, RdapRegistration,
+    fetch_rdap_expiry, fetch_rdap_registration, is_valid_hostname, normalize_domain, RdapError,
+    RdapRegistration,
 };
-pub use settings::{NotificationSettings, QuietBehaviour};
-pub use store::{DomainExpiryState, NotifyState, NotifyStore, StoreError, ZoneState};
+pub use settings::{AuditMinSeverity, NotificationSettings, QuietBehaviour};
+pub use store::{
+    AuditFindingState, DomainExpiryState, NotifyState, NotifyStore, StoreError, ZoneAuditState,
+    ZoneState,
+};
 
 /// Records per page requested from Cloudflare (its maximum).
 pub const RECORDS_PER_PAGE: u32 = 5_000;
@@ -117,13 +127,19 @@ pub fn is_backoff_error(message: &str) -> bool {
         || lower.contains("server error")
 }
 
+/// Which pass a report describes. The lowercase variant names are the wire
+/// strings the frontend reads off `lastPass.kind`; `PassKind` is matched
+/// exhaustively by the Tauri scheduler, so a new pass arrives here and there
+/// together.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PassKind {
     Records,
     Expiry,
+    Audit,
 }
 
+/// Outcome of one pass.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PassReport {
@@ -387,7 +403,7 @@ pub async fn run_record_pass<S: ZoneSource>(
     report.finish(started)
 }
 
-/// Common tail of both passes: milestone evaluation from cached expiry data,
+/// Common tail of every pass: milestone evaluation from cached expiry data,
 /// release held items, retention, persist state.
 fn finish_pass(
     store: &mut NotifyStore,
@@ -665,6 +681,122 @@ pub async fn run_expiry_pass_with<S: ZoneSource>(
     }
 
     store.state_mut().last_expiry_check_at = Some(format_ts(now));
+    finish_pass(store, settings, now, &mut report);
+    report.finish(started)
+}
+
+/// Run `bc-domain-audit` over monitored zones and raise the findings that are
+/// news: one not seen before, one back after a fix, or one whose severity moved.
+///
+/// Costs one record read per audited zone, so it is bounded by
+/// `service.maxZonesPerPass` over the same round robin the record pass uses —
+/// with its own cursor — and is off unless `kinds.auditFinding.enabled` is set.
+/// A zone whose records cannot be read is skipped, not fatal to the pass.
+pub async fn run_audit_pass<S: ZoneSource>(
+    source: &S,
+    store: &mut NotifyStore,
+    settings: &NotificationSettings,
+    now: DateTime<Utc>,
+) -> PassReport {
+    let started = std::time::Instant::now();
+    let mut report = PassReport::new(PassKind::Audit, now);
+    let audit_kind = &settings.kinds.audit_finding;
+
+    if !audit_kind.enabled {
+        report.skipped = true;
+        finish_pass(store, settings, now, &mut report);
+        return report.finish(started);
+    }
+
+    let zones = match source.list_zones().await {
+        Ok(zones) => zones,
+        Err(error) => {
+            report.record_error(format!("list zones: {error}"));
+            finish_pass(store, settings, now, &mut report);
+            return report.finish(started);
+        }
+    };
+
+    // Episodes recorded for zones this token no longer lists are dead weight.
+    {
+        let live: HashSet<&str> = zones.iter().map(|z| z.id.as_str()).collect();
+        store
+            .state_mut()
+            .audit
+            .retain(|zone_id, _| live.contains(zone_id.as_str()));
+    }
+
+    // Muted and audit-disabled zones are dropped before the round robin rather
+    // than skipped inside it, as the record pass does: there is no snapshot to
+    // keep current here, so reading such a zone's records would spend a call and
+    // a pass slot to produce nothing.
+    let candidates: Vec<ZoneRef> = zones
+        .into_iter()
+        .filter(|zone| {
+            settings.is_zone_monitored(&zone.id)
+                && settings.zone_kind_enabled(&zone.id, NotificationKind::AuditFinding)
+                && !settings.is_zone_muted(&zone.id, now)
+        })
+        .collect();
+    let (selected, next_cursor) = select_round_robin(
+        &candidates,
+        store.state().audit_zone_cursor,
+        settings.service.max_zones_per_pass as usize,
+    );
+    store.state_mut().audit_zone_cursor = next_cursor;
+    let options = audit_kind.audit_options();
+
+    for (index, zone) in selected.iter().enumerate() {
+        if index > 0 && !cfg!(test) {
+            tokio::time::sleep(INTER_ZONE_DELAY).await;
+        }
+        let records = match fetch_all_records(source, &zone.id).await {
+            Ok(records) => records,
+            // One zone's failure ends that zone, not the pass: the error is
+            // recorded against the zone and the loop moves to the next one.
+            Err(error) => {
+                report.record_error(format!("{}: {error}", zone.name));
+                let entry = store.state_mut().audit.entry(zone.id.clone()).or_default();
+                entry.last_error = Some(error);
+                continue;
+            }
+        };
+        report.zones_checked += 1;
+
+        let findings: Vec<_> = bc_domain_audit::run_domain_audit(&zone.name, &records, &options)
+            .into_iter()
+            .filter(|item| !audit::is_excluded(item) && audit_kind.allows(item))
+            .collect();
+        let previous = store
+            .state()
+            .audit
+            .get(&zone.id)
+            .map(|state| state.findings.clone())
+            .unwrap_or_default();
+        let (episodes, alerts) = reconcile_findings(&previous, &findings, now);
+
+        for alert in &alerts {
+            let notification = build_audit_notification(settings, &zone.id, &zone.name, alert, now);
+            match deliver(store, settings, notification, now) {
+                Ok(true) => report.notifications_created += 1,
+                Ok(false) => {}
+                Err(error) => report.record_error(error.to_string()),
+            }
+        }
+
+        let entry = store.state_mut().audit.entry(zone.id.clone()).or_default();
+        entry.findings = episodes;
+        entry.last_audited_at = Some(format_ts(now));
+        entry.last_error = None;
+        store
+            .state_mut()
+            .zones
+            .entry(zone.id.clone())
+            .or_default()
+            .zone_name = zone.name.clone();
+    }
+
+    store.state_mut().last_audit_check_at = Some(format_ts(now));
     finish_pass(store, settings, now, &mut report);
     report.finish(started)
 }
