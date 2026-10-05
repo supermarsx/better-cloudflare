@@ -59,26 +59,52 @@ const DropdownMenuSubContent = React.forwardRef<
 DropdownMenuSubContent.displayName =
   DropdownMenuPrimitive.SubContent.displayName;
 
+/**
+ * The menu surface. It is portaled out of the trigger's layout so no scroll
+ * region or `overflow-hidden` ancestor can clip it.
+ *
+ * `container` chooses *which* element it is portaled into, and it exists for
+ * one reason. A portal to `document.body` makes the menu a sibling of every
+ * other body-level overlay, so once it is there, `z-index` alone decides which
+ * of them paints on top -- and this menu's is `z-50`. A menu opened from inside
+ * an overlay that out-stacks `z-50` therefore opens *behind* the surface it was
+ * opened from, which looks exactly like being clipped. Naming that overlay as
+ * the container moves the menu inside the overlay's own stacking context, where
+ * `z-50` is measured against the overlay's contents instead of against the
+ * overlay itself: the menu is above them by construction, and stays there
+ * whatever `z-index` the overlay is given later. Only an overlay that does not
+ * clip its own children can host a menu this way; everything else -- and so the
+ * default -- still portals to `document.body`.
+ */
 const DropdownMenuContent = React.forwardRef<
   React.ElementRef<typeof DropdownMenuPrimitive.Content>,
-  React.ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.Content>
->(({ className, sideOffset = 4, collisionPadding = 12, ...props }, ref) => (
-  <DropdownMenuPrimitive.Portal>
-    <DropdownMenuPrimitive.Content
-      ref={ref}
-      sideOffset={sideOffset}
-      collisionPadding={collisionPadding}
-      avoidCollisions
-      sticky="always"
-      hideWhenDetached
-      className={cn(
-        "glass-surface glass-fade ui-menu-motion z-50 min-w-[8rem] overflow-hidden rounded-xl bg-popover/70 p-1 text-foreground shadow-[0_18px_46px_hsl(0_0%_0%_/_0.28)]",
-        className,
-      )}
-      {...props}
-    />
-  </DropdownMenuPrimitive.Portal>
-));
+  React.ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.Content> & {
+    container?: React.ComponentPropsWithoutRef<
+      typeof DropdownMenuPrimitive.Portal
+    >["container"];
+  }
+>(
+  (
+    { className, sideOffset = 4, collisionPadding = 12, container, ...props },
+    ref,
+  ) => (
+    <DropdownMenuPrimitive.Portal container={container}>
+      <DropdownMenuPrimitive.Content
+        ref={ref}
+        sideOffset={sideOffset}
+        collisionPadding={collisionPadding}
+        avoidCollisions
+        sticky="always"
+        hideWhenDetached
+        className={cn(
+          "glass-surface glass-fade ui-menu-motion z-50 min-w-[8rem] overflow-hidden rounded-xl bg-popover/70 p-1 text-foreground shadow-[0_18px_46px_hsl(0_0%_0%_/_0.28)]",
+          className,
+        )}
+        {...props}
+      />
+    </DropdownMenuPrimitive.Portal>
+  ),
+);
 DropdownMenuContent.displayName = DropdownMenuPrimitive.Content.displayName;
 
 const DropdownMenuItem = React.forwardRef<

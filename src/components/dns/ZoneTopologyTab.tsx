@@ -2399,6 +2399,12 @@ export function ZoneTopologyTab({
   >({});
   const nodeContextMenuRef = useRef<HTMLDivElement | null>(null);
   const [expandGraph, setExpandGraph] = useState(false);
+  // The full-window lightbox is the portal target for every menu opened from
+  // inside it, so the node has to be state rather than a ref: a ref assignment
+  // does not re-render, and the menus read their container at render time.
+  const [fullWindowLayer, setFullWindowLayer] = useState<HTMLDivElement | null>(
+    null,
+  );
   const [externalResolutionByName, setExternalResolutionByName] = useState<
     Record<string, ExternalDnsResolution>
   >({});
@@ -4209,7 +4215,11 @@ export function ZoneTopologyTab({
         aria-label="Topology graphs"
         aria-orientation="horizontal"
         data-testid="topology-graph-mode"
-        className="glass-surface glass-sheen glass-fade ui-segment-group"
+        // `.ui-segment-group` owns a horizontal scroller, so it needs the themed
+        // scrollbar every other segment group in the app already carries; the
+        // stable gutter that class asks for is undone for this class pair in
+        // `index.css`, because one row never scrolls vertically.
+        className="glass-surface glass-sheen glass-fade ui-segment-group scrollbar-themed"
       >
         {TOPOLOGY_GRAPH_MODES.map((mode, index) => (
           <button
@@ -4377,7 +4387,12 @@ export function ZoneTopologyTab({
             <ChevronDown className="ml-1 h-3.5 w-3.5" />
           </Button>
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="start" sideOffset={6} className="w-52">
+        <DropdownMenuContent
+          align="start"
+          sideOffset={6}
+          className="w-52"
+          container={forLightbox ? fullWindowLayer : null}
+        >
           {enabledCopyActions.has("mermaid") && (
             <DropdownMenuItem
               onClick={() => void copyCode()}
@@ -4425,7 +4440,12 @@ export function ZoneTopologyTab({
             <ChevronDown className="ml-1 h-3.5 w-3.5" />
           </Button>
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="start" sideOffset={6} className="w-52">
+        <DropdownMenuContent
+          align="start"
+          sideOffset={6}
+          className="w-52"
+          container={forLightbox ? fullWindowLayer : null}
+        >
           {enabledExportActions.has("mermaid") && (
             <DropdownMenuItem onClick={exportCode} disabled={!mermaidCode}>
               <FileDown className="mr-2 h-3.5 w-3.5" />
@@ -4532,7 +4552,18 @@ export function ZoneTopologyTab({
   const fullscreenLightbox =
     expandGraph && typeof document !== "undefined"
       ? createPortal(
-          <div className="fixed inset-0 z-[220]">
+          // Menus opened from the controls below are portaled into this element
+          // rather than to `document.body`, which is the only way they out-rank
+          // it: as body-level siblings their `z-50` loses to this `z-[220]`.
+          // Nothing here clips its children -- only the viewport further down
+          // sets `overflow-hidden`, and the controls sit outside it -- so a menu
+          // hosted here is positioned and painted exactly as it would be on the
+          // body, just inside this stacking context.
+          <div
+            ref={setFullWindowLayer}
+            data-testid="topology-full-window-layer"
+            className="fixed inset-0 z-[220]"
+          >
             <button
               type="button"
               aria-label="Close full window topology view"
