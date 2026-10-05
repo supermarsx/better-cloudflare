@@ -25,10 +25,26 @@
  * does not offer it yet, and there is no per-tool reject command at all, so
  * "Stop this run" is the only way out of one. See `AiTranscript`.
  *
+ * **The layout is a chat, not a document.** The panel is a bounded flex column
+ * in every chrome: the conversation scrolls in the space that is left, and the
+ * things the user acts *with* — the permission mode and the composer — sit in a
+ * dock below it that does not scroll. A composer that lived at the end of the
+ * scrolled content was pushed further down by every message and had to be
+ * scrolled back to, which is the one control in here that must never be out of
+ * reach. The tab has no definite height from its host, so it takes a share of
+ * the viewport; the dock and the bubble are already sized by their chrome.
+ *
  * Desktop only: every `ai_*` command is a Tauri command and
  * `server-client.ts` has no HTTP fallback for any of them.
  */
-import { useCallback, useEffect, useId, useMemo, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
 import {
   Card,
@@ -133,7 +149,12 @@ export function AiAssistantPanel({
   // the same document while the placement is mid-change.
   const modeId = useId();
 
-  /** The tab scrolls with the workspace; the dock and bubble scroll inside. */
+  /**
+   * The dock and the bubble are handed a height by their chrome; the tab is
+   * not. Everything that differs between them follows from that: how the card
+   * gets a bottom edge, how much padding it can afford, and whether the
+   * standing explanation in the header is worth its height.
+   */
   const framed = presentation !== "panel";
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -411,6 +432,34 @@ export function AiAssistantPanel({
     });
   }, [chat, t]);
 
+  /**
+   * The conversation's own scroll container, and whether to follow it.
+   *
+   * It exists because the composer is pinned below this region rather than
+   * living at the end of it, so the transcript has somewhere to grow that is
+   * not "downwards, past the input". The cost of that is a new message landing
+   * below the fold, so the region follows its own tail — but only while the
+   * user is already at the bottom: yanking someone back down while they are
+   * reading an earlier answer is worse than not following at all.
+   */
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const atBottomRef = useRef(true);
+
+  const handleScroll = useCallback(() => {
+    const node = scrollRef.current;
+    if (node === null) return;
+    // Slack, because "at the bottom" is rarely an exact equality: fractional
+    // line boxes and a zoomed window both leave a sub-pixel remainder.
+    atBottomRef.current =
+      node.scrollHeight - node.scrollTop - node.clientHeight <= 32;
+  }, []);
+
+  useEffect(() => {
+    const node = scrollRef.current;
+    if (node === null || !atBottomRef.current) return;
+    node.scrollTop = node.scrollHeight;
+  }, [chat.conversation, chat.streamText, chat.streaming]);
+
   const dismissButton = onDismiss ? (
     <Button
       type="button"
@@ -470,13 +519,18 @@ export function AiAssistantPanel({
   return (
     <Card
       className={cn(
-        "border-border/60 bg-card/70",
-        framed && "flex h-full min-h-0 flex-col",
+        "flex flex-col border-border/60 bg-card/70",
+        // The chrome decides where the bottom edge is. A framed surface hands
+        // the panel a definite height to fill; the workspace tab hands it
+        // none, and a card that grows with its transcript has no bottom edge
+        // for a composer to be anchored to — so the tab claims a share of the
+        // viewport instead, with a floor for short windows.
+        framed ? "h-full min-h-0" : "h-[70dvh] min-h-[28rem]",
       )}
       data-testid="ai-panel"
       data-presentation={presentation}
     >
-      <CardHeader className={cn("space-y-3", framed && "shrink-0 p-4")}>
+      <CardHeader className={cn("shrink-0 space-y-3", framed && "p-4")}>
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="min-w-0">
             <CardTitle className={framed ? "text-base" : "text-lg"}>
@@ -512,80 +566,25 @@ export function AiAssistantPanel({
       </CardHeader>
       <CardContent
         className={cn(
-          "space-y-4",
-          framed &&
-            "scrollbar-themed min-h-0 flex-1 overflow-x-hidden overflow-y-auto p-4 pt-0",
+          // One column: a conversation that scrolls, then a dock that does
+          // not. `min-h-0` is what lets the scroll region actually shrink —
+          // without it a flex item refuses to go below its content height, the
+          // column grows instead, and the dock leaves the bottom of the card.
+          "flex min-h-0 flex-1 flex-col gap-3 overflow-hidden",
+          framed && "p-4 pt-0",
         )}
       >
-        <AiToolNotice
-          posture={posture}
-          availability={toolPermissions.snapshot?.availability ?? null}
-        />
-
-        {/* The mode, changeable without leaving the conversation. Only while
-            tool use is on: with it off every tool is denied whatever the mode
-            says, so offering the choice there would imply it decided
-            something. That is also the gate on the read above, so an
-            assistant with tools off still issues no `ai_get_permissions`. */}
-        {posture === "on" ? (
-          <AiModeSelect
-            mode={toolPermissions.snapshot?.mode ?? null}
-            saving={toolPermissions.saving}
-            onChange={handleModeChange}
-            idPrefix={modeId}
+        <div
+          ref={scrollRef}
+          onScroll={handleScroll}
+          data-testid="ai-conversation-scroll"
+          className="scrollbar-themed min-h-0 flex-1 space-y-4 overflow-x-hidden overflow-y-auto"
+        >
+          <AiToolNotice
+            posture={posture}
+            availability={toolPermissions.snapshot?.availability ?? null}
           />
-        ) : null}
 
-        {panelError ? (
-          <p
-            role="alert"
-            className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive"
-          >
-            {panelError}
-          </p>
-        ) : null}
-
-        {chat.error ? (
-          <div
-            role="alert"
-            data-testid="ai-error"
-            className="space-y-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive"
-          >
-            <p>{chat.error.message}</p>
-            {chat.error.remediation ? <p>{chat.error.remediation}</p> : null}
-            <div className="flex flex-wrap gap-2">
-              {stalled ? (
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={() => void chat.refresh()}
-                >
-                  {t("Reload conversation", "Reload conversation")}
-                </Button>
-              ) : chat.error.retryable && lastSent ? (
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={() => handleSend(lastSent)}
-                >
-                  {t("Try again", "Try again")}
-                </Button>
-              ) : null}
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                onClick={chat.dismissError}
-              >
-                {t("Dismiss", "Dismiss")}
-              </Button>
-            </div>
-          </div>
-        ) : null}
-
-        <div className="space-y-4">
           <AiConversationList
             conversations={conversations.conversations}
             selectedId={selectedId}
@@ -659,6 +658,87 @@ export function AiAssistantPanel({
             onStopRun={handleStop}
             reducedMotion={reducedMotion}
           />
+        </div>
+
+        {/* The dock: everything the user acts *with*, held at the bottom edge
+            of the surface. It is a sibling of the scroll region rather than its
+            last child, so no amount of conversation can push it down or scroll
+            it out of reach. */}
+        <div
+          data-testid="ai-composer-dock"
+          className="shrink-0 space-y-2 border-t border-border/60 pt-3"
+        >
+          {/* Both banners are here rather than above the transcript for the
+              same reason the composer is: they report what just happened to
+              the thing the user is holding, and at the top of a long
+              conversation they would be reported off-screen — including the
+              "Try again" that is the only offer after a failed send. */}
+          {panelError ? (
+            <p
+              role="alert"
+              className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive"
+            >
+              {panelError}
+            </p>
+          ) : null}
+
+          {chat.error ? (
+            <div
+              role="alert"
+              data-testid="ai-error"
+              className="space-y-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive"
+            >
+              <p>{chat.error.message}</p>
+              {chat.error.remediation ? <p>{chat.error.remediation}</p> : null}
+              <div className="flex flex-wrap gap-2">
+                {stalled ? (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => void chat.refresh()}
+                  >
+                    {t("Reload conversation", "Reload conversation")}
+                  </Button>
+                ) : chat.error.retryable && lastSent ? (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => handleSend(lastSent)}
+                  >
+                    {t("Try again", "Try again")}
+                  </Button>
+                ) : null}
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={chat.dismissError}
+                >
+                  {t("Dismiss", "Dismiss")}
+                </Button>
+              </div>
+            </div>
+          ) : null}
+
+          {/* The mode, changeable without leaving the conversation, and
+              directly above the input it governs — it answers "what will
+              happen if I send this?", which is a question about the message
+              being typed and not about the screen in general. Only while tool
+              use is on: with it off every tool is denied whatever the mode
+              says, so offering the choice there would imply it decided
+              something. That is also the gate on the permission read, so an
+              assistant with tools off still issues no `ai_get_permissions`. */}
+          {posture === "on" ? (
+            <AiModeSelect
+              mode={toolPermissions.snapshot?.mode ?? null}
+              saving={toolPermissions.saving}
+              onChange={handleModeChange}
+              idPrefix={modeId}
+            />
+          ) : null}
+
           <AiComposer
             disabled={composerDisabled}
             disabledReason={composerReason}

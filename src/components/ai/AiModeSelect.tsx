@@ -4,7 +4,10 @@
  * This is the one assistant setting you genuinely want to change mid-task —
  * "stop asking me" or, more often, "stop being able to touch anything" — and
  * walking to a settings screen to do it loses the thread you were in the
- * middle of. So it sits beside the tool notice in the chat view.
+ * middle of. So it sits in the composer dock, directly above the message
+ * input: what it decides is what happens when *this* message is sent, so it
+ * belongs with the message rather than at the top of the surface, where a
+ * scrolled conversation used to carry it out of sight.
  *
  * Three things it is careful about.
  *

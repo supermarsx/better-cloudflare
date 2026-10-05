@@ -1,15 +1,23 @@
 /**
  * Tests for the AI assistant panel.
  *
- * The load-bearing assertions here are the ones about posture, not about
- * layout, and the posture rule has been inverted on purpose: tool state must
- * never gate chat. Dispatch works (`execute_tool_with_grants` is public) and
- * the agent loop advertises only tools that pass both permission layers, so
- * tool use being on cannot produce a doomed call — it is not an error
- * condition, and the composer does not consult it. What the panel says about
- * tools comes from the backend's own availability counts and from nothing else;
- * a count the renderer invented would be a claim about MCP grants it cannot
- * see. Those are the tests to read first if this file ever starts failing.
+ * Two groups carry weight here. The first is layout, and only because one part
+ * of it is a correctness claim rather than taste: the composer and the
+ * permission mode are docked below the conversation's scroll region, so no
+ * amount of transcript can push the input out of reach or carry the control
+ * that decides what a send is allowed to do out of sight. Those assertions pin
+ * the flex mechanism (`flex-1`/`min-h-0`/`shrink-0`) because that is the part
+ * that silently stops working.
+ *
+ * The second group is about posture, and the posture rule has been inverted on
+ * purpose: tool state must never gate chat. Dispatch works
+ * (`execute_tool_with_grants` is public) and the agent loop advertises only
+ * tools that pass both permission layers, so tool use being on cannot produce
+ * a doomed call — it is not an error condition, and the composer does not
+ * consult it. What the panel says about tools comes from the backend's own
+ * availability counts and from nothing else; a count the renderer invented
+ * would be a claim about MCP grants it cannot see. Those two groups are the
+ * tests to read first if this file ever starts failing.
  */
 import assert from "node:assert/strict";
 import React from "react";
@@ -366,6 +374,24 @@ function named(backend: Backend, name: string) {
  */
 function assertAbsent(node: Element | null, label: string): void {
   assert.ok(node === null, `expected no ${label}`);
+}
+
+/**
+ * Assert that two references are the same node.
+ *
+ * Same trap as `assertAbsent`, reached from the other direction: `assert.equal`
+ * on two *different* elements inspects both to build its message, and
+ * inspecting a jsdom element walks its whole document graph. A layout
+ * assertion that is wrong then costs the heap and takes the rest of the file
+ * down with it instead of printing one line, which is exactly what happened
+ * the first time these dock tests were run against the old layout.
+ */
+function assertSameNode(
+  actual: Node | null | undefined,
+  expected: Node | null | undefined,
+  label: string,
+): void {
+  assert.ok(actual === expected, `expected ${label}`);
 }
 
 beforeEach(async () => {
@@ -1211,6 +1237,124 @@ test("a mode read as read-only reports what that costs, unprompted", async () =>
     screen.getByTestId("ai-mode-consequence").textContent ?? "",
     /refused outright — you are not prompted/,
   );
+});
+
+// ── The composer dock, held at the bottom ──────────────────────────────────
+
+test("the permission mode sits immediately above the message input", async () => {
+  installBackend({
+    config: { toolsEnabled: true },
+    conversations: [conversationMeta()],
+  });
+  render(<AiAssistantPanel />);
+
+  const mode = await screen.findByTestId("ai-mode-select");
+  const composer = screen.getByTestId("ai-composer");
+  const dock = screen.getByTestId("ai-composer-dock");
+
+  // In the dock with the input, with nothing allowed between the two: what the
+  // mode decides is what happens when *this* message is sent, so it is a
+  // caption on the input rather than a notice about the screen.
+  assertSameNode(composer.parentElement, dock, "the composer in the dock");
+  assertSameNode(mode.parentElement, dock, "the mode control in the dock");
+  assertSameNode(
+    mode.nextElementSibling,
+    composer,
+    "the mode control immediately before the input",
+  );
+  // And it is not back up in the scrolled conversation, where it used to sit
+  // beside the tool notice and scroll out of sight.
+  assert.ok(!screen.getByTestId("ai-conversation-scroll").contains(mode));
+});
+
+test("the composer is docked below the conversation, not at the end of it", async () => {
+  installBackend({ conversations: [conversationMeta()] });
+  render(<AiAssistantPanel presentation="panel" />);
+  await screen.findByTestId("ai-transcript");
+
+  const scroll = screen.getByTestId("ai-conversation-scroll");
+  const dock = screen.getByTestId("ai-composer-dock");
+  const composer = screen.getByTestId("ai-composer");
+
+  // The conversation scrolls. The input does not travel with it, which is the
+  // defect: it used to be the last thing in the scrolled content, so every
+  // message pushed it further down and it had to be scrolled back to.
+  assert.ok(scroll.contains(screen.getByTestId("ai-transcript")));
+  assert.ok(!scroll.contains(composer));
+  assert.match(scroll.className, /(?:^|\s)overflow-y-auto(?:$|\s)/);
+  // `flex-1` with `min-h-0` is the whole anchoring mechanism. Without the
+  // content floor removed a flex item refuses to shrink below its content, the
+  // column grows instead, and the dock leaves the bottom of the card again.
+  assert.match(scroll.className, /(?:^|\s)flex-1(?:$|\s)/);
+  assert.match(scroll.className, /(?:^|\s)min-h-0(?:$|\s)/);
+
+  // Siblings in one flex column, with the dock last and unshrinkable.
+  const column = dock.parentElement;
+  assert.ok(column);
+  assertSameNode(
+    scroll.parentElement,
+    column,
+    "the scroll region and the dock to be siblings",
+  );
+  assertSameNode(
+    column.lastElementChild,
+    dock,
+    "the dock to be the last thing in the column",
+  );
+  assert.match(column.className, /(?:^|\s)flex-col(?:$|\s)/);
+  assert.match(column.className, /(?:^|\s)min-h-0(?:$|\s)/);
+  assert.match(dock.className, /(?:^|\s)shrink-0(?:$|\s)/);
+});
+
+test("every chrome gives the panel a bottom edge for the dock to sit on", async () => {
+  installBackend({ conversations: [conversationMeta()] });
+  render(<AiAssistantPanel presentation="panel" />);
+  const tab = await screen.findByTestId("ai-panel");
+
+  // The workspace tab is handed no height by its host, so a card that grew
+  // with its transcript had no bottom edge for anything to be anchored to. It
+  // claims a share of the viewport instead.
+  assert.match(tab.className, /(?:^|\s)flex-col(?:$|\s)/);
+  assert.match(tab.className, /h-\[70dvh\]/);
+  cleanup();
+
+  installBackend({ conversations: [conversationMeta()] });
+  render(<AiAssistantPanel presentation="sidebar" />);
+  const docked = await screen.findByTestId("ai-panel");
+
+  // A framed surface already has a definite height, so the panel fills it —
+  // and keeps `min-h-0`, which is what lets the bubble's `max-h` clamp reach
+  // the scroll region instead of stopping at the card.
+  assert.match(docked.className, /(?:^|\s)h-full(?:$|\s)/);
+  assert.match(docked.className, /(?:^|\s)min-h-0(?:$|\s)/);
+});
+
+test("a failed send reports itself in the dock, not off the top of the transcript", async () => {
+  const backend = installBackend({ conversations: [conversationMeta()] });
+  render(<AiAssistantPanel />);
+  await screen.findByTestId("ai-transcript");
+  await waitFor(() => assert.ok(named(backend, "onAiEvent").length > 0));
+
+  fireEvent.change(screen.getByLabelText("Message"), {
+    target: { value: "Explain SPF" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+  backend.emit({
+    type: "error",
+    conversationId: "conv-1",
+    error: "The provider ended the stream.",
+  });
+
+  const banner = await screen.findByTestId("ai-error");
+  // The banner reports what just happened to the message in the input, and
+  // "Try again" is the only offer after a failed send — at the top of a long
+  // conversation both would be reported off-screen.
+  assertSameNode(
+    banner.parentElement,
+    screen.getByTestId("ai-composer-dock"),
+    "the error banner in the dock",
+  );
+  assert.ok(!screen.getByTestId("ai-conversation-scroll").contains(banner));
 });
 
 // ── Conversation history: select, rename, delete ───────────────────────────
