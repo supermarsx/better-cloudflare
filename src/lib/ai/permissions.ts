@@ -45,6 +45,45 @@ export const AI_PERMISSION_MODES: readonly AiPermissionMode[] = [
   "autonomous",
 ] as const;
 
+/**
+ * How each mode is named and what choosing it costs, in offer order.
+ *
+ * Shared because the mode is now offered in **two** places — the settings
+ * screen's Tools & permissions section, and the dropdown inside the
+ * conversation — and two copies of these sentences would drift. The strings
+ * are English source text that each call site passes through `t()`, which is
+ * the same arrangement `AI_ASSISTANT_PRESENTATION_OPTIONS` uses.
+ *
+ * `consequence` carries the one thing a label cannot: **`readOnly` refuses a
+ * write outright rather than prompting.** Every other mode's refusal is a
+ * prompt the user sees; that one is silent, and a UI that let it read as "it
+ * will ask me" would promise a prompt that never comes.
+ */
+export const AI_PERMISSION_MODE_COPY: readonly {
+  id: AiPermissionMode;
+  label: string;
+  consequence: string;
+}[] = [
+  {
+    id: "readOnly",
+    label: "Read only",
+    consequence:
+      "Read-only tools run. Anything that would change something is refused outright — you are not prompted, and the assistant is told it cannot do it.",
+  },
+  {
+    id: "ask",
+    label: "Ask before changes",
+    consequence:
+      "Read-only tools run. Anything that would change something waits for your approval first.",
+  },
+  {
+    id: "autonomous",
+    label: "Autonomous",
+    consequence:
+      "Every tool runs without asking, including tools that change your account.",
+  },
+] as const;
+
 /** Every per-tool decision, in the order the settings UI offers them. */
 export const AI_TOOL_PERMISSIONS: readonly AiToolPermission[] = [
   "allow",
@@ -63,12 +102,19 @@ export const AI_TOOL_PERMISSIONS: readonly AiToolPermission[] = [
  * number here only to follow a Rust change, and read that table for which
  * constant owns which bound.
  *
- * Nearly all of them live in `bc_ai_provider::limits`, because the provider
- * crate cannot depend on the agent crate and the request validator is the last
- * gate before the wire. Only `maxToolRounds` and `maxContextTokens` are
- * agent-only concepts. `bc_ai_agent::config` re-exports two of the provider
- * bounds as aliases; the contract test deliberately never reads an alias,
- * since an alias is not a literal.
+ * Most of the generation bounds live in `bc_ai_provider::limits`, because the
+ * provider crate cannot depend on the agent crate and the request validator is
+ * the last gate before the wire. Only `maxToolRounds` and `maxContextTokens`
+ * are agent-only among those. `bc_ai_agent::config` re-exports two of the
+ * provider bounds as aliases; the contract test deliberately never reads an
+ * alias, since an alias is not a literal.
+ *
+ * The eight configurable retention and plan limits are different in kind and
+ * live elsewhere again: six in `bc_ai_chat::limits` and two in
+ * `bc_ai_agent::plan`. They never reach a provider at all — they bound what
+ * the app retains in memory — so nothing about them is protocol-dependent,
+ * and their `min` is 1 by construction rather than by a `MIN_` constant. See
+ * {@link AI_CONFIGURABLE_LIMITS}.
  *
  * `seed` is the one exception, and it is excluded from that contract test on
  * purpose: its range is the **`u32` type**, not a validated bound. Rust types
@@ -91,7 +137,65 @@ export const AI_AGENT_LIMITS = {
   presencePenalty: { min: -2, max: 2 },
   maxContextTokens: { min: 512, max: 2_000_000 },
   requestTimeoutMs: { min: 1_000, max: 600_000 },
+  // ── The eight configurable retention and plan limits ────────────────────
+  //
+  // Each `max` is the **hard ceiling** the code is built to survive, copied
+  // from `bc_ai_chat::limits` and `bc_ai_agent::plan`, and each `min` is 1 by
+  // construction: Rust's check is `value == 0 || value > ceiling`, so zero is
+  // refused rather than read as "unlimited". A configuration may lower any of
+  // them and may raise none — `MAX_GLOBAL_RETAINED_BYTES` in particular is
+  // what bounds memory, and a setting that could raise it would turn the
+  // bound into a suggestion. Every `*Bytes` limit counts UTF-8 bytes.
+  maxConversations: { min: 1, max: 128 },
+  maxMessagesPerConversation: { min: 1, max: 256 },
+  maxChatMessageBytes: { min: 1, max: 1_048_576 },
+  maxConversationBytes: { min: 1, max: 4_194_304 },
+  maxGlobalRetainedBytes: { min: 1, max: 33_554_432 },
+  maxTitleBytes: { min: 1, max: 512 },
+  maxPlanSteps: { min: 1, max: 32 },
+  maxRetainedPlans: { min: 1, max: 128 },
 } as const;
+
+/**
+ * The eight configurable limits, in the order the settings UI offers them.
+ *
+ * A list rather than eight call sites, because the form renders them in a loop
+ * and the contract test walks the same list: a limit added to
+ * {@link AI_AGENT_LIMITS} without being added here would silently never be
+ * offered, and one added here without a Rust ceiling fails the bounds test.
+ */
+export const AI_CONFIGURABLE_LIMITS = [
+  "maxConversations",
+  "maxMessagesPerConversation",
+  "maxChatMessageBytes",
+  "maxConversationBytes",
+  "maxGlobalRetainedBytes",
+  "maxTitleBytes",
+  "maxPlanSteps",
+  "maxRetainedPlans",
+] as const;
+
+export type AiConfigurableLimit = (typeof AI_CONFIGURABLE_LIMITS)[number];
+
+/**
+ * Which of the eight are counted in UTF-8 bytes rather than in items.
+ *
+ * The distinction is the whole reason their labels differ: "512" as a title
+ * limit means 512 bytes, which is fewer than 512 characters for anything
+ * non-ASCII, and a form that called it "characters" would promise a length the
+ * backend then refuses.
+ */
+const AI_BYTE_LIMITS: readonly AiConfigurableLimit[] = [
+  "maxChatMessageBytes",
+  "maxConversationBytes",
+  "maxGlobalRetainedBytes",
+  "maxTitleBytes",
+] as const;
+
+/** Whether a configurable limit is measured in bytes. */
+export function isAiByteLimit(field: AiConfigurableLimit): boolean {
+  return AI_BYTE_LIMITS.includes(field);
+}
 
 /**
  * What `AgentConfig::default()` uses for the context budget.
@@ -286,7 +390,11 @@ export type AiValidationIssue =
         | "topK"
         | "seed"
         | "maxContextTokens"
-        | "requestTimeoutMs";
+        | "requestTimeoutMs"
+        // The eight configurable limits share this code: every one is a whole
+        // number in `1..=CEILING`, which is exactly what `integerRange`
+        // reports, so a ninth code would say nothing new.
+        | AiConfigurableLimit;
       code: "integerRange";
       min: number;
       max: number;
@@ -445,6 +553,7 @@ export function validateAgentConfig(
     | "maxContextTokens"
     | "requestTimeoutMs"
     | "systemPromptOverride"
+    | AiConfigurableLimit
   >,
 ): AiValidationIssue[] {
   const issues: AiValidationIssue[] = [
@@ -465,6 +574,14 @@ export function validateAgentConfig(
       "requestTimeoutMs",
       config.requestTimeoutMs,
       integerRangeIssue,
+    ),
+    // The eight configurable limits. Checked through `optionalIssue` because
+    // absent means "a read from a build that predates the field", which the
+    // backend fills with the ceiling — exactly the reasoning `maxContextTokens`
+    // follows. It is **not** "unset": Rust types each one a bare `usize`, so
+    // `null` is not a value any of them can take.
+    ...AI_CONFIGURABLE_LIMITS.map((field) =>
+      optionalIssue(field, config[field], integerRangeIssue),
     ),
   ].filter((issue): issue is AiValidationIssue => issue !== null);
 

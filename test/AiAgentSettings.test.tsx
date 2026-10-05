@@ -35,6 +35,7 @@ import {
 } from "../src/lib/ai/capabilities";
 import {
   AI_AGENT_LIMITS,
+  AI_CONFIGURABLE_LIMITS,
   AI_DEFAULT_MAX_CONTEXT_TOKENS,
   AI_PERSONA_LIMITS,
   AI_STOP_LIMITS,
@@ -807,4 +808,227 @@ test("every control carries its explanation as its accessible description", () =
       `${label}'s description must be its own field's`,
     );
   }
+});
+
+// ── The configurable retention and plan limits ─────────────────────────────
+
+test("every configurable limit is offered, with its ceiling as the range", () => {
+  renderSettings();
+
+  const section = screen.getByTestId("ai-agent-limits");
+  for (const name of AI_CONFIGURABLE_LIMITS) {
+    const shell = field(name);
+    // Inside the limits section, not loose among the generation parameters:
+    // they are a different kind of setting and the group notice above does
+    // not apply to them.
+    assert.ok(
+      section.contains(shell),
+      `${name} must live in the limits section`,
+    );
+    // The range is printed from the shared bounds, so a Rust change moves the
+    // number on screen. `1` is the floor Rust's `== 0` check implies.
+    assert.match(
+      shell.textContent ?? "",
+      new RegExp(
+        `between ${AI_AGENT_LIMITS[name].min} and ${AI_AGENT_LIMITS[name].max}`,
+      ),
+      name,
+    );
+    const input = within(shell).getByRole("spinbutton") as HTMLInputElement;
+    assert.equal(input.min, String(AI_AGENT_LIMITS[name].min), name);
+    assert.equal(input.max, String(AI_AGENT_LIMITS[name].max), name);
+  }
+});
+
+test("a byte limit says bytes, because the unit is not the one a user assumes", () => {
+  renderSettings();
+
+  // "512" against a title means 512 UTF-8 bytes. A form that let that read as
+  // characters would promise a length the backend then refuses.
+  for (const name of ["maxChatMessageBytes", "maxTitleBytes"] as const) {
+    const shell = field(name);
+    assert.match(
+      within(shell).getByTestId("ai-agent-range").textContent ?? "",
+      /UTF-8 bytes/,
+      name,
+    );
+    assert.match(
+      shell.querySelector("label")?.textContent ?? "",
+      /Bytes/,
+      name,
+    );
+  }
+  // And a count limit does not claim a unit it has not got.
+  assert.doesNotMatch(
+    within(field("maxConversations")).getByTestId("ai-agent-range")
+      .textContent ?? "",
+    /bytes/i,
+  );
+});
+
+test("the limits section states the two surprising rules once", () => {
+  renderSettings();
+
+  const notice = screen.getByTestId("ai-agent-limits-notice").textContent ?? "";
+  // The ceilings are ceilings: a value can be lowered and never raised, and
+  // an over-range value is refused by name rather than silently clamped.
+  assert.match(notice, /can only be lowered/);
+  assert.match(notice, /built to survive/);
+  assert.match(
+    notice,
+    /refused by name rather than accepted and quietly clamped/,
+  );
+  // And lowering one deletes nothing: it stops growth and trims at most one
+  // item per write, so an over-limit store stays listable and converges.
+  assert.match(notice, /Lowering a limit deletes nothing/);
+  assert.match(notice, /at most one item each time something is written/);
+  assert.match(notice, /40 conversations under a new limit of 5/);
+});
+
+test("the limits are not provider-dependent and stay operable with no capability map", () => {
+  // They never reach a provider, so the advanced group's "locked until we can
+  // ask" rule must not catch them: locking a control for a reason that is not
+  // true is the same mistake as leaving one open that does nothing.
+  renderSettings({ capabilities: null, capabilitiesLoading: false });
+
+  for (const name of AI_CONFIGURABLE_LIMITS) {
+    const shell = field(name);
+    assert.equal(shell.dataset.applicability, "notProviderDependent", name);
+    assert.equal(
+      (within(shell).getByRole("spinbutton") as HTMLInputElement).disabled,
+      false,
+      name,
+    );
+  }
+  // And none of them is ever marked "not sent to this provider".
+  assert.equal(
+    within(screen.getByTestId("ai-agent-limits")).queryByTestId(
+      "ai-agent-marking",
+    ),
+    null,
+  );
+});
+
+test("a limit is seeded from the config, and from its ceiling when absent", () => {
+  renderSettings({ config: { ...CONFIG, maxConversations: 5 } });
+  assert.equal(
+    (screen.getByLabelText("Conversations kept") as HTMLInputElement).value,
+    "5",
+  );
+  cleanup();
+
+  // A read from a build predating these fields carries none of them. Rust
+  // gives each a serde default of exactly its ceiling, so that is what the
+  // form has to show — anything else would misreport what the backend does.
+  renderSettings();
+  assert.equal(
+    (screen.getByLabelText("Conversations kept") as HTMLInputElement).value,
+    String(AI_AGENT_LIMITS.maxConversations.max),
+  );
+  assert.equal(
+    (screen.getByLabelText("Steps per plan") as HTMLInputElement).value,
+    String(AI_AGENT_LIMITS.maxPlanSteps.max),
+  );
+});
+
+test("a lowered limit is stored, and the others are carried through", async () => {
+  const harness = renderSettings({
+    config: { ...CONFIG, maxConversations: 128, maxPlanSteps: 32 },
+  });
+
+  fireEvent.change(screen.getByLabelText("Conversations kept"), {
+    target: { value: "5" },
+  });
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
+  });
+
+  await waitFor(() => assert.equal(harness.saved.length, 1));
+  const sent = harness.saved[0];
+  assert.equal(sent.maxConversations, 5);
+  // Untouched limits are sent as they were read, not dropped: these are bare
+  // numbers in Rust, so there is no "unset" to send.
+  assert.equal(sent.maxPlanSteps, 32);
+  assert.equal(sent.maxTitleBytes, AI_AGENT_LIMITS.maxTitleBytes.max);
+  // And the generation settings are still there.
+  assert.equal(sent.temperature, 0.7);
+  assert.equal(sent.personaId, "default");
+});
+
+test("a limit above its ceiling never reaches the backend", async () => {
+  const harness = renderSettings();
+
+  fireEvent.change(screen.getByLabelText("Steps per plan"), {
+    target: { value: String(AI_AGENT_LIMITS.maxPlanSteps.max + 1) },
+  });
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
+  });
+
+  // Nothing is sent. The `max` attribute is what stops it here — the engine
+  // refuses to submit a number input past its bound — which is why the
+  // ceilings are on the inputs and not only in the help text. The validator
+  // below is the backstop for a value that arrived from anywhere else.
+  assert.equal(harness.saved.length, 0);
+  assert.deepEqual(
+    validateAgentConfig({
+      ...CONFIG,
+      maxPlanSteps: AI_AGENT_LIMITS.maxPlanSteps.max + 1,
+    }),
+    [
+      {
+        field: "maxPlanSteps",
+        code: "integerRange",
+        min: AI_AGENT_LIMITS.maxPlanSteps.min,
+        max: AI_AGENT_LIMITS.maxPlanSteps.max,
+      },
+    ],
+  );
+});
+
+test("a limit cleared to nothing is refused by name, not read as unlimited", async () => {
+  // An empty number input is valid as far as the engine is concerned, so this
+  // is the path that actually reaches the form's own validator — and `0` must
+  // not pass for "no limit".
+  const harness = renderSettings();
+
+  fireEvent.change(screen.getByLabelText("Steps per plan"), {
+    target: { value: "" },
+  });
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
+  });
+
+  assert.equal(harness.saved.length, 0);
+  assert.match(
+    screen.getByTestId("ai-agent-issues").textContent ?? "",
+    new RegExp(
+      `Steps per plan must be a whole number between 1 and ${AI_AGENT_LIMITS.maxPlanSteps.max}\.`,
+    ),
+  );
+});
+
+test("zero is refused for every limit, because it is not 'unlimited'", () => {
+  // Rust's check is `value == 0 || value > ceiling`, so zero would make the
+  // resource unrepresentable rather than unbounded.
+  for (const field of AI_CONFIGURABLE_LIMITS) {
+    assert.deepEqual(
+      validateAgentConfig({ ...CONFIG, [field]: 0 }),
+      [
+        {
+          field,
+          code: "integerRange",
+          min: AI_AGENT_LIMITS[field].min,
+          max: AI_AGENT_LIMITS[field].max,
+        },
+      ],
+      field,
+    );
+  }
+  // An absent one is left alone: that is a read from an older build, not a
+  // value — the same rule `maxContextTokens` follows.
+  assert.deepEqual(
+    validateAgentConfig({ ...CONFIG, maxConversations: undefined }),
+    [],
+  );
 });

@@ -70,6 +70,21 @@ export interface UseAiPermissionsResult {
   save: (next: AiPermissions) => Promise<void>;
 }
 
+/**
+ * Bumped by every successful `ai_set_permissions`, so instances in different
+ * component trees cannot disagree about the mode in force.
+ *
+ * There are two: the settings screen's Tools & permissions section, and the
+ * mode dropdown inside the conversation. They share no parent, and a stale
+ * dropdown would show a mode that is not the one gating the next tool call —
+ * which is exactly the claim this subsystem must never make. Same arrangement
+ * as `agentConfigRevision` in `use-ai-chat.ts`, and for the same reason: there
+ * is one writer, and every reader re-*reads* rather than trusting a value
+ * another component announced.
+ */
+let permissionsRevision = 0;
+const permissionsListeners = new Set<(revision: number) => void>();
+
 export function useAiPermissions({
   enabled = true,
 }: UseAiPermissionsOptions = {}): UseAiPermissionsResult {
@@ -81,6 +96,14 @@ export function useAiPermissions({
   const [loadError, setLoadError] = useState<unknown>(null);
   const mountedRef = useMountedRef();
   const refreshVersionRef = useRef(0);
+  const [revision, setRevision] = useState(permissionsRevision);
+
+  useEffect(() => {
+    permissionsListeners.add(setRevision);
+    return () => {
+      permissionsListeners.delete(setRevision);
+    };
+  }, []);
 
   const refresh = useCallback(async () => {
     if (!active) {
@@ -120,7 +143,9 @@ export function useAiPermissions({
 
   useEffect(() => {
     void refresh();
-  }, [refresh]);
+    // `revision` is a trigger, not a value this reads: another instance has
+    // written the policy and this one's snapshot is stale.
+  }, [refresh, revision]);
 
   const save = useCallback(
     async (next: AiPermissions) => {
@@ -131,6 +156,11 @@ export function useAiPermissions({
         // The stored policy comes back from the write, but the *effective*
         // per-tool values do not, so the catalog has to be re-read.
         await refresh();
+        // And so does every other instance.
+        permissionsRevision += 1;
+        for (const listener of permissionsListeners) {
+          listener(permissionsRevision);
+        }
       } finally {
         if (mountedRef.current) setSaving(false);
       }

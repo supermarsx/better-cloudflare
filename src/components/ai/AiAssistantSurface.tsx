@@ -57,23 +57,30 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useI18n } from "@/hooks/use-i18n";
 import { usePrefersReducedMotion } from "@/hooks/use-prefers-reduced-motion";
+import type { AiLinkNavigation } from "@/lib/ai/links";
 import type { AiAssistantPresentation } from "@/lib/ai/presentation";
 import { cn } from "@/lib/utils";
 
-import { AiAssistantPanel } from "./AiAssistantPanel";
+import { AiAssistantPanel, type AiSettingsSection } from "./AiAssistantPanel";
 
 export interface AiAssistantSurfaceProps {
   presentation: AiAssistantPresentation;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   /**
-   * Changes which chrome the assistant wears, from the assistant's own
-   * settings. Required rather than optional: the dock and the bubble are the
-   * two surfaces with no workspace settings tab in front of them, so a host
-   * that renders them without wiring this leaves the preference unreachable
-   * exactly where it is hardest to reach.
+   * Forwarded to the panel: the app's MCP tool permissions, which a blocked
+   * plan step refused by `mcpGrants` has to point at and which nothing under
+   * `ai_*` can change.
    */
-  onPresentationChange: (next: AiAssistantPresentation) => void;
+  onOpenMcpPermissions?: () => void;
+  /**
+   * Forwarded to the panel: the app's Settings workspace, on the assistant's
+   * own settings. The assistant no longer holds them, so the one pointer into
+   * them — a blocked plan step — goes through the host.
+   */
+  onOpenAssistantSettings?: (section: AiSettingsSection) => void;
+  /** Forwarded to the panel: how to follow an assistant-offered link. */
+  linkNavigation?: AiLinkNavigation;
   /** Forwarded to the panel so a test can shorten the stall watchdog. */
   watchdogMs?: number;
 }
@@ -138,7 +145,9 @@ export function AiAssistantSurface({
   presentation,
   open,
   onOpenChange,
-  onPresentationChange,
+  onOpenMcpPermissions,
+  onOpenAssistantSettings,
+  linkNavigation,
   watchdogMs,
 }: AiAssistantSurfaceProps) {
   const { t } = useI18n();
@@ -190,8 +199,10 @@ export function AiAssistantSurface({
   const panel = everOpened ? (
     <AiAssistantPanel
       presentation={presentation}
-      onPresentationChange={onPresentationChange}
       onDismiss={() => onOpenChange(false)}
+      onOpenMcpPermissions={onOpenMcpPermissions}
+      onOpenAssistantSettings={onOpenAssistantSettings}
+      linkNavigation={linkNavigation}
       watchdogMs={watchdogMs}
     />
   ) : null;

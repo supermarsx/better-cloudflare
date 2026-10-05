@@ -3,10 +3,18 @@
  *
  * This is the *only* assistant implementation. The tab, the dock and the
  * floating bubble are three chromes around this one component — see
- * `AiAssistantSurface` — so the conversation, its event subscription and its
- * settings exist once no matter where the user put them. `presentation` changes
- * sizing, scrolling and whether a dismiss affordance exists; it changes nothing
- * about what the assistant can do.
+ * `AiAssistantSurface` — so the conversation and its event subscription exist
+ * once no matter where the user put them. `presentation` changes sizing,
+ * scrolling and whether a dismiss affordance exists; it changes nothing about
+ * what the assistant can do.
+ *
+ * **The assistant does not contain its own settings.** They are the
+ * "Assistant" section of the app's Settings workspace — the same
+ * `AiSettingsPanel`, re-hosted — so this component is the chat and nothing
+ * else: no Chat/Settings view switch, no provider CRUD, and no writes to the
+ * agent config. It still *reads* that config, for its tool posture and its
+ * default provider, and `useAiConfig` keeps every instance in step so this
+ * screen and the settings screen cannot disagree about what is in force.
  *
  * Tool state never gates chat. Dispatch works, and the agent loop advertises
  * only tools that pass both permission layers, so enabling tool use cannot
@@ -20,7 +28,7 @@
  * Desktop only: every `ai_*` command is a Tauri command and
  * `server-client.ts` has no HTTP fallback for any of them.
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useState } from "react";
 
 import {
   Card,
@@ -38,44 +46,72 @@ import {
   useAiConversations,
   useAiProviders,
 } from "@/hooks/ai/use-ai-chat";
+import { useAiLinks } from "@/hooks/ai/use-ai-links";
+import { useAiPlan } from "@/hooks/ai/use-ai-plan";
 import { useAiPermissions } from "@/hooks/ai/use-ai-settings";
 import { useI18n } from "@/hooks/use-i18n";
 import { usePrefersReducedMotion } from "@/hooks/use-prefers-reduced-motion";
+import type { AiLinkNavigation } from "@/lib/ai/links";
+import type { AiPermissionMode } from "@/types/ai";
 import type { AiAssistantPresentation } from "@/lib/ai/presentation";
 import { withObjectUrl } from "@/lib/runtime/resource-scope";
 import { cn } from "@/lib/utils";
-import type { AgentConfig, AiProviderProfileInput } from "@/types/ai";
 
 import { AiComposer } from "./AiComposer";
 import { AiConversationList } from "./AiConversationList";
-import { AiSettingsPanel, type AiSettingsSection } from "./AiSettingsPanel";
+import { AiLinkList } from "./AiLinkList";
+import { AiModeSelect } from "./AiModeSelect";
+import { AiPlanView } from "./AiPlanView";
+import type { AiSettingsSection } from "./AiSettingsPanel";
 import { AiToolNotice, type AiToolPosture } from "./AiToolNotice";
 import { AiTranscript } from "./AiTranscript";
 import { describeAiError } from "./ai-error";
 
-export type AiAssistantView = "chat" | "settings";
-
 export type { AiSettingsSection };
 
 export interface AiAssistantPanelProps {
-  initialView?: AiAssistantView;
   /**
    * Which chrome to wear. `panel` is the workspace tab and the default, so
    * every existing call site keeps the layout it had.
    */
   presentation?: AiAssistantPresentation;
   /**
-   * Changes which chrome the assistant wears. The preference is owned and
-   * persisted by `DNSManager`, so this is the setter rather than local state;
-   * passing it is what puts the placement control in Behaviour, and a host that
-   * does not own the preference gets no control instead of a dead one.
-   */
-  onPresentationChange?: (next: AiAssistantPresentation) => void;
-  /**
    * Renders a dismiss affordance in the header. Omitted for the tab, which is
    * closed by the workspace tab bar instead.
    */
   onDismiss?: () => void;
+  /**
+   * Opens the application's MCP tool permissions.
+   *
+   * A blocked plan step whose `refusal.source` is `mcpGrants` can only be
+   * fixed there, and nothing under `ai_*` can change those grants — so the
+   * assistant can point at the screen but cannot own it. Absent when the host
+   * has no such screen, in which case the refusal still names the layer and
+   * offers no button; an inert one would be worse than none.
+   */
+  onOpenMcpPermissions?: () => void;
+  /**
+   * Opens the app's Settings workspace on the assistant's own settings, at a
+   * named section.
+   *
+   * The assistant no longer contains its settings — they are the "Assistant"
+   * section of the app's Settings workspace — so the one place that needs to
+   * reach them, a blocked plan step pointing at Tools & permissions, now goes
+   * through the host. Absent when the host has no such screen, in which case
+   * the refusal still names the layer and offers no button.
+   */
+  onOpenAssistantSettings?: (section: AiSettingsSection) => void;
+  /**
+   * How to follow a link the assistant offers, and the zone ids a zone or
+   * record link is checked against.
+   *
+   * These are the host's existing navigation callbacks — the same ones behind
+   * the expiry notice's "Check registration" and the inbox's "Go to record" —
+   * so there is no second navigation path. Absent when the host does not own
+   * the workspace: in-app links then render no control, while `external` links
+   * still work because they need nothing from the host.
+   */
+  linkNavigation?: AiLinkNavigation;
   /**
    * Overrides the hook's stall watchdog. Exists so a test can reach the
    * stalled-run branch without waiting 90 s; production never passes it.
@@ -84,23 +120,22 @@ export interface AiAssistantPanelProps {
 }
 
 export function AiAssistantPanel({
-  initialView = "chat",
   presentation = "panel",
-  onPresentationChange,
   onDismiss,
+  onOpenMcpPermissions,
+  onOpenAssistantSettings,
+  linkNavigation,
   watchdogMs,
 }: AiAssistantPanelProps = {}) {
   const { t } = useI18n();
   const reducedMotion = usePrefersReducedMotion();
+  // Scoped per instance: the dock and a workspace tab can both be mounted in
+  // the same document while the placement is mid-change.
+  const modeId = useId();
 
   /** The tab scrolls with the workspace; the dock and bubble scroll inside. */
   const framed = presentation !== "panel";
 
-  const [view, setView] = useState<AiAssistantView>(initialView);
-  // Held here rather than inside the settings panel so that flipping to Chat
-  // and back does not throw away which section the user was reading.
-  const [settingsSection, setSettingsSection] =
-    useState<AiSettingsSection>("providers");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [newProvider, setNewProvider] = useState<string | null>(null);
   const [modelByProvider, setModelByProvider] = useState<
@@ -108,7 +143,6 @@ export function AiAssistantPanel({
   >({});
   const [creating, setCreating] = useState(false);
   const [panelError, setPanelError] = useState<string | null>(null);
-  const [savingAgentConfig, setSavingAgentConfig] = useState(false);
   const [lastSent, setLastSent] = useState<string | null>(null);
   // There is no reject command and `ai_cancel_generation` does not clear
   // `pending_tool_calls`, so a stopped run would otherwise leave its approval
@@ -122,6 +156,26 @@ export function AiAssistantPanel({
   const agentConfig = useAiConfig();
   const conversations = useAiConversations();
   const chat = useAiChat(selectedId, watchdogMs ? { watchdogMs } : {});
+  /**
+   * The conversation's plan.
+   *
+   * `revision` is the transcript's own timestamp because a plan has no event
+   * of its own: the model proposes one through its `plan_propose` tool during
+   * a turn, which appends to the transcript and emits nothing a plan reader
+   * could subscribe to. Re-reading when the transcript changes is what makes a
+   * newly proposed plan appear without a refresh.
+   */
+  const plan = useAiPlan(selectedId, {
+    revision: chat.conversation?.updatedAt ?? null,
+  });
+  /**
+   * The places the assistant is pointing at. Same lifecycle as the plan and
+   * for the same reason: `link_offer` is a tool the model calls during a turn,
+   * and it emits no event either.
+   */
+  const links = useAiLinks(selectedId, {
+    revision: chat.conversation?.updatedAt ?? null,
+  });
 
   const configuredProviders = providers.providers;
   const defaultProviderId = agentConfig.config?.defaultProviderId ?? null;
@@ -197,88 +251,34 @@ export function AiAssistantPanel({
   const toolPermissions = useAiPermissions({ enabled: posture === "on" });
 
   /**
-   * The persona lives in agent config, not in the persona list, so selecting
-   * one is an `ai_set_config` write. The whole config is carried through: a
-   * partial write would reset whatever the other sections last stored.
+   * Change the permission mode from inside the conversation.
+   *
+   * The stored per-tool overrides are carried through: a mode change must not
+   * silently clear an override the user set in the settings screen. `save`
+   * re-reads afterwards, because `ai_set_permissions` answers with the policy
+   * and not with the catalog's new effective values.
    */
-  const handlePersonaSelect = useCallback(
-    (personaId: string | null) => {
-      const current = agentConfig.config;
-      if (!current) return;
-      setSavingAgentConfig(true);
+  const handleModeChange = useCallback(
+    (mode: AiPermissionMode) => {
+      const snapshot = toolPermissions.snapshot;
+      if (!snapshot) return;
       setPanelError(null);
-      void agentConfig
-        .update({ ...current, personaId })
+      void toolPermissions
+        .save({ mode, tools: snapshot.tools })
         .catch((error) => {
           setPanelError(
             describeAiError(
               error,
               t(
-                "The persona could not be selected.",
-                "The persona could not be selected.",
+                "The assistant's mode could not be changed.",
+                "The assistant's mode could not be changed.",
               ),
             ).message,
           );
-        })
-        .finally(() => setSavingAgentConfig(false));
+        });
     },
-    [agentConfig, t],
+    [t, toolPermissions],
   );
-
-  /**
-   * The default provider is agent config too, for the same reason the persona
-   * is: exactly one profile can be the default, which a flag per profile could
-   * not guarantee.
-   */
-  const handleDefaultProviderSelect = useCallback(
-    (providerId: string | null) => {
-      const current = agentConfig.config;
-      if (!current) return;
-      if (current.defaultProviderId === providerId) return;
-      setSavingAgentConfig(true);
-      setPanelError(null);
-      void agentConfig
-        .update({ ...current, defaultProviderId: providerId })
-        .catch((error) => {
-          setPanelError(
-            describeAiError(
-              error,
-              t(
-                "The default provider could not be set.",
-                "The default provider could not be set.",
-              ),
-            ).message,
-          );
-        })
-        .finally(() => setSavingAgentConfig(false));
-    },
-    [agentConfig, t],
-  );
-
-  /** Rejects on refusal so the form can show the backend's own message. */
-  const handleAgentConfigSave = useCallback(
-    async (next: AgentConfig) => {
-      await agentConfig.update(next);
-    },
-    [agentConfig],
-  );
-
-  /** Rejects on refusal so the provider form can show the backend's message. */
-  const handleProviderSave = useCallback(
-    (profile: AiProviderProfileInput) => providers.configure(profile),
-    [providers],
-  );
-
-  const handleProviderDelete = useCallback(
-    (id: string) => providers.remove(id),
-    [providers],
-  );
-
-  // `refresh` records its own failure in `providers.loadError`, so the retry
-  // needs no second error channel of its own.
-  const handleRefreshProviders = useCallback(() => {
-    void providers.refresh();
-  }, [providers]);
 
   const handleCreate = useCallback(() => {
     if (!newProvider) return;
@@ -326,6 +326,20 @@ export function AiAssistantPanel({
         });
     },
     [conversations, t],
+  );
+
+  /**
+   * Retitle a conversation.
+   *
+   * Rejects on refusal so the row can show the backend's own message: a
+   * title is bounded in UTF-8 bytes, so one that looks short can still be
+   * too long, and that ceiling is user-configurable.
+   */
+  const handleRename = useCallback(
+    async (id: string, title: string) => {
+      await conversations.setTitle(id, title);
+    },
+    [conversations],
   );
 
   const handleExport = useCallback(() => {
@@ -495,30 +509,6 @@ export function AiAssistantPanel({
             {dismissButton}
           </div>
         </div>
-        <div
-          role="toolbar"
-          aria-label={t("Assistant views", "Assistant views")}
-          className="glass-surface glass-sheen glass-fade ui-segment-group scrollbar-themed"
-        >
-          <button
-            type="button"
-            className="ui-segment"
-            data-active={view === "chat"}
-            aria-pressed={view === "chat"}
-            onClick={() => setView("chat")}
-          >
-            {t("Chat", "Chat")}
-          </button>
-          <button
-            type="button"
-            className="ui-segment"
-            data-active={view === "settings"}
-            aria-pressed={view === "settings"}
-            onClick={() => setView("settings")}
-          >
-            {t("Settings", "Settings")}
-          </button>
-        </div>
       </CardHeader>
       <CardContent
         className={cn(
@@ -531,6 +521,20 @@ export function AiAssistantPanel({
           posture={posture}
           availability={toolPermissions.snapshot?.availability ?? null}
         />
+
+        {/* The mode, changeable without leaving the conversation. Only while
+            tool use is on: with it off every tool is denied whatever the mode
+            says, so offering the choice there would imply it decided
+            something. That is also the gate on the read above, so an
+            assistant with tools off still issues no `ai_get_permissions`. */}
+        {posture === "on" ? (
+          <AiModeSelect
+            mode={toolPermissions.snapshot?.mode ?? null}
+            saving={toolPermissions.saving}
+            onChange={handleModeChange}
+            idPrefix={modeId}
+          />
+        ) : null}
 
         {panelError ? (
           <p
@@ -581,68 +585,88 @@ export function AiAssistantPanel({
           </div>
         ) : null}
 
-        {view === "settings" ? (
-          /* One section is mounted at a time: the permission catalog and the
-             persona list are separate commands, and reading them because a
-             provider form is open would be a round trip the user did not ask
-             for. */
-          <AiSettingsPanel
-            section={settingsSection}
-            onSectionChange={setSettingsSection}
+        <div className="space-y-4">
+          <AiConversationList
+            conversations={conversations.conversations}
+            selectedId={selectedId}
+            loading={conversations.loading}
+            configuredProviders={configuredProviders}
+            provider={newProvider}
+            model={newModel}
+            creating={creating}
+            onProviderChange={setNewProvider}
+            onModelChange={setNewModel}
+            onCreate={handleCreate}
+            onSelect={setSelectedId}
+            onDelete={handleDelete}
+            onRename={handleRename}
             compact={framed}
-            providers={providers.providers}
-            providersLoading={providers.loading}
-            providersError={providers.loadError}
-            onRefreshProviders={handleRefreshProviders}
-            onSaveProvider={handleProviderSave}
-            onDeleteProvider={handleProviderDelete}
-            config={agentConfig.config}
-            configBusy={savingAgentConfig}
-            onSaveConfig={handleAgentConfigSave}
-            onSelectPersona={handlePersonaSelect}
-            onSetDefaultProvider={handleDefaultProviderSelect}
-            presentation={presentation}
-            onPresentationChange={onPresentationChange}
           />
-        ) : (
-          <div className="space-y-4">
-            <AiConversationList
-              conversations={conversations.conversations}
-              selectedId={selectedId}
-              loading={conversations.loading}
-              configuredProviders={configuredProviders}
-              provider={newProvider}
-              model={newModel}
-              creating={creating}
-              onProviderChange={setNewProvider}
-              onModelChange={setNewModel}
-              onCreate={handleCreate}
-              onSelect={setSelectedId}
-              onDelete={handleDelete}
-            />
-            <AiTranscript
-              conversation={chat.conversation}
-              streaming={chat.streaming}
-              streamText={chat.streamText}
-              incomplete={!chat.streaming && chat.streamText.length > 0}
-              pendingApproval={
-                chat.pendingApproval &&
-                chat.pendingApproval.toolCallId !== dismissedApprovalId
-                  ? chat.pendingApproval
-                  : null
-              }
-              onStopRun={handleStop}
-              reducedMotion={reducedMotion}
-            />
-            <AiComposer
-              disabled={composerDisabled}
-              disabledReason={composerReason}
-              streaming={chat.streaming}
-              onSend={handleSend}
-              onStop={handleStop}
-            />
-          </div>
-        )}
+          {/* The plan sits above the transcript, not below it, and the
+                reason is the point of the whole screen: a blocked step has to
+                be visible *before* the plan is approved, and the transcript
+                grows without bound underneath it. It renders nothing at all
+                when the conversation has no plan, so a chat that never
+                proposes one costs no height — which is what lets the same
+                component serve the tab, the 22rem dock and the 26rem bubble
+                unchanged. */}
+          <AiPlanView
+            plan={plan.plan}
+            summary={plan.summary}
+            summaryError={plan.summaryError}
+            loading={plan.loading}
+            loadError={plan.loadError}
+            busy={plan.busy}
+            error={plan.error}
+            compact={framed}
+            onApprove={() => void plan.approve()}
+            onRun={() => void plan.run()}
+            onRunStep={(stepId) => void plan.runStep(stepId)}
+            onApproveStep={(stepId) => void plan.approveStep(stepId)}
+            onCancel={() => void plan.cancel()}
+            onDelete={() => void plan.remove()}
+            onRetry={() => void plan.refresh()}
+            onDismissError={plan.dismissError}
+            onOpenAssistantTools={
+              onOpenAssistantSettings
+                ? () => onOpenAssistantSettings("tools")
+                : undefined
+            }
+            onOpenMcpPermissions={onOpenMcpPermissions}
+          />
+          {/* Where the assistant is pointing. A separate block from the
+                plan because links are a property of the conversation, not of
+                a plan or a step: the model offers a set and each offer
+                replaces the last, so this is "where to look now". Renders
+                nothing when it is pointing nowhere. */}
+          <AiLinkList
+            links={links.links}
+            navigation={linkNavigation}
+            heading={t("Places to look", "Places to look")}
+            context="conversation"
+          />
+          <AiTranscript
+            conversation={chat.conversation}
+            streaming={chat.streaming}
+            streamText={chat.streamText}
+            incomplete={!chat.streaming && chat.streamText.length > 0}
+            pendingApproval={
+              chat.pendingApproval &&
+              chat.pendingApproval.toolCallId !== dismissedApprovalId
+                ? chat.pendingApproval
+                : null
+            }
+            onStopRun={handleStop}
+            reducedMotion={reducedMotion}
+          />
+          <AiComposer
+            disabled={composerDisabled}
+            disabledReason={composerReason}
+            streaming={chat.streaming}
+            onSend={handleSend}
+            onStop={handleStop}
+          />
+        </div>
       </CardContent>
     </Card>
   );

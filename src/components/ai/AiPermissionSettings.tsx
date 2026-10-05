@@ -38,6 +38,7 @@ import { Tag } from "@/components/ui/tag";
 import { useAiPermissions } from "@/hooks/ai/use-ai-settings";
 import { useI18n } from "@/hooks/use-i18n";
 import {
+  AI_PERMISSION_MODE_COPY,
   AI_PERMISSION_MODES,
   AI_TOOL_PERMISSIONS,
   buildAiToolPermissionRows,
@@ -115,26 +116,20 @@ export function AiPermissionSettings({
   const [search, setSearch] = useState("");
   const [saveError, setSaveError] = useState<string | null>(null);
 
-  const modeLabels: Record<AiPermissionMode, string> = {
-    readOnly: t("Read only", "Read only"),
-    ask: t("Ask before changes", "Ask before changes"),
-    autonomous: t("Autonomous", "Autonomous"),
-  };
+  // From the shared table, not a second copy: the same sentences are used by
+  // the mode dropdown inside the conversation, and the `readOnly` one in
+  // particular is the only place the "refused outright, not prompted" rule is
+  // stated to the user.
+  const modeLabels = Object.fromEntries(
+    AI_PERMISSION_MODE_COPY.map((mode) => [mode.id, t(mode.label, mode.label)]),
+  ) as Record<AiPermissionMode, string>;
 
-  const modeConsequences: Record<AiPermissionMode, string> = {
-    readOnly: t(
-      "Read-only tools run. Anything that would change something is refused outright — you are not prompted, and the assistant is told it cannot do it.",
-      "Read-only tools run. Anything that would change something is refused outright — you are not prompted, and the assistant is told it cannot do it.",
-    ),
-    ask: t(
-      "Read-only tools run. Anything that would change something waits for your approval first.",
-      "Read-only tools run. Anything that would change something waits for your approval first.",
-    ),
-    autonomous: t(
-      "Every tool runs without asking, including tools that change your account.",
-      "Every tool runs without asking, including tools that change your account.",
-    ),
-  };
+  const modeConsequences = Object.fromEntries(
+    AI_PERMISSION_MODE_COPY.map((mode) => [
+      mode.id,
+      t(mode.consequence, mode.consequence),
+    ]),
+  ) as Record<AiPermissionMode, string>;
 
   const permissionLabels: Record<AiToolPermission, string> = {
     allow: t("Runs", "Runs"),

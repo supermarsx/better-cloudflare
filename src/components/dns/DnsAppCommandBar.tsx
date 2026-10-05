@@ -14,6 +14,26 @@ import { ThemeToggle } from "@/components/layout/ThemeToggle";
 import { Button } from "@/components/ui/button";
 import { Tooltip } from "@/components/ui/tooltip";
 import { useI18n } from "@/hooks/use-i18n";
+import { cn } from "@/lib/utils";
+
+/**
+ * What the assistant control does, which depends on where the assistant lives.
+ *
+ * The distinction is carried in the props rather than worked out inside this
+ * component, because the two are not the same kind of control and only one of
+ * them can honestly report a pressed state:
+ *
+ * - `reveal` — the assistant is a workspace tab, and activating the control
+ *   activates that tab. You do not un-activate a tab, so there is nothing for
+ *   `aria-pressed` to describe and claiming one would be a lie.
+ * - `toggle` — the assistant is a dock or a bubble, which are shown and hidden
+ *   in place. The control is a real toggle and says which state it is in.
+ *   `surface` is carried because closing a dock and dismissing a bubble are
+ *   different enough that one shared name would not tell you what will happen.
+ */
+export type AssistantCommandControl =
+  | { mode: "reveal" }
+  | { mode: "toggle"; surface: "sidebar" | "bubble"; open: boolean };
 
 interface DnsAppCommandBarProps {
   accountLabel: string;
@@ -25,7 +45,21 @@ interface DnsAppCommandBarProps {
   onOpenNotifications?: () => void;
   /** Desktop only: the AI assistant. Every `ai_*` command is Tauri-only. */
   showAssistant?: boolean;
+  /**
+   * Reveal the assistant. Used in `reveal` mode — the open-only path.
+   *
+   * Deliberately *not* reused for the toggle: overloading one handler is what
+   * left the dock with no way to be hidden from the chrome, so the two
+   * semantics have two handlers.
+   */
   onOpenAssistant?: () => void;
+  /** Show or hide the dock or bubble. Required in `toggle` mode. */
+  onToggleAssistant?: () => void;
+  /**
+   * Which of the two the control is. Defaults to `reveal`, which is what the
+   * workspace tab needs and what every caller wanted before the dock existed.
+   */
+  assistantControl?: AssistantCommandControl;
   onOpenAudit: () => void;
   onOpenRegistry: () => void;
   onOpenSettings: () => void;
@@ -37,17 +71,45 @@ interface CommandActionProps {
   label: string;
   icon: ReactNode;
   onClick: () => void;
+  /**
+   * Toggle state, when this action is a toggle. `undefined` means it is not
+   * one, and no `aria-pressed` is emitted at all — an action button that
+   * reports `aria-pressed="false"` is announced as an unpressed toggle, which
+   * is worse than silence.
+   */
+  pressed?: boolean;
+  /** Stable hook for tests, independent of the translated name. */
+  testId?: string;
 }
 
-function CommandAction({ label, icon, onClick }: CommandActionProps) {
+function CommandAction({
+  label,
+  icon,
+  onClick,
+  pressed,
+  testId,
+}: CommandActionProps) {
   return (
     <Tooltip tip={label} side="bottom">
       <Button
         type="button"
         variant="ghost"
         size="icon"
-        className="ui-icon-button h-8 w-8 shrink-0"
+        className={cn(
+          "ui-icon-button h-8 w-8 shrink-0",
+          // The pressed treatment is background and text only. The toolbar is
+          // `overflow-x: auto` with a 0.375rem clip allowance sized for the
+          // focus ring, the hover lift and the unread badge (see
+          // `.app-command-toolbar` in `index.css`), so a pressed state that
+          // painted outside the button's own box would be the fourth thing
+          // fighting for that space — and the first one to need the allowance
+          // widened.
+          pressed === true && "bg-accent/60 text-foreground",
+        )}
         aria-label={label}
+        aria-pressed={pressed}
+        data-testid={testId}
+        data-pressed={pressed === undefined ? undefined : pressed}
         onClick={onClick}
       >
         {icon}
@@ -65,6 +127,8 @@ export function DnsAppCommandBar({
   onOpenNotifications,
   showAssistant = false,
   onOpenAssistant,
+  onToggleAssistant,
+  assistantControl = { mode: "reveal" },
   onOpenAudit,
   onOpenRegistry,
   onOpenSettings,
@@ -72,6 +136,39 @@ export function DnsAppCommandBar({
   onLogout,
 }: DnsAppCommandBarProps) {
   const { t } = useI18n();
+
+  /**
+   * The assistant control, or `null` when there is nothing to offer.
+   *
+   * The handler is chosen by mode rather than by whichever one happens to be
+   * wired, so a host that passes only the reveal handler while asking for a
+   * toggle gets no control instead of a control that cannot close anything.
+   */
+  const assistantAction = (() => {
+    if (!showAssistant) return null;
+    if (assistantControl.mode === "toggle") {
+      if (!onToggleAssistant) return null;
+      const open = assistantControl.open;
+      const dock = assistantControl.surface === "sidebar";
+      // The name says what activating it will do, and to which surface:
+      // "Assistant" alone cannot distinguish showing a dock from hiding a
+      // bubble, and this control now does all four.
+      const label = open
+        ? dock
+          ? t("Hide the docked assistant", "Hide the docked assistant")
+          : t("Hide the floating assistant", "Hide the floating assistant")
+        : dock
+          ? t("Show the docked assistant", "Show the docked assistant")
+          : t("Show the floating assistant", "Show the floating assistant");
+      return { label, pressed: open, onClick: onToggleAssistant };
+    }
+    if (!onOpenAssistant) return null;
+    return {
+      label: t("Assistant", "Assistant"),
+      pressed: undefined,
+      onClick: onOpenAssistant,
+    };
+  })();
 
   return (
     <div className="mx-auto flex w-full max-w-[1600px] min-w-0 flex-wrap items-center gap-x-3 gap-y-2 px-3 py-2 sm:px-4">
@@ -110,11 +207,13 @@ export function DnsAppCommandBar({
             ) : null}
           </span>
         ) : null}
-        {showAssistant && onOpenAssistant ? (
+        {assistantAction ? (
           <CommandAction
-            label={t("Assistant", "Assistant")}
+            label={assistantAction.label}
             icon={<Sparkles aria-hidden="true" className="h-4 w-4" />}
-            onClick={onOpenAssistant}
+            pressed={assistantAction.pressed}
+            testId="command-bar-assistant"
+            onClick={assistantAction.onClick}
           />
         ) : null}
         {showAudit ? (

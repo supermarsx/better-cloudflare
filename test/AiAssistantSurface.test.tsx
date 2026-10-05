@@ -30,7 +30,7 @@ import {
 import { AiAssistantSurface } from "../src/components/ai/AiAssistantSurface";
 import { TauriClient } from "../src/lib/api/tauri-client";
 import type { AiAssistantPresentation } from "../src/lib/ai/presentation";
-import type { AgentConfig } from "../src/types/ai";
+import type { AgentConfig, AiPlan, ConversationMeta } from "../src/types/ai";
 
 import { useEnglishLocale } from "./i18n-ready";
 import {
@@ -51,8 +51,26 @@ const AGENT_CONFIG: AgentConfig = {
   defaultProviderId: null,
 };
 
+interface BackendOptions {
+  /**
+   * Turns tool use on, which is what makes the mode dropdown and the
+   * permission read exist at all. Off by default, so most of these tests pay
+   * for neither.
+   */
+  toolsEnabled?: boolean;
+  /** What `ai_get_plan` answers. `null`, the default, is "no plan". */
+  plan?: AiPlan | null;
+  /**
+   * Give the panel a conversation to select. Empty by default, because most
+   * of these tests are about the chrome rather than about a transcript — and
+   * with no conversation selected the panel issues no per-conversation read
+   * at all, which is what keeps the call counts small.
+   */
+  conversations?: ConversationMeta[];
+}
+
 /** Counts the `ai_*` traffic the surface causes, which is the point of some tests. */
-function installBackend(): { calls: string[] } {
+function installBackend(options: BackendOptions = {}): { calls: string[] } {
   const calls: string[] = [];
   const record =
     <T,>(name: string, result: () => T) =>
@@ -69,7 +87,32 @@ function installBackend(): { calls: string[] } {
   mock.method(
     TauriClient,
     "aiGetConfig",
-    record("config", () => AGENT_CONFIG),
+    record("config", () => ({
+      ...AGENT_CONFIG,
+      toolsEnabled: options.toolsEnabled ?? false,
+    })),
+  );
+  // Read only while tool use is on, which is what the mode dropdown speaks
+  // from. Recorded like the rest.
+  mock.method(
+    TauriClient,
+    "aiGetPermissions",
+    record("permissions", () => ({
+      mode: "ask" as const,
+      tools: {},
+      catalog: [],
+      availability: {
+        dispatchAvailable: true,
+        grantedToolCount: 2,
+        usableToolCount: 2,
+        registeredToolCount: 10,
+      },
+    })),
+  );
+  mock.method(
+    TauriClient,
+    "aiSetPermissions",
+    record("setPermissions", () => ({ mode: "ask" as const, tools: {} })),
   );
   mock.method(
     TauriClient,
@@ -90,7 +133,39 @@ function installBackend(): { calls: string[] } {
   mock.method(
     TauriClient,
     "aiListConversations",
-    record("conversations", () => []),
+    record("conversations", () => options.conversations ?? []),
+  );
+  mock.method(
+    TauriClient,
+    "aiGetConversation",
+    record("conversation", () => ({
+      id: "conv-1",
+      title: "First chat",
+      provider: "openai",
+      model: "gpt-4o-mini",
+      messages: [],
+      createdAt: "2026-08-25T10:00:00Z",
+      updatedAt: "2026-08-25T10:00:00Z",
+    })),
+  );
+  // The plan read. Recorded like the rest rather than silently stubbed,
+  // because "opening costs a round trip and existing costs nothing" is a
+  // claim about *every* command the panel issues, and a plan read that did
+  // not show up in these counts would quietly exempt itself from it.
+  mock.method(
+    TauriClient,
+    "aiGetPlan",
+    record("plan", () => options.plan ?? null),
+  );
+  mock.method(
+    TauriClient,
+    "aiGetRunSummary",
+    record("runSummary", () => null),
+  );
+  mock.method(
+    TauriClient,
+    "aiGetLinks",
+    record("links", () => []),
   );
   mock.method(TauriClient, "onAiEvent", async () => {
     calls.push("subscribe");
@@ -102,20 +177,24 @@ function installBackend(): { calls: string[] } {
 interface HarnessProps {
   presentation: AiAssistantPresentation;
   initiallyOpen?: boolean;
+  /** Wired through so the plan's MCP pointer can be observed from outside. */
+  onOpenMcpPermissions?: () => void;
 }
 
 /**
  * A trigger outside the surface plus a re-render button, so focus restoration
  * and focus stability can both be observed from the outside.
  *
- * The placement is state rather than a prop so that a chrome change can be
- * driven from inside the assistant, which is how the real owner (`DNSManager`)
- * wires it.
+ * The placement is a plain prop now: the assistant no longer contains a
+ * control for it, so there is nothing inside the surface that could change it.
+ * `DNSManager` owns the preference and Session settings is where it is set.
  */
-function Harness({ presentation, initiallyOpen = false }: HarnessProps) {
+function Harness({
+  presentation,
+  initiallyOpen = false,
+  onOpenMcpPermissions,
+}: HarnessProps) {
   const [open, setOpen] = React.useState(initiallyOpen);
-  const [placement, setPlacement] =
-    React.useState<AiAssistantPresentation>(presentation);
   const [, setTick] = React.useState(0);
   return (
     <div>
@@ -126,10 +205,10 @@ function Harness({ presentation, initiallyOpen = false }: HarnessProps) {
         Force re-render
       </button>
       <AiAssistantSurface
-        presentation={placement}
+        presentation={presentation}
         open={open}
         onOpenChange={setOpen}
-        onPresentationChange={setPlacement}
+        onOpenMcpPermissions={onOpenMcpPermissions}
       />
     </div>
   );
@@ -143,8 +222,8 @@ function assertAbsent(node: Element | null, label: string): void {
 beforeEach(async () => {
   (window as unknown as { __TAURI__?: unknown }).__TAURI__ = {};
   await useEnglishLocale();
-  // The placement picker is a Radix dropdown; opening one needs the two jsdom
-  // gaps this installs. See `test/radix-select.ts`.
+  // The mode dropdown inside the conversation is a Radix dropdown; opening
+  // one needs the two jsdom gaps this installs. See `test/radix-select.ts`.
   enableThemedSelectEnvironment();
 });
 
@@ -336,67 +415,16 @@ test("dismissing hides the panel without unmounting it, so a run is not abandone
   assert.equal(backend.calls.length, callsWhileOpen);
 });
 
-// ── Changing chrome from inside the chrome ─────────────────────────────────
-
-test("the panel's own placement control reaches the surface, and swaps the chrome", async () => {
-  installBackend();
-  render(<Harness presentation="sidebar" initiallyOpen />);
-  const panel = await screen.findByTestId("ai-panel");
-  assert.equal(panel.dataset.presentation, "sidebar");
-
-  // The dock and the bubble are the two placements with no workspace settings
-  // tab in front of them, so the setter has to arrive this far down.
-  fireEvent.click(
-    within(
-      within(panel).getByRole("toolbar", { name: "Assistant views" }),
-    ).getByRole("button", { name: "Settings" }),
-  );
-  fireEvent.click(
-    within(
-      await screen.findByRole("toolbar", {
-        name: "Assistant settings sections",
-      }),
-    ).getByRole("button", { name: "Behaviour" }),
-  );
-  // The themed dropdown is opened and an option clicked: `fireEvent.change`
-  // was for the native `<select>` this replaced, and does nothing to a Radix
-  // trigger.
-  await chooseThemedSelectValue(
-    await screen.findByLabelText("Placement"),
-    "bubble",
-  );
-
-  await screen.findByTestId("ai-assistant-bubble");
-  assertAbsent(screen.queryByTestId("ai-assistant-sidebar"), "dock");
-  // Still one assistant: the chrome changed, not the count.
-  assert.equal(document.querySelectorAll('[data-testid="ai-panel"]').length, 1);
-  assert.equal(screen.getByTestId("ai-panel").dataset.presentation, "bubble");
-
-  // The remounted panel re-reads its config, providers and conversations.
-  // Settling those inside the test keeps their state updates in `act` instead
-  // of landing after the test body has finished.
-  await act(async () => {});
-});
-
 test("Escape in an open dropdown closes the dropdown, not the bubble", async () => {
-  installBackend();
+  // The dropdown used to be the assistant's own placement picker, which went
+  // with its settings view. The mode dropdown is the one that lives inside
+  // the conversation now, so it is what this is checked against — the
+  // requirement is about Radix and Escape, not about which dropdown.
+  installBackend({ toolsEnabled: true });
   render(<Harness presentation="bubble" initiallyOpen />);
-  const panel = await screen.findByTestId("ai-panel");
+  await screen.findByTestId("ai-panel");
 
-  fireEvent.click(
-    within(
-      within(panel).getByRole("toolbar", { name: "Assistant views" }),
-    ).getByRole("button", { name: "Settings" }),
-  );
-  fireEvent.click(
-    within(
-      await screen.findByRole("toolbar", {
-        name: "Assistant settings sections",
-      }),
-    ).getByRole("button", { name: "Behaviour" }),
-  );
-
-  const trigger = await screen.findByLabelText("Placement");
+  const trigger = await screen.findByLabelText("What the assistant may do");
   const popover = await openThemedSelect(trigger);
   assert.equal(trigger.getAttribute("data-state"), "open");
 
@@ -518,4 +546,84 @@ test("the entry animation is applied when motion is allowed", async () => {
   const surface = panel.closest('[role="complementary"]');
   assert.ok(surface);
   assert.match(surface.className, /fade-in-up/);
+});
+
+// ── The plan rides in every chrome ─────────────────────────────────────────
+
+const CONVERSATION: ConversationMeta = {
+  id: "conv-1",
+  title: "First chat",
+  provider: "openai",
+  model: "gpt-4o-mini",
+  messageCount: 0,
+  createdAt: "2026-08-25T10:00:00Z",
+  updatedAt: "2026-08-25T10:00:00Z",
+};
+
+/** A draft blocked by the app's MCP grants, which only the host can fix. */
+function blockedPlan(): AiPlan {
+  return {
+    id: "plan-1",
+    conversationId: "conv-1",
+    title: "Fix the mail records",
+    status: "draft",
+    steps: [
+      {
+        id: "11111111-2222-3333-4444-555555555555",
+        index: 0,
+        title: "Create the SPF record",
+        detail: "A TXT record at the apex.",
+        tool: "dns_create_record",
+        status: "blocked",
+        refusal: { source: "mcpGrants", reason: "not granted" },
+      },
+    ],
+    createdAt: "2026-08-25T10:00:00Z",
+    updatedAt: "2026-08-25T10:00:00Z",
+  };
+}
+
+test("the dock shows the plan, and its blocked step, in 22rem", async () => {
+  installBackend({ plan: blockedPlan(), conversations: [CONVERSATION] });
+  render(<Harness presentation="sidebar" initiallyOpen />);
+
+  const dock = await screen.findByTestId("ai-assistant-sidebar");
+  const plan = await screen.findByTestId("ai-plan");
+  // One plan, inside the dock, and sized for it: `compact` is keyed off the
+  // chrome rather than a viewport breakpoint, because a 22rem dock can sit on
+  // a 2560px display.
+  assert.equal(document.querySelectorAll('[data-testid="ai-plan"]').length, 1);
+  assert.ok(dock.contains(plan));
+  assert.match(plan.className, /(?:^|\s)p-2(?:$|\s)/);
+  // The blocked step still names its layer here: there is one plan component,
+  // so the dock cannot drift from the tab.
+  assert.match(
+    within(plan).getByTestId("ai-plan-step-refusal").textContent ?? "",
+    /app's own MCP tool permissions/,
+  );
+  // And a draft is not runnable in the dock either.
+  assertAbsent(screen.queryByTestId("ai-plan-run"), "run control on a draft");
+});
+
+test("the bubble shows the same plan, and reaches the host's MCP screen", async () => {
+  const opens: number[] = [];
+  installBackend({ plan: blockedPlan(), conversations: [CONVERSATION] });
+  render(
+    <Harness
+      presentation="bubble"
+      initiallyOpen
+      onOpenMcpPermissions={() => opens.push(1)}
+    />,
+  );
+
+  const bubble = await screen.findByTestId("ai-assistant-bubble");
+  const plan = await screen.findByTestId("ai-plan");
+  assert.equal(document.querySelectorAll('[data-testid="ai-plan"]').length, 1);
+  assert.ok(bubble.contains(plan));
+  assert.match(plan.className, /(?:^|\s)p-2(?:$|\s)/);
+
+  // The host's own screen, wired through the surface: nothing under `ai_*`
+  // can change the app's MCP grants, so the assistant can only point there.
+  fireEvent.click(screen.getByTestId("ai-plan-step-open-mcp-permissions"));
+  assert.deepEqual(opens, [1]);
 });

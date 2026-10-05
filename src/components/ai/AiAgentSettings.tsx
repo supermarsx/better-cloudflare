@@ -52,10 +52,13 @@ import {
 } from "@/lib/ai/capabilities";
 import {
   AI_AGENT_LIMITS,
+  AI_CONFIGURABLE_LIMITS,
   AI_DEFAULT_MAX_CONTEXT_TOKENS,
   AI_PERSONA_LIMITS,
   AI_STOP_LIMITS,
+  isAiByteLimit,
   validateAgentConfig,
+  type AiConfigurableLimit,
   type AiValidationIssue,
 } from "@/lib/ai/permissions";
 import type {
@@ -87,7 +90,17 @@ export interface AiAgentSettingsProps {
   onRetryCapabilities: () => void;
 }
 
-interface Draft {
+/**
+ * The form's own state: every value a string, because an in-progress number
+ * is not a number.
+ *
+ * The eight configurable limits are folded in as a `Record` keyed off
+ * {@link AI_CONFIGURABLE_LIMITS} rather than spelled out, so a limit added to
+ * that list is a type error here until it is handled — which is what lets the
+ * limit fields be rendered in a loop without the loop being able to address a
+ * key the draft does not have.
+ */
+type Draft = Record<AiConfigurableLimit, string> & {
   maxToolRounds: string;
   maxTokensPerTurn: string;
   temperature: string;
@@ -102,7 +115,7 @@ interface Draft {
   maxContextTokens: string;
   systemPromptOverride: string;
   requestTimeoutMs: string;
-}
+};
 
 /**
  * A field that came back absent or NaN would render as "undefined"/"NaN" and
@@ -181,7 +194,25 @@ function toDraft(config: AgentConfig): Draft {
     ),
     systemPromptOverride: config.systemPromptOverride ?? "",
     requestTimeoutMs: optionalNumberText(config.requestTimeoutMs),
+    ...limitDraft(config),
   };
+}
+
+/**
+ * The eight configurable limits, seeded from the config.
+ *
+ * An absent field falls back to the **ceiling**, which is not a guess: Rust
+ * gives each one a serde default of exactly that constant, so a configuration
+ * from a build predating the field behaves as though it were set to the
+ * ceiling, and showing anything else would misreport what the backend will do.
+ */
+function limitDraft(config: AgentConfig): Record<AiConfigurableLimit, string> {
+  const draft = {} as Record<AiConfigurableLimit, string>;
+  for (const field of AI_CONFIGURABLE_LIMITS) {
+    const ceiling = AI_AGENT_LIMITS[field].max;
+    draft[field] = numberText(config[field] ?? ceiling, ceiling);
+  }
+  return draft;
 }
 
 /** The config a draft would store, including the parameters not shown. */
@@ -210,6 +241,13 @@ function fromDraft(config: AgentConfig, draft: Draft): AgentConfig {
         ? null
         : draft.systemPromptOverride,
     requestTimeoutMs: optionalNumberValue(draft.requestTimeoutMs),
+    // Never optional: Rust types each one a bare `usize` with a serde default,
+    // so `null` is not a value any of them can take. An unparseable field is
+    // handed to `Number` verbatim, NaN included, so the validator reports it
+    // rather than this function turning rubbish into a ceiling.
+    ...Object.fromEntries(
+      AI_CONFIGURABLE_LIMITS.map((field) => [field, Number(draft[field])]),
+    ),
   };
 }
 
@@ -316,6 +354,21 @@ export function AiAgentSettings({
     name: t("Name", "Name"),
     description: t("Description", "Description"),
     systemPrompt: t("System prompt", "System prompt"),
+    // The eight configurable limits. The byte ones say "bytes" in the label
+    // itself, because "512" against a title means 512 UTF-8 bytes and a form
+    // that let someone read it as characters would promise a length the
+    // backend refuses.
+    maxConversations: t("Conversations kept", "Conversations kept"),
+    maxMessagesPerConversation: t(
+      "Messages kept per conversation",
+      "Messages kept per conversation",
+    ),
+    maxChatMessageBytes: t("Bytes per message", "Bytes per message"),
+    maxConversationBytes: t("Bytes per conversation", "Bytes per conversation"),
+    maxGlobalRetainedBytes: t("Bytes kept in total", "Bytes kept in total"),
+    maxTitleBytes: t("Bytes per title", "Bytes per title"),
+    maxPlanSteps: t("Steps per plan", "Steps per plan"),
+    maxRetainedPlans: t("Plans kept", "Plans kept"),
   } as const;
 
   const describeIssue = (issue: AiValidationIssue): string => {
@@ -462,6 +515,65 @@ export function AiAgentSettings({
         defaultValue: `A number between ${min} and ${max}, or empty to leave it to the provider.`,
       },
     );
+
+  /**
+   * A byte limit's range, which says "bytes" rather than leaving the unit to
+   * be inferred from the label.
+   */
+  const byteWholeBetweenText = (min: number, max: number): string =>
+    t("A whole number of UTF-8 bytes, between {{min}} and {{max}}.", {
+      min,
+      max,
+      defaultValue: `A whole number of UTF-8 bytes, between ${min} and ${max}.`,
+    });
+
+  /** What each configurable limit does, and what lowering it costs. */
+  const limitExplanations: Record<AiConfigurableLimit, string> = {
+    maxConversations: t(
+      "How many chats the assistant keeps at once. Once the number is reached the least recently used chat is dropped to make room, so a low number means older conversations disappear sooner. It is a retention limit, not a tidiness setting: a dropped conversation is gone.",
+      "How many chats the assistant keeps at once. Once the number is reached the least recently used chat is dropped to make room, so a low number means older conversations disappear sooner. It is a retention limit, not a tidiness setting: a dropped conversation is gone.",
+    ),
+    maxMessagesPerConversation: t(
+      "How many messages one chat keeps. The oldest go first, which costs the assistant the beginning of a long thread — it cannot answer about what has been dropped, however generous the context budget is. Lower this to hold down memory on a long-running chat, not to shorten what is sent.",
+      "How many messages one chat keeps. The oldest go first, which costs the assistant the beginning of a long thread — it cannot answer about what has been dropped, however generous the context budget is. Lower this to hold down memory on a long-running chat, not to shorten what is sent.",
+    ),
+    maxChatMessageBytes: t(
+      "The largest single message the app will keep. A message over this is refused outright rather than shortened, because silently truncating what you typed would be worse than saying it is too long — so a low value turns a long paste into an error, not a trimmed message.",
+      "The largest single message the app will keep. A message over this is refused outright rather than shortened, because silently truncating what you typed would be worse than saying it is too long — so a low value turns a long paste into an error, not a trimmed message.",
+    ),
+    maxConversationBytes: t(
+      "How much one whole chat may hold, counting every message in it. Reaching this drops the oldest messages exactly as the message count does, so whichever of the two is reached first is the one doing the trimming.",
+      "How much one whole chat may hold, counting every message in it. Reaching this drops the oldest messages exactly as the message count does, so whichever of the two is reached first is the one doing the trimming.",
+    ),
+    maxGlobalRetainedBytes: t(
+      "How much every chat together may hold. This is the limit that actually bounds how much memory the assistant uses, which is why it cannot be raised: once it is reached the least recently used chats are dropped whole, not trimmed.",
+      "How much every chat together may hold. This is the limit that actually bounds how much memory the assistant uses, which is why it cannot be raised: once it is reached the least recently used chats are dropped whole, not trimmed.",
+    ),
+    maxTitleBytes: t(
+      "How long a conversation title may be. Counted in UTF-8 bytes, so an emoji costs four of these and an accented letter two — a title that looks short can still be refused. A title over the limit is refused rather than cut.",
+      "How long a conversation title may be. Counted in UTF-8 bytes, so an emoji costs four of these and an accented letter two — a title that looks short can still be refused. A title over the limit is refused rather than cut.",
+    ),
+    maxPlanSteps: t(
+      "How many steps the assistant may put in one plan. A plan you cannot read in a screenful is not one you can meaningfully approve, which is what this is really for; a longer proposal is refused outright, so the assistant has to plan in smaller pieces rather than having its plan silently cut short.",
+      "How many steps the assistant may put in one plan. A plan you cannot read in a screenful is not one you can meaningfully approve, which is what this is really for; a longer proposal is refused outright, so the assistant has to plan in smaller pieces rather than having its plan silently cut short.",
+    ),
+    maxRetainedPlans: t(
+      "How many plans are kept at once. There is one plan per conversation, so this is effectively how far back a plan survives; deleting a conversation deletes its plan with it, and plans are lost when the app restarts either way.",
+      "How many plans are kept at once. There is one plan per conversation, so this is effectively how far back a plan survives; deleting a conversation deletes its plan with it, and plans are lost when the app restarts either way.",
+    ),
+  };
+
+  /**
+   * Write one limit field.
+   *
+   * The cast is confined here and is sound by construction: `Draft` includes
+   * `Record<AiConfigurableLimit, string>`, so the computed key is certainly
+   * one of its own string fields — TypeScript simply will not narrow a
+   * computed key from a union on its own.
+   */
+  const setLimitDraft = (field: AiConfigurableLimit, value: string) => {
+    setDraft({ ...draft, [field]: value } as Draft);
+  };
 
   // ── What reaches the provider in use ─────────────────────────────────────
 
@@ -1011,6 +1123,79 @@ export function AiAgentSettings({
               />
             }
           />
+
+          {/* ── The configurable retention and plan limits ─────────────────
+              Inside Advanced, but a section of their own rather than eight
+              more entries in the list above, because they are a different
+              kind of setting: none of them reaches a provider, so none is
+              capability-checked or ever marked "not sent", and the group
+              notice at the top of Advanced does not apply to them. They are
+              locked only while a save is in flight.
+
+              The two facts in the note are here once rather than in eight
+              explanations, and they are both things a user would otherwise
+              discover by being surprised. */}
+          <section
+            className="min-w-0 space-y-3 rounded-lg border border-border/60 bg-background/30 p-3"
+            data-testid="ai-agent-limits"
+          >
+            <h4 className="text-xs font-semibold">
+              {t("Retention and plan limits", "Retention and plan limits")}
+            </h4>
+            <p
+              role="note"
+              data-testid="ai-agent-limits-notice"
+              className="space-y-1 text-xs break-words text-muted-foreground [overflow-wrap:anywhere]"
+            >
+              <span className="block">
+                {t(
+                  "These bound what the assistant keeps in memory, and they go to no provider. Each one can only be lowered: the top of every range below is what the code is built to survive, and a higher value is refused by name rather than accepted and quietly clamped.",
+                  "These bound what the assistant keeps in memory, and they go to no provider. Each one can only be lowered: the top of every range below is what the code is built to survive, and a higher value is refused by name rather than accepted and quietly clamped.",
+                )}
+              </span>
+              <span className="block">
+                {t(
+                  "Lowering a limit deletes nothing. It stops the store growing straight away and then trims at most one item each time something is written, so 40 conversations under a new limit of 5 all stay in the list and the number comes down as you delete them.",
+                  "Lowering a limit deletes nothing. It stops the store growing straight away and then trims at most one item each time something is written, so 40 conversations under a new limit of 5 all stay in the list and the number comes down as you delete them.",
+                )}
+              </span>
+            </p>
+
+            {AI_CONFIGURABLE_LIMITS.map((limitField) => {
+              const bounds = AI_AGENT_LIMITS[limitField];
+              const bytes = isAiByteLimit(limitField);
+              return (
+                <FieldShell
+                  key={limitField}
+                  id={id(limitField)}
+                  name={limitField}
+                  label={fieldLabels[limitField]}
+                  range={
+                    bytes
+                      ? byteWholeBetweenText(bounds.min, bounds.max)
+                      : wholeBetweenText(bounds.min, bounds.max)
+                  }
+                  explanation={limitExplanations[limitField]}
+                  control={
+                    <Input
+                      id={id(limitField)}
+                      aria-describedby={`${id(limitField)}-help`}
+                      type="number"
+                      min={bounds.min}
+                      max={bounds.max}
+                      step={1}
+                      className="w-40"
+                      disabled={busy}
+                      value={draft[limitField]}
+                      onChange={(event) =>
+                        setLimitDraft(limitField, event.target.value)
+                      }
+                    />
+                  }
+                />
+              );
+            })}
+          </section>
         </div>
       </details>
 

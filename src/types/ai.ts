@@ -292,6 +292,35 @@ export interface AgentConfig {
    */
   personaId: string | null;
   defaultProviderId: string | null;
+  /**
+   * The eight retention and plan limits, mirroring Rust `AgentConfig`
+   * (`bc-ai-agent/src/config.rs`, `CONFIGURABLE_LIMITS`).
+   *
+   * Every one is bounded by `1..=CEILING`, where the ceiling is the constant
+   * of the same name in `bc_ai_chat::limits` or `bc_ai_agent::plan` — see
+   * {@link AI_AGENT_LIMITS}. **The ceilings are ceilings**: a value may be
+   * lowered and may never be raised past what the code is built to survive,
+   * and the backend refuses an out-of-range value by name rather than
+   * clamping it silently.
+   *
+   * Each is marked optional for exactly the reason {@link maxContextTokens}
+   * is: Rust types them bare `usize` with serde defaults, so a read always
+   * carries a number and `null` is not a value any of them can take. The
+   * `?` is here only so a config round-tripped through stored session state
+   * from a build predating these fields still satisfies the type. Seed a form
+   * from `AI_AGENT_LIMITS.<field>.max` when one is absent, which is the
+   * default that build's successor would have given it.
+   *
+   * Every `*Bytes` field counts UTF-8 bytes, not characters.
+   */
+  maxConversations?: number;
+  maxMessagesPerConversation?: number;
+  maxChatMessageBytes?: number;
+  maxConversationBytes?: number;
+  maxGlobalRetainedBytes?: number;
+  maxTitleBytes?: number;
+  maxPlanSteps?: number;
+  maxRetainedPlans?: number;
 }
 
 /**
@@ -455,6 +484,273 @@ export type AgentEvent =
       type: "cancelled";
       conversationId: string;
     };
+
+// ─── Plans ─────────────────────────────────────────────────────────────────
+//
+// Mirrors `bc-ai-agent/src/plan.rs`. The division of labour there is enforced
+// by the Rust types and is the reason this section exists at all: the model
+// proposes steps and can express no status, the user approves and runs through
+// the `ai_*_plan` commands, and the harness executes through the same tool
+// gate every other call goes through.
+//
+// **There are no plan events.** `AgentEvent` belongs to a generation turn and
+// a plan command has no turn to attach to, so every command answers with the
+// authoritative plan and the renderer shows what came back. The one exception
+// is `ai_approve_tool_call`, which resolves with nothing; re-read with
+// `ai_get_plan` after it.
+
+/**
+ * Which of the two permission layers refused something, and therefore which
+ * screen the user has to go and change.
+ *
+ * Rust `RefusalSource` (`bc-ai-tools/src/permissions.rs`). The layers compose
+ * as an intersection, so a refusal can come from either, and they are
+ * configured in different places:
+ *
+ * - `assistantPolicy` — the assistant's own mode and per-tool overrides, in
+ *   the assistant's **Tools & permissions** settings section.
+ * - `mcpGrants` — the application's canonical MCP tool grants, in **Session
+ *   settings → MCP**. No `ai_*` command can change these.
+ *
+ * Collapsing the two into "blocked" would leave a user with nothing to act
+ * on, which is why this is carried all the way to the UI.
+ */
+export type AiRefusalSource = "assistantPolicy" | "mcpGrants";
+
+/**
+ * Where one step has got to.
+ *
+ * `blocked` and `awaitingApproval` are the two that stop a run, and they are
+ * different things: `blocked` means a permission layer refuses the tool and
+ * nothing was dispatched, `awaitingApproval` means it resolved to `ask` and
+ * the user has to approve it. `skipped` is not a failure — it is a step that
+ * names no tool, so there was never anything for the harness to run.
+ */
+export type AiPlanStepStatus =
+  | "pending"
+  | "blocked"
+  | "awaitingApproval"
+  | "running"
+  | "done"
+  | "skipped"
+  | "failed";
+
+/** Which permission layer refuses a step, and the reason it gave. */
+export interface AiPlanStepRefusal {
+  source: AiRefusalSource;
+  reason: string;
+}
+
+/**
+ * One step of a plan.
+ *
+ * `id`, `index`, `status`, `result` and `refusal` are written by the harness;
+ * the model supplies only `title`, `detail`, `tool` and `arguments`. A step
+ * with no `tool` is the user's own to carry out.
+ */
+export interface AiPlanStep {
+  id: string;
+  /** Position in the plan, **zero-based**. Steps run in this order. */
+  index: number;
+  title: string;
+  detail: string;
+  tool?: string | null;
+  arguments?: Record<string, unknown> | null;
+  status: AiPlanStepStatus;
+  /** Bounded excerpt of the outcome: output, failure, or why approval is asked. */
+  result?: string | null;
+  refusal?: AiPlanStepRefusal | null;
+}
+
+/**
+ * Where the plan as a whole has got to.
+ *
+ * `draft` is the one that must not look runnable: nothing can run until the
+ * user approves it, and `ai_run_plan`/`ai_run_plan_step` refuse a draft
+ * outright.
+ */
+export type AiPlanStatus =
+  "draft" | "approved" | "running" | "paused" | "done" | "failed" | "cancelled";
+
+/** A plan: one per conversation, held in memory and lost on restart. */
+export interface AiPlan {
+  id: string;
+  conversationId: string;
+  title: string;
+  status: AiPlanStatus;
+  steps: AiPlanStep[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+/**
+ * Prefix of the tool-call id a plan step is approved under.
+ *
+ * `bc_ai_agent::plan::PLAN_STEP_TOOL_CALL_PREFIX`. A step that resolves to
+ * `ask` is approved through the **existing** `ai_approve_tool_call` command,
+ * which recognises this prefix and routes the approval to the step rather than
+ * to a pending tool call in the transcript — there is no second approval
+ * command. See `planStepToolCallId`, which is the only thing that should build
+ * one of these.
+ */
+export const AI_PLAN_STEP_TOOL_CALL_PREFIX = "plan-step-";
+
+// ─── Run summaries ─────────────────────────────────────────────────────────
+
+/** How one tool call in a run came out. */
+export type AiRunToolOutcome = "ok" | "failed" | "denied" | "notRun";
+
+/** One tool the run dispatched, or tried to. */
+export interface AiRunToolRun {
+  tool: string;
+  /** The step it belongs to, in the plan's own zero-based numbering. */
+  stepIndex: number;
+  outcome: AiRunToolOutcome;
+}
+
+/** One refusal the run hit, with the layer that produced it. */
+export interface AiRunRefusal {
+  tool: string;
+  source: AiRefusalSource;
+  reason: string;
+}
+
+/** How many steps ended in each state. */
+export interface AiRunStepTotals {
+  done: number;
+  blocked: number;
+  failed: number;
+  skipped: number;
+  pending: number;
+}
+
+/**
+ * What a finished run did, as `ai_get_run_summary` reports it.
+ *
+ * **The fields are not all the same kind of claim, and a UI must not render
+ * them as though they were.** Everything but {@link narrative} is derived by
+ * the harness from what it actually dispatched: the totals, the tool list, the
+ * refusals and the two mutation fields are the record. {@link narrative} is
+ * prose written by the model, which did not execute anything and cannot
+ * observe the gate — so a recap of a change that never happened is a thing it
+ * can produce, and presenting the two together as one block is what would make
+ * that read as fact.
+ *
+ * {@link mutatingToolsRun} and {@link anyChangeAttempted} are the answer to
+ * "what did you just change in my account", which is why they lead.
+ */
+export interface AiRunSummary {
+  /**
+   * The plan this run belongs to.
+   *
+   * Nothing in the UI may be keyed off this being present: the harness is
+   * being extended to account for tool calls the model makes outside a plan,
+   * and this becomes `null` for those. Treat it as an identifier to carry, not
+   * as evidence that a plan exists.
+   */
+  planId: string | null;
+  /**
+   * The plan's label, as the model proposed it.
+   *
+   * A caption, not a claim: nothing about what happened is read from it. It
+   * is the one string here the model chose, and it is bounded and
+   * control-character-free like every other plan string.
+   */
+  title: string;
+  /**
+   * When the user approved the plan — or when the first step settled, if the
+   * record had to be opened without an approval to observe. Never `null`: a
+   * record only exists once there is a run to record.
+   */
+  startedAt: string;
+  /**
+   * When the run reached `done`, `failed` or `cancelled`. `null` while the
+   * plan is still approved, running or paused.
+   */
+  finishedAt: string | null;
+  stepTotals: AiRunStepTotals;
+  /** One entry per recorded step that named a tool, in plan order. */
+  toolRuns: AiRunToolRun[];
+  refusals: AiRunRefusal[];
+  /**
+   * Write tools the harness **dispatched**, deduplicated, in plan order.
+   *
+   * Dispatched, not succeeded: a write that returned an error can still have
+   * landed, so omitting it would be the dangerous direction to be wrong in. A
+   * tool a permission layer refused never left the harness and is absent.
+   * "Write" is the MCP registry's own effect tier, never guessed from a name.
+   */
+  mutatingToolsRun: string[];
+  /**
+   * Whether anything could have changed: a write tool was dispatched, or one
+   * is still in flight.
+   *
+   * The in-flight half is why this is not `mutatingToolsRun.length > 0`.
+   * Cancelling a plan does not abort a call already in flight, so there is a
+   * window with a write outstanding and no outcome recorded, and answering
+   * "no" in it would be a false all-clear.
+   */
+  anyChangeAttempted: boolean;
+  /**
+   * Model-written prose. **Derived from nothing** — no field above reads it,
+   * and the model can write no field above.
+   *
+   * An explicit `null`, never an absent key: serde puts no
+   * `skip_serializing_if` on it, nor on {@link finishedAt}. It is also
+   * **dropped whenever another step settles**, because prose written before
+   * the latest outcome describes a run that has moved on — so it must not be
+   * cached across a re-read.
+   */
+  narrative: string | null;
+}
+
+// ─── Links ─────────────────────────────────────────────────────────────────
+
+/**
+ * What kind of place a link points at, and therefore how `target` reads.
+ *
+ * Mirrors Rust `AiLinkKind` (`bc-ai-agent/src/links.rs`). There is
+ * deliberately no "some other string" kind:
+ *
+ * - `zone` is an **opaque id** — letters, digits, `-` and `_` only, 1-64
+ *   bytes, so it cannot express a path, a scheme or an escape.
+ * - `record` is `"<zoneId>/<recordId>"`: two such ids joined by exactly one
+ *   `/`, which is the only structural byte admitted and only in that one
+ *   position. Each half is bounded separately, so the whole target can be 129
+ *   bytes.
+ * - `zoneTab` is `"<zoneId>/<tab>"`, parsed the same way, except that the tab
+ *   half is checked against a **closed set** of view names rather than a
+ *   charset. `domain-registry` is one of these and `registry` is a
+ *   `workspace`; they are different screens, and the two sets are disjoint.
+ * - `domainRegistry` is a bare hostname, normalised and validated by the same
+ *   function `dns_check_registration` validates its argument with.
+ * - `workspace` is one of the app's own workspace ids, from a closed set.
+ * - `external` is an absolute `https:` URL with no credentials.
+ *
+ * That backend validation is necessary and **not sufficient** on the
+ * renderer's side: see `resolveAiLink`, which re-checks every target against
+ * the same closed sets before it reaches a navigation call, so a backend
+ * change cannot turn into a renderer navigation bug.
+ */
+export type AiLinkKind =
+  "zone" | "record" | "zoneTab" | "domainRegistry" | "workspace" | "external";
+
+/**
+ * A place the assistant is pointing at, read with `ai_get_links`.
+ *
+ * Links belong to the **conversation**, not to a plan, a step or a run: the
+ * model offers a set through its own `link_offer` tool and each offer replaces
+ * the last, so an offer is "where to look now" rather than a growing list.
+ *
+ * `label` is model-written display text. `target` is validated per
+ * {@link AiLinkKind} and must still go through `resolveAiLink` before it is
+ * used for anything.
+ */
+export interface AiLink {
+  kind: AiLinkKind;
+  label: string;
+  target: string;
+}
 
 // ─── Presets ───────────────────────────────────────────────────────────────
 

@@ -189,10 +189,35 @@ export function useAiProviders() {
 
 // ─── Agent config hooks ────────────────────────────────────────────────────
 
-/** Read and update agent configuration. */
+/**
+ * Bumped by every successful `ai_set_config`, so that instances of
+ * {@link useAiConfig} in different component trees cannot disagree.
+ *
+ * There are two now: the assistant surface reads the config for its tool
+ * posture and its default provider, and the settings screen — which lives in
+ * the workspace's own Settings workspace, not inside the assistant — writes
+ * it. They share no parent, so without this a user could turn tool use off in
+ * Settings and have the open assistant keep reporting it on until something
+ * remounted.
+ *
+ * A module-level counter rather than a shared store, deliberately: the backend
+ * remains the single source of the config, each instance re-*reads* it, and
+ * nothing here caches a value one component wrote for another to trust. It is
+ * the same arrangement `useToast` uses for a different reason, and it adds no
+ * second persistence path.
+ */
+let agentConfigRevision = 0;
+const agentConfigListeners = new Set<(revision: number) => void>();
+
+function announceAgentConfigWrite(): void {
+  agentConfigRevision += 1;
+  for (const listener of agentConfigListeners) listener(agentConfigRevision);
+}
+
 export function useAiConfig() {
   const available = isDesktop();
   const [config, setConfig] = useState<AgentConfig | null>(null);
+  const [revision, setRevision] = useState(agentConfigRevision);
   const mountedRef = useMountedRef();
   const refreshVersionRef = useRef(0);
 
@@ -206,16 +231,30 @@ export function useAiConfig() {
   }, [available, mountedRef]);
 
   useEffect(() => {
+    agentConfigListeners.add(setRevision);
+    return () => {
+      agentConfigListeners.delete(setRevision);
+    };
+  }, []);
+
+  useEffect(() => {
     void refresh().catch((error) =>
       reportAiFailure(error, "Refresh AI configuration"),
     );
-  }, [refresh]);
+    // `revision` is a trigger, not a value this reads: another instance has
+    // written the config and this one's copy is stale.
+  }, [refresh, revision]);
 
   const update = useCallback(
     async (newConfig: AgentConfig) => {
       if (!available) return;
       await TauriClient.aiSetConfig(newConfig);
+      // The local copy first, so the form it was typed in does not blink
+      // through a round trip, then every instance — this one included —
+      // re-reads. Reading back is the more correct of the two: the backend
+      // normalizes, so what was stored is not necessarily what was sent.
       if (mountedRef.current) setConfig(newConfig);
+      announceAgentConfigWrite();
     },
     [available, mountedRef],
   );

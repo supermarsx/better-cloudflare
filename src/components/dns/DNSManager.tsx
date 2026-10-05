@@ -80,7 +80,11 @@ import { ImportExportDialog } from "./ImportExportDialog";
 import { RecordRow } from "./RecordRow";
 import { SpecialIpAuditFindings } from "./SpecialIpAuditFindings";
 import { NotificationsPanel } from "./NotificationsPanel";
-import { AiAssistantPanel } from "@/components/ai/AiAssistantPanel";
+import {
+  AiAssistantPanel,
+  type AiSettingsSection,
+} from "@/components/ai/AiAssistantPanel";
+import { ConnectedAiSettingsPanel } from "@/components/ai/AiSettingsPanel";
 import {
   AiAssistantRelocatedNotice,
   AiAssistantSurface,
@@ -91,6 +95,7 @@ import {
   isAiAssistantPresentation,
   type AiAssistantPresentation,
 } from "@/lib/ai/presentation";
+import type { AiLinkNavigation, AiZoneTabTarget } from "@/lib/ai/links";
 import { toastAllowed } from "@/lib/notifications/notification-settings";
 import { parseCSVRecords, parseBINDZone } from "@/lib/dns/dns-parsers";
 import {
@@ -154,7 +159,10 @@ import {
   RequestError,
 } from "@/lib/api/request-error";
 import { AuthenticatedAppShell } from "@/components/layout/AuthenticatedAppShell";
-import { DnsAppCommandBar } from "./DnsAppCommandBar";
+import {
+  DnsAppCommandBar,
+  type AssistantCommandControl,
+} from "./DnsAppCommandBar";
 import { DnsConnectionBar } from "./DnsConnectionBar";
 import {
   McpToolPermissions,
@@ -429,7 +437,13 @@ type TabKind =
 type SortKey = "type" | "name" | "content" | "ttl" | "proxied";
 type SortDir = "asc" | "desc" | null;
 type SettingsSubtab =
-  "general" | "columns" | "topology" | "audit" | "mcp" | "profiles";
+  | "general"
+  | "columns"
+  | "topology"
+  | "audit"
+  | "mcp"
+  | "assistant"
+  | "profiles";
 type ExportFolderPreset =
   "system" | "documents" | "downloads" | "desktop" | "custom";
 type TopologyResolverMode = "dns" | "doh";
@@ -1560,6 +1574,15 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   ] = useState(storageManager.getAuditExportSkipDestinationConfirm());
   const [settingsSubtab, setSettingsSubtab] =
     useState<SettingsSubtab>("general");
+  /**
+   * Which section the Assistant settings panel shows.
+   *
+   * Held here rather than inside the panel so that a pointer from elsewhere
+   * can deep-link into one — see `openAssistantSettings`. Kept across subtab
+   * switches, like the rest of this screen's state.
+   */
+  const [assistantSettingsSection, setAssistantSettingsSection] =
+    useState<AiSettingsSection>("providers");
   const [sessionSettingsProfiles, setSessionSettingsProfiles] = useState<
     Record<string, SessionSettingsProfile>
   >(storageManager.getSessionSettingsProfiles());
@@ -2827,34 +2850,87 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   }, [assistantPresentation, openActionTab]);
 
   /**
-   * Moving the assistant *from inside the assistant*.
+   * Show or hide the dock or the bubble — the command bar's control.
    *
-   * Deliberately not the same as the Session settings radio group, which leaves
-   * the assistant closed ("moving it should not also pop it open" — the user is
-   * looking at a settings tab there, not at the assistant). Here the user *is*
-   * looking at the assistant, so the one thing this must not do is make it
-   * vanish: the dock and the bubble stay open, and switching to the workspace
-   * tab opens that tab, because otherwise the control the user just used would
-   * disappear along with everything around it.
+   * Separate from {@link revealAssistant} rather than replacing it, because
+   * the two are different acts: revealing is what the assistant tab's
+   * relocation pointer means ("the assistant is over there, take me to it"),
+   * and that one must never close anything. Overloading reveal for both is
+   * what left the dock with no way to be dismissed from the chrome, and left
+   * the chrome unable to say whether the dock was open at all.
    *
-   * Only one assistant is ever mounted either way, and not because of anything
-   * here: `AiAssistantSurface` renders nothing for `panel`, and the assistant
-   * tab renders `AiAssistantRelocatedNotice` instead of a second panel for
-   * anything else. The two conditions are complements, so there is no ordering
-   * in which both appear.
+   * In `panel` placement there is nothing to toggle — a workspace tab is not
+   * un-activated — so this falls through to revealing the tab. The command bar
+   * is told which of the two it is and renders a toggle only for the dock and
+   * the bubble, so that branch is a guard rather than a path a user reaches.
    */
-  const handleAssistantPresentationChange = useCallback(
+  const toggleAssistant = useCallback(() => {
+    if (assistantPresentation === "panel") {
+      openActionTab("assistant");
+      return;
+    }
+    setAssistantOpen((open) => !open);
+  }, [assistantPresentation, openActionTab]);
+
+  /**
+   * What the command bar's assistant control is, which placement decides.
+   *
+   * Passed as state rather than left for the command bar to infer: only the
+   * dock and the bubble can honestly report a pressed state, and the bar
+   * should not have to know why.
+   */
+  const assistantCommandControl = useMemo<AssistantCommandControl>(
+    () =>
+      assistantPresentation === "panel"
+        ? { mode: "reveal" }
+        : {
+            mode: "toggle",
+            surface: assistantPresentation,
+            open: assistantOpen,
+          },
+    [assistantOpen, assistantPresentation],
+  );
+
+  /**
+   * Moving the assistant from the **Session settings** radio group.
+   *
+   * This used to close the surface unconditionally, on the reasoning that
+   * "moving the assistant should not also pop it open". That reasoning was
+   * wrong in both directions and it is the bug this replaces: `assistantOpen`
+   * starts `false`, and `AiAssistantSurface` renders the dock as an `<aside
+   * hidden>` with no panel inside until it has been opened once — so choosing
+   * "Docked sidebar" here wrote the preference, closed the surface, and showed
+   * nothing. A user who never found the command-bar button saw the setting do
+   * nothing, permanently. It also closed a dock or bubble that was *already*
+   * open, which is not moving the assistant, it is dismissing it.
+   *
+   * So: the dock and the bubble are **shown**. Both appear beside or over the
+   * workspace, so the change is immediately visible without navigating the
+   * user out of the settings tab they are reading.
+   *
+   * The workspace tab is the one placement that cannot be shown from here, and
+   * the half of the original reasoning that was sound is kept for it:
+   * `openActionTab` would navigate someone out of Session settings because
+   * they touched a radio, which is hostile. The surface closes and the
+   * confirmation says where the assistant went instead, so its absence is
+   * explained rather than mysterious.
+   */
+  const chooseAssistantPlacement = useCallback(
     (next: AiAssistantPresentation) => {
       setAssistantPresentation(next);
-      if (next === "panel") {
-        setAssistantOpen(false);
-        openActionTab("assistant");
-      } else {
-        setAssistantOpen(true);
-      }
-      notifySaved(assistantPlacementLabels[next].saved);
+      // Never closes an open dock or bubble: for those two, "moved" means
+      // "still here, in its new shape".
+      setAssistantOpen(next !== "panel");
+      notifySaved(
+        next === "panel"
+          ? t(
+              "Assistant opens as a workspace tab. Use the Assistant button in the toolbar to open it.",
+              "Assistant opens as a workspace tab. Use the Assistant button in the toolbar to open it.",
+            )
+          : assistantPlacementLabels[next].saved,
+      );
     },
-    [assistantPlacementLabels, notifySaved, openActionTab],
+    [assistantPlacementLabels, notifySaved, t],
   );
 
   /**
@@ -3002,6 +3078,89 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       });
     }
   }, [activeTab, revealRecord, t, toast]);
+
+  /**
+   * "Open the app's MCP tool permissions" from a blocked assistant plan step.
+   *
+   * The assistant's own tool policy is one of the two layers that can refuse a
+   * step; this is the other, and nothing under `ai_*` can change it. So the
+   * assistant points here, and "here" is the Session settings tab on its MCP
+   * section — the same `openActionTab`/`setSettingsSubtab` pair the settings
+   * nav uses, rather than a second route to the same screen.
+   */
+  const openMcpToolPermissions = useCallback(() => {
+    setSettingsSubtab("mcp");
+    openActionTab("settings");
+  }, [openActionTab]);
+
+  /**
+   * The assistant's own settings, which live here rather than inside the
+   * assistant.
+   *
+   * `assistantSettingsSection` is held by this component so that a pointer
+   * from elsewhere can deep-link to a section — a blocked plan step says which
+   * permission layer refuses it, and for the assistant's own policy that means
+   * landing the user on Tools & permissions rather than describing where to
+   * find it. Reached through the same `openActionTab`/subtab pair the settings
+   * nav uses, so there is no second route to the same screen.
+   */
+  const openAssistantSettings = useCallback(
+    (section: AiSettingsSection) => {
+      setAssistantSettingsSection(section);
+      setSettingsSubtab("assistant");
+      openActionTab("settings");
+    },
+    [openActionTab],
+  );
+
+  /**
+   * How the assistant follows a link it offers.
+   *
+   * Every entry is a callback the workspace already had: `openZoneTab` is the
+   * zone picker's, `revealNotificationRecord` is the inbox's "Go to record",
+   * `openRegistryForDomain` is the expiry notice's "Check registration", and
+   * `openActionTab` is the tab opener those two are themselves built on. There
+   * is deliberately no new navigation path here — a link from a model must not
+   * reach anywhere the user's own controls cannot.
+   *
+   * `knownZoneIds` is the closed set the `zone` kind, and the zone half of a
+   * `record` target, are checked against *in the renderer*, on top of whatever
+   * the backend validated: a well-formed id for somebody else's zone is not
+   * something this account can open. Until the zone list has loaded it is
+   * empty, so both kinds offer no control rather than one that cannot work.
+   */
+  /**
+   * Open a zone on one of its own views.
+   *
+   * The order is load-bearing: `openZoneTab` resets the view to records, so
+   * choosing the tab first would be undone by the thing that opened it.
+   */
+  const openZoneAtTab = useCallback(
+    (zoneId: string, tab: AiZoneTabTarget) => {
+      openZoneTab(zoneId);
+      setActionTab(tab);
+    },
+    [openZoneTab],
+  );
+
+  const assistantLinkNavigation = useMemo<AiLinkNavigation>(
+    () => ({
+      knownZoneIds: availableZones.map((zone) => zone.id),
+      openZone: openZoneTab,
+      revealRecord: revealNotificationRecord,
+      openZoneTab: openZoneAtTab,
+      openDomainRegistry: openRegistryForDomain,
+      openWorkspace: openActionTab,
+    }),
+    [
+      availableZones,
+      openActionTab,
+      openRegistryForDomain,
+      openZoneAtTab,
+      openZoneTab,
+      revealNotificationRecord,
+    ],
+  );
 
   const loadZones = useCallback(
     async (signal?: AbortSignal) => {
@@ -6899,7 +7058,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
           presentation={assistantPresentation}
           open={assistantOpen}
           onOpenChange={setAssistantOpen}
-          onPresentationChange={handleAssistantPresentationChange}
+          onOpenMcpPermissions={openMcpToolPermissions}
+          onOpenAssistantSettings={openAssistantSettings}
+          linkNavigation={assistantLinkNavigation}
         />
       }
       commandBar={
@@ -6919,6 +7080,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
           onOpenNotifications={() => openActionTab("notifications")}
           showAssistant={isDesktop()}
           onOpenAssistant={revealAssistant}
+          onToggleAssistant={toggleAssistant}
+          assistantControl={assistantCommandControl}
           onOpenAudit={() => openActionTab("audit")}
           onOpenRegistry={() => openActionTab("registry")}
           onOpenSettings={() => openActionTab("settings")}
@@ -10413,7 +10576,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                 (assistantPresentation === "panel" ? (
                   <AiAssistantPanel
                     presentation="panel"
-                    onPresentationChange={handleAssistantPresentationChange}
+                    onOpenMcpPermissions={openMcpToolPermissions}
+                    onOpenAssistantSettings={openAssistantSettings}
+                    linkNavigation={assistantLinkNavigation}
                   />
                 ) : (
                   // The tab can still be open — restored from
@@ -10477,6 +10642,15 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                       >
                         {t("MCP", "MCP")}
                       </button>
+                      {isDesktop() ? (
+                        <button
+                          onClick={() => setSettingsSubtab("assistant")}
+                          data-active={settingsSubtab === "assistant"}
+                          className="ui-segment"
+                        >
+                          {t("Assistant", "Assistant")}
+                        </button>
+                      ) : null}
                       <button
                         onClick={() => setSettingsSubtab("profiles")}
                         data-active={settingsSubtab === "profiles"}
@@ -10837,16 +11011,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                   className="checkbox-themed mt-1 shrink-0"
                                   value={option}
                                   checked={assistantPresentation === option}
-                                  onChange={() => {
-                                    setAssistantPresentation(option);
-                                    // Moving the assistant should not also
-                                    // pop it open; the command-bar button and
-                                    // the tab's pointer both still do that.
-                                    setAssistantOpen(false);
-                                    notifySaved(
-                                      assistantPlacementLabels[option].saved,
-                                    );
-                                  }}
+                                  onChange={() =>
+                                    chooseAssistantPlacement(option)
+                                  }
                                 />
                                 <span className="min-w-0 flex-1">
                                   <span className="block">
@@ -12360,6 +12527,23 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             )}
                           </>
                         )}
+                      </div>
+                    )}
+                    {/* The assistant's settings. Desktop only, like every
+                        `ai_*` command, and mounted only while this section is
+                        open so that an install that never opens it never
+                        issues one. It is the same `AiSettingsPanel` the
+                        assistant used to render behind its own Chat/Settings
+                        switch — re-hosted, not rebuilt. */}
+                    {settingsSubtab === "assistant" && isDesktop() && (
+                      <div
+                        className="min-w-0"
+                        data-testid="assistant-settings-host"
+                      >
+                        <ConnectedAiSettingsPanel
+                          section={assistantSettingsSection}
+                          onSectionChange={setAssistantSettingsSection}
+                        />
                       </div>
                     )}
                     {settingsSubtab === "profiles" && (

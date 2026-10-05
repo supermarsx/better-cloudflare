@@ -30,13 +30,21 @@ import type {
   AgentConfig,
   AgentEvent,
   AiPermissionsSnapshot,
+  AiPlan,
   AiProviderProfile,
   AiProviderProfileInput,
+  AiRunSummary,
   AiToolAvailability,
   ChatMessage,
   Conversation,
   ConversationMeta,
 } from "../src/types/ai";
+
+import { useEnglishLocale } from "./i18n-ready";
+import {
+  chooseThemedSelectValue,
+  enableThemedSelectEnvironment,
+} from "./radix-select";
 
 const CREATED = "2026-08-25T10:00:00Z";
 
@@ -96,6 +104,12 @@ interface BackendOptions {
   availability?: Partial<AiToolAvailability>;
   /** Holds `ai_get_permissions` unresolved, to observe the unloaded state. */
   stallPermissions?: boolean;
+  /** What `ai_get_plan` answers. `null`, the default, is "no plan". */
+  plan?: AiPlan | null;
+  /** What `ai_get_run_summary` answers once the plan is terminal. */
+  runSummary?: AiRunSummary | null;
+  /** The permission mode the snapshot reports. */
+  mode?: AiPermissionsSnapshot["mode"];
 }
 
 /** A provider profile as `ai_list_providers` reports one — never with a key. */
@@ -266,11 +280,26 @@ function installBackend(options: BackendOptions = {}): Backend {
     "aiExportConversation",
     record("aiExportConversation", () => '{"id":"conv-1"}'),
   );
+  // The plan, and the run record the plan asks for once it is terminal.
+  // `null` for both is "this conversation has no plan", which is what makes
+  // the plan section render nothing.
+  mock.method(
+    TauriClient,
+    "aiGetPlan",
+    record("aiGetPlan", () => options.plan ?? null),
+  );
+  mock.method(
+    TauriClient,
+    "aiGetRunSummary",
+    record("aiGetRunSummary", () => options.runSummary ?? null),
+  );
   // The chat view reads this only while tool use is on, which is what lets a
   // test assert that an assistant with tools off never asks for it.
   const permissions: AiPermissionsSnapshot = {
-    mode: "ask",
-    tools: {},
+    mode: options.mode ?? "ask",
+    // A stored per-tool override, so a mode change can be shown to carry it
+    // through rather than quietly clearing it.
+    tools: { dns_delete_record: "deny" },
     catalog: [],
     availability: {
       dispatchAvailable: true,
@@ -288,6 +317,15 @@ function installBackend(options: BackendOptions = {}): Backend {
     // the notice must say nothing at all rather than guess a zero.
     if (options.stallPermissions) await new Promise(() => {});
     return permissions;
+  });
+  mock.method(TauriClient, "aiSetPermissions", async (...args: unknown[]) => {
+    calls.push({ name: "aiSetPermissions", args });
+    if (failures.has("aiSetPermissions"))
+      throw failures.get("aiSetPermissions");
+    const next = args[0] as AiPermissionsSnapshot;
+    permissions.mode = next.mode;
+    permissions.tools = next.tools;
+    return { mode: next.mode, tools: next.tools };
   });
   mock.method(TauriClient, "onAiEvent", async (next: unknown) => {
     calls.push({ name: "onAiEvent", args: [] });
@@ -330,8 +368,12 @@ function assertAbsent(node: Element | null, label: string): void {
   assert.ok(node === null, `expected no ${label}`);
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   (window as unknown as { __TAURI__?: unknown }).__TAURI__ = {};
+  await useEnglishLocale();
+  // The mode dropdown is a Radix select; opening one needs the two jsdom gaps
+  // this installs. See `test/radix-select.ts`.
+  enableThemedSelectEnvironment();
 });
 
 afterEach(() => {
@@ -556,55 +598,6 @@ test("an approval request is read-only and offers no way to approve it", async (
   );
 });
 
-test("the tool-use toggle writes agent config through the panel", async () => {
-  const harness = installBackend();
-  render(<AiAssistantPanel initialView="settings" />);
-
-  // The toggle lives in Tools & permissions, next to the policy it governs,
-  // rather than being duplicated into the Providers section.
-  fireEvent.click(
-    within(
-      await screen.findByRole("toolbar", {
-        name: "Assistant settings sections",
-      }),
-    ).getByRole("button", { name: "Tools & permissions" }),
-  );
-
-  const toggle = await screen.findByRole("switch", { name: "Tool use" });
-  assert.equal(toggle.getAttribute("aria-checked"), "false");
-  // It used to be `disabled`, because nothing in the renderer wrote
-  // `toolsEnabled` once the chat view's opt-out button went with the gate it
-  // belonged to — which left tool use on by default and unreachable. This is
-  // the control now, so the write is pinned end to end rather than the
-  // read-only-ness.
-  assert.equal((toggle as HTMLButtonElement).disabled, false);
-
-  await act(async () => {
-    fireEvent.click(toggle);
-  });
-
-  const writes = harness.calls.filter((call) => call.name === "aiSetConfig");
-  assert.equal(writes.length, 1);
-  assert.equal(
-    (writes[0].args[0] as AgentConfig).toolsEnabled,
-    true,
-    "the switch must store the new value, not merely re-send the old config",
-  );
-  // The whole config goes with it: `ai_set_config` replaces the stored
-  // document, so a partial write would reset the other sections' settings.
-  assert.equal((writes[0].args[0] as AgentConfig).maxToolRounds, 8);
-  assert.equal(
-    await screen
-      .findByRole("switch", { name: "Tool use" })
-      .then((node) => node.getAttribute("aria-checked")),
-    "true",
-  );
-  assert.doesNotMatch(
-    document.body.textContent ?? "",
-    /unavailable in this build/,
-  );
-});
-
 // ── Streaming ──────────────────────────────────────────────────────────────
 
 test("streamed deltas render provisionally and are replaced on turnComplete", async () => {
@@ -796,113 +789,6 @@ test("a failed tool result renders as an error chip, not a crash", async () => {
   assert.match(chip.textContent ?? "", /Tool dispatch denied/);
 });
 
-// ── Provider configuration and the session-only key ────────────────────────
-
-test("the provider form states the session-only rule and never reveals the key", async () => {
-  const backend = installBackend();
-  render(<AiAssistantPanel initialView="settings" />);
-  await screen.findByTestId("ai-settings");
-
-  fireEvent.click(
-    await screen.findByRole("button", { name: "Add a provider" }),
-  );
-
-  // Required copy from the plan; the only mitigation for a key that silently
-  // vanishes on restart.
-  assert.ok(
-    screen.getByText(
-      "Stored in memory for this session only. You will need to re-enter it after restarting the app.",
-    ),
-  );
-
-  const key = screen.getByLabelText("API key") as HTMLInputElement;
-  assert.equal(key.type, "password");
-  // No reveal toggle: unlike the login field, this key is never shown back.
-  for (const button of screen.getAllByRole("button")) {
-    const name = `${button.textContent ?? ""} ${button.getAttribute("aria-label") ?? ""}`;
-    assert.doesNotMatch(name, /show|reveal/i);
-  }
-
-  fireEvent.change(key, { target: { value: "sk-secret-value" } });
-  fireEvent.change(screen.getByLabelText("Name"), {
-    target: { value: "OpenAI" },
-  });
-  fireEvent.change(screen.getByLabelText("Model"), {
-    target: { value: "gpt-4o-mini" },
-  });
-  fireEvent.click(screen.getByRole("button", { name: "Save and verify" }));
-
-  await waitFor(() =>
-    assert.equal(named(backend, "aiConfigureProvider").length, 1),
-  );
-  const [sent] = named(backend, "aiConfigureProvider")[0].args as [
-    AiProviderProfileInput,
-  ];
-  // The shape Rust actually deserializes: a lowercase protocol, a label, and
-  // required model / temperature / maxTokens. No `kind`, and no invented
-  // `orgId`.
-  assert.equal(sent.protocol, "openai");
-  assert.equal(sent.label, "OpenAI");
-  assert.equal(sent.model, "gpt-4o-mini");
-  assert.equal(typeof sent.temperature, "number");
-  assert.equal(typeof sent.maxTokens, "number");
-  assert.equal(sent.apiKey, "sk-secret-value");
-  assert.ok(!("orgId" in sent));
-  assert.ok(!("kind" in sent));
-
-  // Saving is also the verification, so there is no separate Test button.
-  assertAbsent(
-    screen.queryByRole("button", { name: /^test/i }),
-    "separate Test button",
-  );
-
-  // The key is gone from the page once it has been handed over: the editor
-  // closes, and the only thing shown about the credential is that one exists.
-  await waitFor(() =>
-    assertAbsent(screen.queryByTestId("ai-provider-editor"), "provider editor"),
-  );
-  assert.doesNotMatch(document.body.textContent ?? "", /sk-secret-value/);
-  const row = await screen.findByTestId("ai-provider-row");
-  assert.equal(row.getAttribute("data-has-key"), "true");
-  assert.match(row.textContent ?? "", /Key set/);
-});
-
-test("a rejected provider config surfaces the backend message and remediation", async () => {
-  const backend = installBackend();
-  backend.failures.set("aiConfigureProvider", {
-    code: "AI_PROVIDER_UNAUTHORIZED",
-    message: "The provider rejected the credentials.",
-    source: "provider",
-    operation: "ai:configure_provider",
-    retryable: false,
-    details: { status: 401, remediation: "Check the API key and try again." },
-  });
-  render(<AiAssistantPanel initialView="settings" />);
-  await screen.findByTestId("ai-settings");
-
-  fireEvent.click(
-    await screen.findByRole("button", { name: "Add a provider" }),
-  );
-  fireEvent.change(screen.getByLabelText("API key"), {
-    target: { value: "sk-wrong" },
-  });
-  fireEvent.change(screen.getByLabelText("Name"), {
-    target: { value: "OpenAI" },
-  });
-  fireEvent.change(screen.getByLabelText("Model"), {
-    target: { value: "gpt-4o-mini" },
-  });
-  fireEvent.click(screen.getByRole("button", { name: "Save and verify" }));
-
-  const alert = await screen.findByText(
-    "The provider rejected the credentials.",
-  );
-  assert.ok(alert);
-  assert.ok(screen.getByText("Check the API key and try again."));
-  // A failed attempt must not leak the submitted secret into the page.
-  assert.doesNotMatch(document.body.textContent ?? "", /sk-wrong/);
-});
-
 // ── Conversations, export, and accessible names ────────────────────────────
 
 test("a conversation can be created from a configured provider and deleted", async () => {
@@ -1015,32 +901,6 @@ test("every icon-only control in the panel is announced by name", async () => {
   assert.ok(await screen.findByRole("button", { name: "Stop generating" }));
 });
 
-test("the segmented toolbar swaps the chat view for the settings view", async () => {
-  installBackend({ conversations: [conversationMeta()] });
-  render(<AiAssistantPanel />);
-  await screen.findByTestId("ai-transcript");
-
-  const toolbar = screen.getByRole("toolbar", { name: "Assistant views" });
-  const settings = within(toolbar).getByRole("button", { name: "Settings" });
-  assert.equal(settings.getAttribute("aria-pressed"), "false");
-
-  fireEvent.click(settings);
-  await screen.findByTestId("ai-settings");
-  assertAbsent(
-    screen.queryByTestId("ai-transcript"),
-    "transcript in settings view",
-  );
-  assert.equal(
-    within(toolbar)
-      .getByRole("button", { name: "Settings" })
-      .getAttribute("aria-pressed"),
-    "true",
-  );
-
-  fireEvent.click(within(toolbar).getByRole("button", { name: "Chat" }));
-  await screen.findByTestId("ai-transcript");
-});
-
 test("an empty conversation list explains what to do next", async () => {
   installBackend({ conversations: [], conversation: null });
   render(<AiAssistantPanel />);
@@ -1052,4 +912,568 @@ test("an empty conversation list explains what to do next", async () => {
       "Configure a provider in Settings to start a conversation.",
     ),
   );
+});
+
+// ── The plan, where it mounts and what it reaches ──────────────────────────
+
+/** A plan as `ai_get_plan` answers one, blocked by the assistant's own policy. */
+function blockedPlan(): AiPlan {
+  return {
+    id: "plan-1",
+    conversationId: "conv-1",
+    title: "Fix the mail records",
+    status: "draft",
+    steps: [
+      {
+        id: "11111111-2222-3333-4444-555555555555",
+        index: 0,
+        title: "Create the SPF record",
+        detail: "A TXT record at the apex.",
+        tool: "dns_create_record",
+        status: "blocked",
+        refusal: {
+          source: "assistantPolicy",
+          reason: "dns_create_record is denied in read-only mode",
+        },
+      },
+    ],
+    createdAt: CREATED,
+    updatedAt: CREATED,
+  };
+}
+
+test("a conversation with no plan adds no plan section to the panel", async () => {
+  installBackend({ conversations: [conversationMeta()] });
+  render(<AiAssistantPanel />);
+  await screen.findByTestId("ai-transcript");
+
+  // The dock and the bubble have no height to spare, so "no plan" has to cost
+  // nothing rather than render an empty frame.
+  assertAbsent(screen.queryByTestId("ai-plan"), "plan section with no plan");
+  assertAbsent(screen.queryByTestId("ai-link-list"), "link list with no links");
+});
+
+test("the plan renders in the workspace tab, above the transcript", async () => {
+  installBackend({
+    conversations: [conversationMeta()],
+    plan: blockedPlan(),
+  });
+  render(<AiAssistantPanel presentation="panel" />);
+
+  const plan = await screen.findByTestId("ai-plan");
+  assert.equal(plan.dataset.status, "draft");
+  const transcript = screen.getByTestId("ai-transcript");
+  // Above, because the whole point is that a blocked step is visible before
+  // anything is approved, and the transcript grows without bound underneath.
+  assert.ok(
+    plan.compareDocumentPosition(transcript) & Node.DOCUMENT_POSITION_FOLLOWING,
+  );
+});
+
+test("the assistant has no settings view of its own any more", async () => {
+  // They are the "Assistant" section of the app's Settings workspace now, and
+  // this used to be a Chat/Settings view switch inside the panel. A panel
+  // that still rendered them would be a second host for one screen.
+  installBackend({ conversations: [conversationMeta()] });
+  render(<AiAssistantPanel />);
+  await screen.findByTestId("ai-transcript");
+
+  assertAbsent(
+    screen.queryByRole("toolbar", { name: "Assistant views" }),
+    "the Chat/Settings view switch",
+  );
+  assertAbsent(
+    screen.queryByTestId("ai-settings"),
+    "settings inside the panel",
+  );
+  assertAbsent(
+    screen.queryByRole("toolbar", { name: "Assistant settings sections" }),
+    "the settings section nav inside the panel",
+  );
+});
+
+test("a blocked step asks the host for Tools & permissions, by section", async () => {
+  const sections: string[] = [];
+  installBackend({
+    conversations: [conversationMeta()],
+    plan: blockedPlan(),
+  });
+  render(
+    <AiAssistantPanel
+      onOpenAssistantSettings={(section) => sections.push(section)}
+    />,
+  );
+  await screen.findByTestId("ai-plan");
+
+  // The assistant no longer owns that screen, so it names the section it
+  // wants and the host navigates — which is what lands the user on the
+  // control refusing the step rather than on a sentence describing it.
+  fireEvent.click(screen.getByTestId("ai-plan-step-open-assistant-tools"));
+  assert.deepEqual(sections, ["tools"]);
+});
+
+test("with no host for the settings there is no pointer, only the sentence", async () => {
+  installBackend({
+    conversations: [conversationMeta()],
+    plan: blockedPlan(),
+  });
+  render(<AiAssistantPanel />);
+  await screen.findByTestId("ai-plan");
+
+  assert.match(
+    screen.getByTestId("ai-plan-step-refusal").textContent ?? "",
+    /Settings, under Assistant, in Tools & permissions/,
+  );
+  assertAbsent(
+    screen.queryByTestId("ai-plan-step-open-assistant-tools"),
+    "a pointer with no host to navigate",
+  );
+});
+
+test("the MCP screen is offered only when the host owns one", async () => {
+  const mcpBlocked: AiPlan = {
+    ...blockedPlan(),
+    steps: [
+      {
+        ...blockedPlan().steps[0],
+        refusal: { source: "mcpGrants", reason: "not granted" },
+      },
+    ],
+  };
+  installBackend({ conversations: [conversationMeta()], plan: mcpBlocked });
+
+  // No host: the layer is still named, because that sentence is not the
+  // host's to supply.
+  render(<AiAssistantPanel />);
+  const refusal = await screen.findByTestId("ai-plan-step-refusal");
+  assert.match(refusal.textContent ?? "", /app's own MCP tool permissions/);
+  assertAbsent(
+    screen.queryByTestId("ai-plan-step-open-mcp-permissions"),
+    "MCP control with no host wiring",
+  );
+  cleanup();
+
+  const opens: number[] = [];
+  render(<AiAssistantPanel onOpenMcpPermissions={() => opens.push(1)} />);
+  await screen.findByTestId("ai-plan");
+  fireEvent.click(screen.getByTestId("ai-plan-step-open-mcp-permissions"));
+  assert.deepEqual(opens, [1]);
+});
+
+test("the run record appears under the plan once it is terminal", async () => {
+  installBackend({
+    conversations: [conversationMeta()],
+    plan: { ...blockedPlan(), status: "done" },
+    runSummary: {
+      planId: "plan-1",
+      title: "Fix the mail records",
+      startedAt: CREATED,
+      finishedAt: CREATED,
+      stepTotals: { done: 1, blocked: 0, failed: 0, skipped: 0, pending: 0 },
+      toolRuns: [{ tool: "dns_create_record", stepIndex: 0, outcome: "ok" }],
+      refusals: [],
+      mutatingToolsRun: ["dns_create_record"],
+      anyChangeAttempted: true,
+      narrative: "I created the SPF record.",
+    },
+  });
+  render(<AiAssistantPanel />);
+
+  const record = await screen.findByTestId("ai-run-summary");
+  assert.equal(record.dataset.changed, "true");
+  // The harness's record and the model's prose are separate regions, and the
+  // record is the one that comes first.
+  const facts = screen.getByTestId("ai-run-facts");
+  const narrative = screen.getByTestId("ai-run-narrative");
+  assert.ok(!facts.contains(narrative));
+});
+
+test("the links the assistant offers render as controls in the chat view", async () => {
+  const backend = installBackend({ conversations: [conversationMeta()] });
+  mock.method(TauriClient, "aiGetLinks", async () => {
+    backend.calls.push({ name: "aiGetLinks", args: [] });
+    return [
+      { kind: "workspace", label: "Registry", target: "registry" },
+      { kind: "external", label: "Run it", target: "javascript:alert(1)" },
+    ];
+  });
+  render(<AiAssistantPanel />);
+
+  const list = await screen.findByTestId("ai-link-list");
+  assert.equal(list.dataset.context, "conversation");
+  // The workspace link has no host wiring here, so nothing is followable; the
+  // `javascript:` one never resolves at all. Both are counted as dropped.
+  assert.equal(list.dataset.usable, "0");
+  assert.equal(list.dataset.dropped, "2");
+});
+
+// ── The mode, changed from inside the conversation ─────────────────────────
+
+test("the mode dropdown appears only while tool use is on", async () => {
+  installBackend({ conversations: [conversationMeta()] });
+  render(<AiAssistantPanel />);
+  await screen.findByTestId("ai-transcript");
+
+  // With tool use off every tool is denied whatever the mode says, so a mode
+  // control there would imply it decided something. It is also the gate on
+  // the permission read, so nothing is asked for either.
+  assertAbsent(
+    screen.queryByTestId("ai-mode-select"),
+    "a mode control with tool use off",
+  );
+  cleanup();
+
+  installBackend({
+    config: { toolsEnabled: true },
+    conversations: [conversationMeta()],
+  });
+  render(<AiAssistantPanel />);
+  const control = await screen.findByTestId("ai-mode-select");
+  assert.equal(control.dataset.mode, "ask");
+});
+
+test("changing the mode writes it and carries the per-tool overrides through", async () => {
+  const backend = installBackend({
+    config: { toolsEnabled: true },
+    conversations: [conversationMeta()],
+  });
+  render(<AiAssistantPanel />);
+  await screen.findByTestId("ai-mode-select");
+
+  await act(async () => {
+    await chooseThemedSelectValue(
+      screen.getByLabelText("What the assistant may do"),
+      "readOnly",
+    );
+  });
+
+  const writes = named(backend, "aiSetPermissions");
+  assert.equal(writes.length, 1, "exactly one writer of the mode");
+  assert.deepEqual(writes[0].args[0], {
+    mode: "readOnly",
+    // The override survives: changing the mode must not silently clear a
+    // per-tool rule set in the settings screen.
+    tools: { dns_delete_record: "deny" },
+  });
+  // And the catalog is re-read, because `ai_set_permissions` answers with the
+  // policy and not with its new effective per-tool values.
+  await waitFor(() =>
+    assert.ok(named(backend, "aiGetPermissions").length >= 2),
+  );
+  await waitFor(() =>
+    assert.equal(screen.getByTestId("ai-mode-select").dataset.mode, "readOnly"),
+  );
+});
+
+test("a mode the backend refuses leaves the control on the stored value", async () => {
+  const backend = installBackend({
+    config: { toolsEnabled: true },
+    conversations: [conversationMeta()],
+  });
+  backend.failures.set("aiSetPermissions", {
+    code: "AI_INVALID_PERMISSIONS",
+    message: "that mode is not available in this build",
+    source: "agent",
+    operation: "ai:set_permissions",
+    retryable: false,
+    details: {},
+  });
+  render(<AiAssistantPanel />);
+  await screen.findByTestId("ai-mode-select");
+
+  await act(async () => {
+    await chooseThemedSelectValue(
+      screen.getByLabelText("What the assistant may do"),
+      "autonomous",
+    );
+  });
+
+  await waitFor(() =>
+    assert.match(
+      document.body.textContent ?? "",
+      /that mode is not available in this build/,
+    ),
+  );
+  // Not "autonomous": the refusal did not change what gates the next call.
+  assert.equal(screen.getByTestId("ai-mode-select").dataset.mode, "ask");
+});
+
+test("a mode read as read-only reports what that costs, unprompted", async () => {
+  installBackend({
+    config: { toolsEnabled: true },
+    conversations: [conversationMeta()],
+    mode: "readOnly",
+  });
+  render(<AiAssistantPanel />);
+  await screen.findByTestId("ai-mode-select");
+
+  assert.match(
+    screen.getByTestId("ai-mode-consequence").textContent ?? "",
+    /refused outright — you are not prompted/,
+  );
+});
+
+// ── Conversation history: select, rename, delete ───────────────────────────
+
+test("a conversation can be renamed, which nothing in the UI could do before", async () => {
+  // `ai_set_conversation_title` has been registered since the chat shipped
+  // and `useAiConversations.setTitle` wrapped it, and **nothing called
+  // either**. So every conversation was stuck with the title it was created
+  // with, which is what makes a list of several of them unnavigable — and the
+  // most likely reason the history looks absent.
+  const backend = installBackend({
+    conversations: [
+      conversationMeta({ id: "conv-1", title: "First chat" }),
+      conversationMeta({ id: "conv-2", title: "Second chat" }),
+    ],
+  });
+  mock.method(
+    TauriClient,
+    "aiSetConversationTitle",
+    async (...args: unknown[]) => {
+      backend.calls.push({ name: "aiSetConversationTitle", args });
+      return true;
+    },
+  );
+  render(<AiAssistantPanel />);
+  await screen.findByTestId("ai-transcript");
+
+  fireEvent.click(
+    await screen.findByRole("button", {
+      name: "Rename conversation: Second chat",
+    }),
+  );
+  const field = screen.getByRole("textbox", {
+    name: "Rename conversation: Second chat",
+  });
+  fireEvent.change(field, {
+    target: { value: "  MX records for example.test  " },
+  });
+  await act(async () => {
+    fireEvent.click(
+      screen.getByRole("button", { name: "Save the title for Second chat" }),
+    );
+  });
+
+  // Trimmed, and against the right conversation.
+  assert.deepEqual(
+    named(backend, "aiSetConversationTitle").map((call) => call.args),
+    [["conv-2", "MX records for example.test"]],
+  );
+  // The list is re-read rather than patched locally, because the backend
+  // bounds and normalises a title.
+  await waitFor(() =>
+    assert.ok(named(backend, "aiListConversations").length >= 2),
+  );
+});
+
+test("Enter saves a rename and Escape abandons it without dismissing the bubble", async () => {
+  const backend = installBackend({
+    conversations: [conversationMeta({ title: "First chat" })],
+  });
+  mock.method(
+    TauriClient,
+    "aiSetConversationTitle",
+    async (...args: unknown[]) => {
+      backend.calls.push({ name: "aiSetConversationTitle", args });
+      return true;
+    },
+  );
+  render(<AiAssistantPanel presentation="bubble" />);
+  await screen.findByTestId("ai-transcript");
+
+  // Escape first: it must cancel the edit and go no further. The bubble
+  // closes on Escape, and this input is rendered inside it.
+  fireEvent.click(
+    await screen.findByRole("button", {
+      name: "Rename conversation: First chat",
+    }),
+  );
+  const field = screen.getByRole("textbox", {
+    name: "Rename conversation: First chat",
+  });
+  fireEvent.change(field, { target: { value: "abandoned" } });
+  const notPrevented = fireEvent.keyDown(field, {
+    key: "Escape",
+    bubbles: true,
+    cancelable: true,
+  });
+  assert.equal(notPrevented, false, "Escape must be consumed by the edit");
+  assertAbsent(
+    screen.queryByRole("textbox", {
+      name: "Rename conversation: First chat",
+    }),
+    "the rename field after Escape",
+  );
+  assert.equal(named(backend, "aiSetConversationTitle").length, 0);
+
+  // Then Enter, which saves.
+  fireEvent.click(
+    await screen.findByRole("button", {
+      name: "Rename conversation: First chat",
+    }),
+  );
+  fireEvent.change(
+    screen.getByRole("textbox", { name: "Rename conversation: First chat" }),
+    { target: { value: "Renamed by Enter" } },
+  );
+  await act(async () => {
+    fireEvent.keyDown(
+      screen.getByRole("textbox", { name: "Rename conversation: First chat" }),
+      { key: "Enter" },
+    );
+  });
+  assert.deepEqual(
+    named(backend, "aiSetConversationTitle").map((call) => call.args),
+    [["conv-1", "Renamed by Enter"]],
+  );
+});
+
+test("a refused rename shows the backend's message and keeps the field open", async () => {
+  const backend = installBackend({
+    conversations: [conversationMeta({ title: "First chat" })],
+  });
+  mock.method(TauriClient, "aiSetConversationTitle", async () => {
+    backend.calls.push({ name: "aiSetConversationTitle", args: [] });
+    throw {
+      code: "AI_LIMIT",
+      message: "title must not exceed 512 bytes",
+      source: "chat",
+      operation: "ai:set_conversation_title",
+      retryable: false,
+      details: { limit: 512, actual: 900 },
+    };
+  });
+  render(<AiAssistantPanel />);
+  await screen.findByTestId("ai-transcript");
+
+  fireEvent.click(
+    await screen.findByRole("button", {
+      name: "Rename conversation: First chat",
+    }),
+  );
+  fireEvent.change(
+    screen.getByRole("textbox", { name: "Rename conversation: First chat" }),
+    { target: { value: "a very long title" } },
+  );
+  await act(async () => {
+    fireEvent.click(
+      screen.getByRole("button", { name: "Save the title for First chat" }),
+    );
+  });
+
+  // A title is bounded in UTF-8 bytes and that ceiling is user-configurable,
+  // so a title that looks short can still be refused — the backend's own
+  // message says which number was exceeded.
+  await waitFor(() =>
+    assert.match(
+      screen.getByTestId("ai-conversation-rename-error").textContent ?? "",
+      /title must not exceed 512 bytes/,
+    ),
+  );
+  // Still editing, so the typed title is not lost.
+  assert.ok(
+    screen.getByRole("textbox", { name: "Rename conversation: First chat" }),
+  );
+});
+
+test("a blank title is refused before it reaches the backend", async () => {
+  const backend = installBackend({
+    conversations: [conversationMeta({ title: "First chat" })],
+  });
+  mock.method(TauriClient, "aiSetConversationTitle", async () => {
+    backend.calls.push({ name: "aiSetConversationTitle", args: [] });
+    return true;
+  });
+  render(<AiAssistantPanel />);
+  await screen.findByTestId("ai-transcript");
+
+  fireEvent.click(
+    await screen.findByRole("button", {
+      name: "Rename conversation: First chat",
+    }),
+  );
+  fireEvent.change(
+    screen.getByRole("textbox", { name: "Rename conversation: First chat" }),
+    { target: { value: "   " } },
+  );
+  await act(async () => {
+    fireEvent.click(
+      screen.getByRole("button", { name: "Save the title for First chat" }),
+    );
+  });
+
+  assert.match(
+    screen.getByTestId("ai-conversation-rename-error").textContent ?? "",
+    /A conversation needs a title\./,
+  );
+  assert.equal(named(backend, "aiSetConversationTitle").length, 0);
+});
+
+test("the history is selectable and says which conversation is active", async () => {
+  const backend = installBackend({
+    conversations: [
+      conversationMeta({ id: "conv-1", title: "First chat" }),
+      conversationMeta({ id: "conv-2", title: "Second chat" }),
+    ],
+  });
+  render(<AiAssistantPanel presentation="sidebar" />);
+  await screen.findByTestId("ai-transcript");
+
+  const rows = () =>
+    Array.from(
+      document.querySelectorAll<HTMLElement>(
+        '[data-testid="ai-conversation-row"]',
+      ),
+    );
+  // Landed on the most recent, and says so rather than leaving the user to
+  // guess which transcript they are reading.
+  await waitFor(() => assert.equal(rows()[0].dataset.active, "true"));
+  assert.equal(rows()[1].dataset.active, "false");
+  // Filtered on `pressed`: the rename and delete controls in the same row
+  // also carry the title in their names, and only the select button is a
+  // toggle.
+  assert.ok(
+    within(rows()[0]).getByRole("button", {
+      name: /First chat/,
+      pressed: true,
+    }),
+  );
+
+  // Switching reloads that conversation's transcript from the backend rather
+  // than reusing the one on screen.
+  const readsBefore = named(backend, "aiGetConversation").length;
+  fireEvent.click(
+    within(rows()[1]).getByRole("button", {
+      name: /Second chat/,
+      pressed: false,
+    }),
+  );
+  await waitFor(() => assert.equal(rows()[1].dataset.active, "true"));
+  await waitFor(() =>
+    assert.ok(named(backend, "aiGetConversation").length > readsBefore),
+  );
+});
+
+test("the create row stacks on a framed surface and pairs on the tab", async () => {
+  // The row is a 9rem select, a 12rem input and a button: about 23rem, which
+  // `flex-wrap` saved from overflowing a 22rem dock but left ragged. It is
+  // keyed off the surface, not a viewport breakpoint — a docked panel can be
+  // 22rem wide on a 2560px display.
+  installBackend({
+    providers: [providerProfile()],
+    conversations: [conversationMeta()],
+  });
+  render(<AiAssistantPanel presentation="sidebar" />);
+  const docked = await screen.findByLabelText("Model");
+  assert.match(docked.className, /(?:^|\s)w-full(?:$|\s)/);
+  cleanup();
+
+  installBackend({
+    providers: [providerProfile()],
+    conversations: [conversationMeta()],
+  });
+  render(<AiAssistantPanel presentation="panel" />);
+  const tabbed = await screen.findByLabelText("Model");
+  assert.match(tabbed.className, /(?:^|\s)w-48(?:$|\s)/);
 });

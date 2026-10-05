@@ -25,9 +25,12 @@ import type {
   AiPermissionsSnapshot,
   AiPersona,
   AiPersonaInput,
+  AiLink,
+  AiPlan,
   AiProtocolCapabilities,
   AiProviderProfile,
   AiProviderProfileInput,
+  AiRunSummary,
   Conversation,
   ConversationMeta,
   Model,
@@ -35,6 +38,23 @@ import type {
 } from "@/types/ai";
 
 const TAURI_UI_TIMEOUT_MS = 15_000;
+
+/** Mirrors `APPROVED_TOOL_TIMEOUT` (`bc-ai-agent/src/manager.rs:30`). */
+const PLAN_STEP_NATIVE_TIMEOUT_MS = 120_000;
+/** Mirrors `bc_ai_agent::plan::MAX_PLAN_STEPS`, the hard ceiling on a plan. */
+const PLAN_MAX_STEPS = 32;
+/** Slack for IPC, the permission gate and scheduling jitter. */
+const PLAN_TIMEOUT_MARGIN_MS = 10_000;
+/** One step: the native bound it runs under, plus slack. */
+const PLAN_STEP_TIMEOUT_MS =
+  PLAN_STEP_NATIVE_TIMEOUT_MS + PLAN_TIMEOUT_MARGIN_MS;
+/**
+ * A whole run: one step's bound per step, because `ai_run_plan` dispatches
+ * them one at a time and stops at the first that does not complete.
+ */
+const PLAN_RUN_TIMEOUT_MS =
+  PLAN_STEP_NATIVE_TIMEOUT_MS * PLAN_MAX_STEPS + PLAN_TIMEOUT_MARGIN_MS;
+
 const TAURI_COMMAND_TIMEOUT_OVERRIDES_MS: Readonly<Record<string, number>> = {
   // `ai_configure_provider` runs a live `health_check()` under a 30 s native
   // bound (`PROVIDER_COMMAND_TIMEOUT`, `ai_commands.rs:23`); the default 15 s
@@ -44,6 +64,16 @@ const TAURI_COMMAND_TIMEOUT_OVERRIDES_MS: Readonly<Record<string, number>> = {
   ai_export_conversation: 60_000,
   ai_list_models: 60_000,
   ai_test_provider: 60_000,
+  // A plan step dispatches one tool under `APPROVED_TOOL_TIMEOUT` (120 s,
+  // `bc-ai-agent/src/manager.rs:30`), and `ai_run_plan` chains one such
+  // dispatch per incomplete step. Both deadlines are derived from those two
+  // numbers below rather than guessed, for the reason the propagation
+  // deadline is: a UI deadline shorter than the native bound does not stop
+  // the work, it only abandons the answer — and a plan whose steps went on
+  // running after the renderer reported a failure is the one outcome this
+  // screen must never produce.
+  ai_run_plan_step: PLAN_STEP_TIMEOUT_MS,
+  ai_run_plan: PLAN_RUN_TIMEOUT_MS,
   // Both native passkey ceremonies block on a modal OS dialog for up to
   // `NATIVE_CEREMONY_TIMEOUT_MS` (60 s, `bc-passkey/src/native.rs`) while the
   // user finds a security key or scans a phone. Under the default 15 s UI
@@ -1983,6 +2013,115 @@ export class TauriClient {
   static async aiDeletePersona(id: string): Promise<boolean> {
     TauriClient.requireAiDesktop();
     return invoke("ai_delete_persona", { id });
+  }
+
+  // ─── Plans and runs ─────────────────────────────────────────────────────
+  // The plan/execute harness: proposed by the model through its own
+  // `plan_propose`/`plan_revise` tools, approved and run by the user through
+  // these commands, executed by the harness through the same `ToolExecutor`
+  // gate every other tool call goes through.
+  //
+  // **Every command answers with the authoritative plan, and no plan event is
+  // ever emitted** — `AgentEvent` belongs to a generation turn and a plan
+  // command has no turn to attach to. So a caller renders what came back and
+  // never reconstructs a plan from events. The single exception is approving
+  // a waiting step, which goes through the existing `aiApproveToolCall` and
+  // resolves with nothing; re-read with `aiGetPlan` afterwards.
+
+  /** The conversation's plan, or `null`. One plan per conversation. */
+  static async aiGetPlan(conversationId: string): Promise<AiPlan | null> {
+    TauriClient.requireAiDesktop();
+    return invoke("ai_get_plan", { conversationId });
+  }
+
+  /**
+   * Approve a draft so its steps may run. Refuses any other source state.
+   *
+   * Approving re-resolves every step's permissions, so the user commits
+   * against the permissions in force **now**. It does not make the plan run,
+   * and it cannot make a blocked step runnable — the returned plan still
+   * reports a step its permissions refuse as `blocked`.
+   */
+  static async aiApprovePlan(conversationId: string): Promise<AiPlan> {
+    TauriClient.requireAiDesktop();
+    return invoke("ai_approve_plan", { conversationId });
+  }
+
+  /**
+   * Run one step of an approved plan.
+   *
+   * The step's tool is re-gated every time: a tool now refused leaves the
+   * step `blocked` with its `refusal.source` and dispatches nothing, and a
+   * step blocked at approval time runs if the permission has since been
+   * granted. A tool resolving to `ask` leaves the step `awaitingApproval` —
+   * approve it with {@link aiApproveToolCall}, passing the step's
+   * `plan-step-<id>` tool-call id from `planStepToolCallId`.
+   */
+  static async aiRunPlanStep(
+    conversationId: string,
+    stepId: string,
+  ): Promise<AiPlan> {
+    TauriClient.requireAiDesktop();
+    return invoke("ai_run_plan_step", { conversationId, stepId });
+  }
+
+  /**
+   * Run the plan from its first incomplete step, **stopping at the first step
+   * that does not complete** — blocked, awaiting approval, or failed.
+   *
+   * Plan steps are ordered and usually dependent, so it does not carry on
+   * past one. Partial completion is visible step by step in the returned
+   * plan; calling again resumes from where it stopped.
+   */
+  static async aiRunPlan(conversationId: string): Promise<AiPlan> {
+    TauriClient.requireAiDesktop();
+    return invoke("ai_run_plan", { conversationId });
+  }
+
+  /**
+   * Cancel a plan. Final, and idempotent on an already-cancelled one.
+   *
+   * A step already in flight is **not** aborted by this:
+   * {@link aiCancelGeneration} is the control for in-flight work, and a plan
+   * step runs under it.
+   */
+  static async aiCancelPlan(conversationId: string): Promise<AiPlan> {
+    TauriClient.requireAiDesktop();
+    return invoke("ai_cancel_plan", { conversationId });
+  }
+
+  /** Discard the conversation's plan. `false` when there was none. */
+  static async aiDeletePlan(conversationId: string): Promise<boolean> {
+    TauriClient.requireAiDesktop();
+    return invoke("ai_delete_plan", { conversationId });
+  }
+
+  /**
+   * What the run did, or `null` when the conversation has no plan.
+   *
+   * Every field but `narrative` is derived by the harness from what it
+   * actually dispatched; `narrative` is model-written prose. See
+   * {@link AiRunSummary} — the two must not be rendered as one claim.
+   */
+  static async aiGetRunSummary(
+    conversationId: string,
+  ): Promise<AiRunSummary | null> {
+    TauriClient.requireAiDesktop();
+    return invoke("ai_get_run_summary", { conversationId });
+  }
+
+  /**
+   * The places the assistant is currently pointing at, or `[]`.
+   *
+   * Links belong to the conversation and each offer replaces the last, so this
+   * is "where to look now" rather than a growing list. Every entry has already
+   * passed its kind's rule — a `javascript:`, `data:` or `file:` target cannot
+   * be stored — but `resolveAiLink` re-checks each one anyway before it
+   * reaches a navigation call. See {@link AiLink}.
+   */
+  static async aiGetLinks(conversationId: string): Promise<AiLink[]> {
+    TauriClient.requireAiDesktop();
+    return invoke("ai_get_links", { conversationId });
   }
 
   /**

@@ -32,15 +32,9 @@ import { AI_SELECT_CONTENT_CLASS } from "../src/components/ai/ai-select";
 import {
   AI_SETTINGS_SECTIONS,
   AiSettingsPanel,
-  placementFromPickerValue,
   type AiSettingsSection,
 } from "../src/components/ai/AiSettingsPanel";
 import { TauriClient } from "../src/lib/api/tauri-client";
-import {
-  AI_ASSISTANT_PRESENTATION_OPTIONS,
-  AI_ASSISTANT_PRESENTATIONS,
-  type AiAssistantPresentation,
-} from "../src/lib/ai/presentation";
 import type {
   AgentConfig,
   AiPermissionsSnapshot,
@@ -119,37 +113,26 @@ interface Harness {
   sections: AiSettingsSection[];
   /** Which `ai_*` reads the panel caused, so lazy mounting is observable. */
   calls: string[];
-  /** Every placement the control asked for, in order. */
-  placements: AiAssistantPresentation[];
   /** Every agent config the panel asked to store, in order. */
   configs: AgentConfig[];
 }
 
 /**
- * Renders the panel with its own section and placement state, so both can be
- * driven the way the assistant drives them rather than against a frozen prop.
+ * Renders the panel with its own section state, so it can be driven the way
+ * its host drives it rather than against a frozen prop.
  *
- * `section` and `presentation` in the overrides seed the initial state and are
- * then owned by the host, which is why they are pulled out rather than spread
- * through. Passing `onPresentationChange: undefined` explicitly is how a host
- * that does not own the preference is simulated.
+ * `section` in the overrides seeds the initial state and is then owned by the
+ * host, which is why it is pulled out rather than spread through.
  */
 function renderPanel(
   overrides: Partial<React.ComponentProps<typeof AiSettingsPanel>> = {},
 ): Harness {
-  const harness: Harness = {
-    sections: [],
-    calls: [],
-    placements: [],
-    configs: [],
-  };
+  const harness: Harness = { sections: [], calls: [], configs: [] };
   const {
     section: initialSection,
-    presentation: initialPresentation,
     onSaveConfig: saveConfig,
     ...rest
   } = overrides;
-  const ownsPlacement = !("onPresentationChange" in overrides);
   // `config: null` is a meaningful initial value (the read has not answered),
   // so presence decides rather than nullishness.
   const initialConfig =
@@ -172,8 +155,6 @@ function renderPanel(
     const [section, setSection] = React.useState<AiSettingsSection>(
       initialSection ?? "providers",
     );
-    const [presentation, setPresentation] =
-      React.useState<AiAssistantPresentation>(initialPresentation ?? "panel");
     // The host owns the config, the way `AiAssistantPanel` does: a successful
     // `ai_set_config` replaces it, and a refused one leaves it alone. A frozen
     // prop would make a write that was refused look exactly like one that was
@@ -183,7 +164,6 @@ function renderPanel(
     );
     return (
       <AiSettingsPanel
-        compact={false}
         providers={[PROFILE]}
         providersLoading={false}
         providersError={null}
@@ -207,15 +187,6 @@ function renderPanel(
           harness.sections.push(next);
           setSection(next);
         }}
-        presentation={presentation}
-        onPresentationChange={
-          ownsPlacement
-            ? (next) => {
-                harness.placements.push(next);
-                setPresentation(next);
-              }
-            : undefined
-        }
       />
     );
   }
@@ -602,78 +573,8 @@ test("the tool-use switch cannot be flipped before the config has arrived", asyn
   assert.deepEqual(harness.configs, []);
 });
 
-// ── Where the assistant appears ────────────────────────────────────────────
-
-test("the placement control offers every presentation and names the current one", async () => {
-  renderPanel({ section: "behaviour", presentation: "sidebar" });
-
-  const placement = screen.getByTestId("ai-placement");
-  assert.equal(placement.dataset.presentation, "sidebar");
-  // The app's themed dropdown rather than a native `<select>`: its trigger is
-  // a `role="combobox"` button, so the value and the options are read from the
-  // popover it opens rather than from `HTMLSelectElement`.
-  const trigger = screen.getByLabelText("Placement");
-  assert.equal(trigger.getAttribute("role"), "combobox");
-  assert.equal(await themedSelectValue(trigger), "sidebar");
-
-  // Every presentation is offered, in the shared option order, labelled with
-  // the same words the workspace's own placement control uses.
-  assert.deepEqual(
-    await themedSelectValues(screen.getByLabelText("Placement")),
-    [...AI_ASSISTANT_PRESENTATIONS],
-  );
-  assert.deepEqual(
-    await themedSelectLabels(screen.getByLabelText("Placement")),
-    AI_ASSISTANT_PRESENTATION_OPTIONS.map((option) => option.label),
-  );
-
-  // The difference a label cannot carry: what the dock does to a narrow window.
-  assert.match(
-    screen.getByTestId("ai-placement-hint").textContent ?? "",
-    /slides over the workspace instead of shrinking it/,
-  );
-});
-
-test("choosing a placement asks the owner to change it, and the hint follows", async () => {
-  const harness = renderPanel({ section: "behaviour" });
-
-  await chooseThemedSelectValue(screen.getByLabelText("Placement"), "bubble");
-
-  assert.deepEqual(harness.placements, ["bubble"]);
-  // Applied immediately — this is a UI preference, not a form with a Save
-  // button, and the host owns the state it just reported back.
-  assert.equal(
-    await themedSelectValue(screen.getByLabelText("Placement")),
-    "bubble",
-  );
-  assert.equal(
-    screen.getByTestId("ai-placement").dataset.presentation,
-    "bubble",
-  );
-  assert.match(
-    screen.getByTestId("ai-placement-hint").textContent ?? "",
-    /Escape closes it/,
-  );
-});
-
-test("a value that is not a presentation never reaches the owner", () => {
-  // The guard the native `<select>` carried, now a function of its own. A
-  // themed dropdown's `onValueChange` is typed `(value: string) => void`, and
-  // the stored preference it is seeded from can hold anything at all.
-  for (const presentation of AI_ASSISTANT_PRESENTATIONS) {
-    assert.equal(placementFromPickerValue(presentation), presentation);
-  }
-  for (const junk of ["", "Panel", "dock", "bubble ", "null", "0"]) {
-    assert.equal(
-      placementFromPickerValue(junk),
-      null,
-      `${junk} must not become a placement`,
-    );
-  }
-});
-
 test("every dropdown in these settings is raised above the floating bubble", async () => {
-  renderPanel({ section: "behaviour", presentation: "bubble" });
+  renderPanel({ section: "behaviour" });
 
   /**
    * The bubble is painted at `z-[60]`, and both it and a dropdown's popover
@@ -697,11 +598,6 @@ test("every dropdown in these settings is raised above the floating bubble", asy
     await closeThemedSelect();
   };
 
-  await assertRaised(
-    screen.getByLabelText("Placement"),
-    "the placement popover",
-  );
-
   fireEvent.click(segment("Providers"));
   fireEvent.click(screen.getByRole("button", { name: "Add a provider" }));
   await assertRaised(
@@ -717,47 +613,18 @@ test("every dropdown in these settings is raised above the floating bubble", asy
   );
 });
 
-test("a host that does not own the preference gets no placement control", () => {
-  renderPanel({ section: "behaviour", onPresentationChange: undefined });
+// ── The section nav ────────────────────────────────────────────────────────
 
-  // An inert select would claim a choice that nothing is listening for.
-  assertAbsent(
-    screen.queryByTestId("ai-placement"),
-    "the placement control without an owner",
-  );
-  // The rest of Behaviour is unaffected.
-  assert.ok(screen.getByTestId("ai-agent-settings"));
-});
+test("the nav is one scrolling strip, with every section on it", async () => {
+  // This used to pass `compact: true` and assert the attribute it set. The
+  // prop went with the dock: the panel is hosted in the Settings workspace
+  // now, which has the full width, so there is no narrow surface to trim
+  // padding for. The claim worth keeping is the one about the strip.
+  renderPanel();
 
-test("the placement control sits in Behaviour and nowhere else", async () => {
-  renderPanel({ section: "behaviour" });
-  assert.ok(screen.getByTestId("ai-placement"));
-
-  for (const other of ["providers", "tools", "personas"] as const) {
-    fireEvent.click(
-      segment(
-        new RegExp(
-          `^${AI_SETTINGS_SECTIONS.find((entry) => entry.id === other)?.label}`,
-        ),
-      ),
-    );
-    assertAbsent(
-      screen.queryByTestId("ai-placement"),
-      `a second placement control in ${other}`,
-    );
-  }
-  await settlePendingReads();
-});
-
-// ── Narrow surfaces ────────────────────────────────────────────────────────
-
-test("a narrow surface keeps the same scrolling strip, with every section on it", async () => {
-  renderPanel({ compact: true });
-
-  assert.equal(screen.getByTestId("ai-settings").dataset.compact, "true");
   // The strip does not collapse into a menu or wrap onto a second row: it is
-  // the same `.ui-segment-group` scroller, so every section stays one press or
-  // one click away in the dock and the bubble too.
+  // a `.ui-segment-group` scroller, so every section stays one press or one
+  // click away however narrow the window is.
   const strip = nav();
   assert.ok(strip.classList.contains("ui-segment-group"));
   assert.equal(

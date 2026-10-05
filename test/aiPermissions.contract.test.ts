@@ -19,6 +19,7 @@ import { test } from "node:test";
 
 import {
   AI_AGENT_LIMITS,
+  AI_CONFIGURABLE_LIMITS,
   AI_DEFAULT_MAX_CONTEXT_TOKENS,
   AI_PERMISSION_MODES,
   AI_PERSONA_LIMITS,
@@ -65,6 +66,24 @@ const PROVIDER_CONFIG_RS = join(
   "bc-ai-provider",
   "src",
   "config.rs",
+);
+/** Six of the eight configurable limits are retention limits and live here. */
+const CHAT_LIMITS_RS = join(
+  ROOT,
+  "src-tauri",
+  "crates",
+  "bc-ai-chat",
+  "src",
+  "limits.rs",
+);
+/** The other two are plan limits. */
+const AGENT_PLAN_RS = join(
+  ROOT,
+  "src-tauri",
+  "crates",
+  "bc-ai-agent",
+  "src",
+  "plan.rs",
 );
 
 /**
@@ -500,6 +519,70 @@ const RUST_BOUNDS: readonly {
     file: PROVIDER_LIMITS_RS,
     constant: "MAX_SYSTEM_PROMPT_BYTES",
   },
+  // The eight configurable retention and plan limits. Only their ceilings are
+  // pinned here: each floor is 1 by construction, from Rust's
+  // `value == 0 || value > ceiling` check, which the test below pins
+  // separately rather than inventing a `MIN_` constant that does not exist.
+  //
+  // Each of these ceilings is also the field's serde default, which is why the
+  // form seeds an absent field from `max` rather than from a number of its
+  // own: the ceiling is what the backend will have used.
+  {
+    field: "maxConversations",
+    bound: "max",
+    actual: AI_AGENT_LIMITS.maxConversations.max,
+    file: CHAT_LIMITS_RS,
+    constant: "MAX_CONVERSATIONS",
+  },
+  {
+    field: "maxMessagesPerConversation",
+    bound: "max",
+    actual: AI_AGENT_LIMITS.maxMessagesPerConversation.max,
+    file: CHAT_LIMITS_RS,
+    constant: "MAX_MESSAGES_PER_CONVERSATION",
+  },
+  {
+    field: "maxChatMessageBytes",
+    bound: "max",
+    actual: AI_AGENT_LIMITS.maxChatMessageBytes.max,
+    file: CHAT_LIMITS_RS,
+    constant: "MAX_CHAT_MESSAGE_BYTES",
+  },
+  {
+    field: "maxConversationBytes",
+    bound: "max",
+    actual: AI_AGENT_LIMITS.maxConversationBytes.max,
+    file: CHAT_LIMITS_RS,
+    constant: "MAX_CONVERSATION_BYTES",
+  },
+  {
+    field: "maxGlobalRetainedBytes",
+    bound: "max",
+    actual: AI_AGENT_LIMITS.maxGlobalRetainedBytes.max,
+    file: CHAT_LIMITS_RS,
+    constant: "MAX_GLOBAL_RETAINED_BYTES",
+  },
+  {
+    field: "maxTitleBytes",
+    bound: "max",
+    actual: AI_AGENT_LIMITS.maxTitleBytes.max,
+    file: CHAT_LIMITS_RS,
+    constant: "MAX_TITLE_BYTES",
+  },
+  {
+    field: "maxPlanSteps",
+    bound: "max",
+    actual: AI_AGENT_LIMITS.maxPlanSteps.max,
+    file: AGENT_PLAN_RS,
+    constant: "MAX_PLAN_STEPS",
+  },
+  {
+    field: "maxRetainedPlans",
+    bound: "max",
+    actual: AI_AGENT_LIMITS.maxRetainedPlans.max,
+    file: AGENT_PLAN_RS,
+    constant: "MAX_RETAINED_PLANS",
+  },
 ];
 
 test("every bound in the TS table is the Rust constant it mirrors", () => {
@@ -542,6 +625,60 @@ test("the agent-config floors the Rust validators imply are the TS floors", () =
       `${field} no longer has an inline zero check - if its floor became a named constant, ${promoted}`,
     );
   }
+});
+
+test("the eight configurable limits are the eight Rust validates, with 1 as the floor", () => {
+  // Two different drifts are caught here, and they fail differently on
+  // purpose.
+  //
+  // The first is a *missing* control: Rust's `CONFIGURABLE_LIMITS` is the one
+  // table `AgentConfig::validate` walks, so a limit added there without a
+  // matching entry in `AI_CONFIGURABLE_LIMITS` is a setting the backend
+  // enforces and the form never offers — which is exactly how all eight of
+  // these shipped with no UI in the first place.
+  //
+  // The second is the floor. None of them has a `MIN_` constant, because the
+  // Rust check is `value == 0 || value > ceiling`: zero is refused rather than
+  // read as "unlimited", which makes 1 the floor by construction. So the
+  // *shape* of that check is what gets pinned, and the failure message says
+  // the fix is to move the floor into `RUST_BOUNDS` rather than to put the
+  // inline check back.
+  const agentSource = readFileSync(AGENT_CONFIG_RS, "utf8");
+  const table = agentSource.match(
+    /const CONFIGURABLE_LIMITS:\s*\[ConfigurableLimit;\s*(\d+)\]\s*=\s*\[([\s\S]*?)\n\];/,
+  );
+  assert.ok(
+    table,
+    "CONFIGURABLE_LIMITS must stay parseable in config.rs - it is the table validate() walks",
+  );
+  const rustFields = Array.from(table[2].matchAll(/"([A-Za-z0-9_]+)"/g)).map(
+    (match) => match[1],
+  );
+  assert.deepEqual(
+    [...AI_CONFIGURABLE_LIMITS],
+    rustFields,
+    "AI_CONFIGURABLE_LIMITS must list exactly the fields Rust's CONFIGURABLE_LIMITS does, in the same order - a limit Rust enforces and the form does not offer is a setting with no control",
+  );
+  assert.equal(
+    Number(table[1]),
+    AI_CONFIGURABLE_LIMITS.length,
+    "the declared length of CONFIGURABLE_LIMITS must match the fields it holds",
+  );
+
+  for (const field of AI_CONFIGURABLE_LIMITS) {
+    assert.equal(
+      AI_AGENT_LIMITS[field].min,
+      1,
+      `${field} min must be the floor the == 0 check implies - if Rust gained a named floor, move it into RUST_BOUNDS with that constant`,
+    );
+  }
+  // The check itself, so a Rust change from "refuse zero" to "clamp zero"
+  // cannot leave these floors claiming something that stopped being true.
+  assert.match(
+    agentSource,
+    /value == 0 \|\| value > ceiling/,
+    "the configurable limits must still refuse zero and anything above the ceiling - if they are clamped instead, the floors above are no longer a contract",
+  );
 });
 
 test("the validators compare against the constants they name", () => {

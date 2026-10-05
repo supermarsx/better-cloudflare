@@ -21,22 +21,26 @@
  *    the active segment, and `aria-controls` ties the two together, so moving
  *    through the strip says which section each stop opens.
  *
- * **On a narrow surface the nav does not change shape.** The dock is 22rem and
- * the bubble 26rem, and `.ui-segment-group` is already a single
- * `overflow-x: auto` row with `white-space: nowrap`, so the strip scrolls
- * sideways rather than wrapping — the same thing the workspace's own settings
- * strip and the global tab bar do when the window is narrow. That is a
- * deliberate choice twice over: a wrapped strip would steal a second and third
- * row of transcript height from the bubble, and collapsing the nav into a
- * dropdown would hide the existence of the other sections on the very surface
- * where they are hardest to find. Arrow-key movement reaches an off-screen
- * segment and `focus()` scrolls it into view, so nothing is unreachable.
+ * **Where this is mounted.** The app's own Settings workspace, as its
+ * "Assistant" section — not inside the assistant. It was inside the assistant,
+ * behind a Chat/Settings view switch, and moving it out is what removed the
+ * one control that had to live there: the assistant-placement picker. That
+ * picker existed because the dock and the bubble have no workspace settings
+ * tab in front of them; here there is one, and Session settings → General
+ * already owns that preference, so a second control for it would let two
+ * places in the same workspace disagree.
  *
- * The sections themselves need no second layout: every form in them already
- * puts its label above its control and wraps its number pairs, which is why
- * they fit a 22rem dock unchanged. `compact` therefore only trims the padding
- * around them — it is not a layout switch, and claiming one would be a lie
- * about what the dock does differently.
+ * **The nav does not change shape on a narrow window.** `.ui-segment-group` is
+ * a single `overflow-x: auto` row with `white-space: nowrap`, so the strip
+ * scrolls sideways rather than wrapping — the same thing the workspace's own
+ * settings strip and the global tab bar do. Collapsing it into a dropdown
+ * would hide the existence of the other sections. Arrow-key movement reaches
+ * an off-screen segment and `focus()` scrolls it into view, so nothing is
+ * unreachable.
+ *
+ * The `compact` prop is gone with the dock: it only ever trimmed the padding
+ * for a 22rem surface, and in the settings workspace there is no such surface
+ * to trim for.
  */
 import {
   useId,
@@ -46,21 +50,9 @@ import {
   type ReactNode,
 } from "react";
 
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { useAiConfig, useAiProviders } from "@/hooks/ai/use-ai-chat";
 import { useI18n } from "@/hooks/use-i18n";
-import {
-  AI_ASSISTANT_PRESENTATION_OPTIONS,
-  isAiAssistantPresentation,
-  type AiAssistantPresentation,
-} from "@/lib/ai/presentation";
-import { cn } from "@/lib/utils";
 import type {
   AgentConfig,
   AiProviderProfile,
@@ -68,7 +60,6 @@ import type {
 } from "@/types/ai";
 
 import { ConnectedAiAgentSettings } from "./AiAgentSettings";
-import { AI_SELECT_CONTENT_CLASS, AI_SELECT_TRIGGER_CLASS } from "./ai-select";
 import { describeAiError } from "./ai-error";
 import { ConnectedAiPermissionSettings } from "./AiPermissionSettings";
 import { ConnectedAiPersonaSettings } from "./AiPersonaSettings";
@@ -94,28 +85,9 @@ export const AI_SETTINGS_SECTIONS: readonly {
   { id: "personas", label: "Personas" },
 ] as const;
 
-/**
- * The placement picker's value guard, as a function rather than an inline
- * `if`, so that the rule can be pinned by a test on its own.
- *
- * A dropdown's change handler takes a bare `string`: the themed `Select` is
- * typed `(value: string) => void`, and the value it reports comes from
- * whichever item was rendered at the time, which can be a set that has since
- * changed. The stored preference it is seeded from can hold anything at all.
- * So the string is narrowed here and a value that is not a presentation
- * becomes `null` — never state, and never a call to the owner.
- */
-export function placementFromPickerValue(
-  value: string,
-): AiAssistantPresentation | null {
-  return isAiAssistantPresentation(value) ? value : null;
-}
-
 export interface AiSettingsPanelProps {
   section: AiSettingsSection;
   onSectionChange: (section: AiSettingsSection) => void;
-  /** Stack rows instead of pairing them, for the dock and the bubble. */
-  compact: boolean;
   providers: AiProviderProfile[];
   providersLoading: boolean;
   providersError: unknown;
@@ -131,20 +103,11 @@ export interface AiSettingsPanelProps {
   onSaveConfig: (config: AgentConfig) => Promise<void>;
   onSelectPersona: (id: string | null) => void;
   onSetDefaultProvider: (id: string | null) => void;
-  /** Which chrome the assistant is currently wearing. */
-  presentation: AiAssistantPresentation;
-  /**
-   * Changes that chrome. Absent when the host does not own the preference, in
-   * which case no placement control is offered — an inert one would be worse
-   * than none, and this is the only section that could show it.
-   */
-  onPresentationChange?: (next: AiAssistantPresentation) => void;
 }
 
 export function AiSettingsPanel({
   section,
   onSectionChange,
-  compact,
   providers,
   providersLoading,
   providersError,
@@ -156,8 +119,6 @@ export function AiSettingsPanel({
   onSaveConfig,
   onSelectPersona,
   onSetDefaultProvider,
-  presentation,
-  onPresentationChange,
 }: AiSettingsPanelProps) {
   const { t } = useI18n();
   const baseId = useId();
@@ -165,7 +126,6 @@ export function AiSettingsPanel({
 
   const panelId = `${baseId}-section`;
   const tabId = (id: AiSettingsSection) => `${baseId}-${id}`;
-  const placementId = `${baseId}-placement`;
   const defaultProvider =
     providers.find((profile) => profile.id === config?.defaultProviderId) ??
     null;
@@ -213,10 +173,6 @@ export function AiSettingsPanel({
       setToolsPending(null);
     }
   };
-  const placementHint =
-    AI_ASSISTANT_PRESENTATION_OPTIONS.find(
-      (option) => option.id === presentation,
-    )?.hint ?? null;
 
   /**
    * Nothing is configured yet, so the Providers section is marked in the nav.
@@ -287,76 +243,6 @@ export function AiSettingsPanel({
     if (section === "behaviour") {
       return (
         <div className="min-w-0 space-y-4">
-          {/* Where the assistant appears. It lives here rather than inside
-              `AiAgentSettings` because that form is agent config behind a Save
-              button, and this is a local UI preference that applies the moment
-              it changes.
-
-              A dropdown rather than the radio list the workspace's own Session
-              settings uses: this section has to fit a 22rem dock and a 26rem
-              bubble, where three labels each with their own paragraph would
-              cost more transcript height than the choice is worth. The
-              selected option's consequence is stated under it, which is the
-              part a label cannot carry — the full set is still spelled out in
-              Session settings, under General. */}
-          {onPresentationChange ? (
-            <section
-              className="min-w-0 space-y-2"
-              data-testid="ai-placement"
-              data-presentation={presentation}
-            >
-              <h3 className="text-sm font-semibold">
-                {t(
-                  "Where the assistant appears",
-                  "Where the assistant appears",
-                )}
-              </h3>
-              <label
-                htmlFor={placementId}
-                className="block text-xs font-medium"
-              >
-                {t("Placement", "Placement")}
-              </label>
-              <Select
-                value={presentation}
-                onValueChange={(value) => {
-                  // The guard the native `<select>` carried, unchanged: a junk
-                  // value must not become state. See `placementFromPickerValue`.
-                  const next = placementFromPickerValue(value);
-                  if (next !== null) onPresentationChange(next);
-                }}
-              >
-                <SelectTrigger
-                  id={placementId}
-                  className={AI_SELECT_TRIGGER_CLASS}
-                >
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent className={AI_SELECT_CONTENT_CLASS}>
-                  {AI_ASSISTANT_PRESENTATION_OPTIONS.map((option) => (
-                    <SelectItem
-                      key={option.id}
-                      value={option.id}
-                      // Radix consumes `value`, so the chosen id never reaches
-                      // the DOM. Mirrored here because which *value* an option
-                      // carries is the thing worth pinning — a label can be
-                      // translated, an id cannot.
-                      data-value={option.id}
-                    >
-                      {t(option.label, option.label)}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <p
-                role="note"
-                data-testid="ai-placement-hint"
-                className="text-xs text-muted-foreground break-words [overflow-wrap:anywhere]"
-              >
-                {placementHint ? t(placementHint, placementHint) : null}
-              </p>
-            </section>
-          ) : null}
           {/* The default provider decides which advanced parameters apply:
               new conversations start with it, so it is the one the settings
               can honestly be checked against. An id that resolves to nothing
@@ -443,7 +329,6 @@ export function AiSettingsPanel({
       className="min-w-0 space-y-4"
       data-testid="ai-settings"
       data-section={section}
-      data-compact={compact}
     >
       <div
         ref={navRef}
@@ -498,17 +383,109 @@ export function AiSettingsPanel({
         id={panelId}
         role="group"
         aria-labelledby={tabId(section)}
-        className={cn(
-          "min-w-0 rounded-xl border border-border/60 bg-card/60 text-sm",
-          // Padding is the one thing the dock and the bubble need less of, and
-          // it is keyed off the surface rather than a `sm:`/`md:` breakpoint: a
-          // docked panel can be 22rem wide on a 2560px display, so the viewport
-          // says nothing useful about how much room this panel has.
-          compact ? "p-2" : "p-3 sm:p-4",
-        )}
+        className="min-w-0 rounded-xl border border-border/60 bg-card/60 p-3 text-sm sm:p-4"
       >
         {renderSection()}
       </div>
+    </div>
+  );
+}
+
+/**
+ * The settings panel wired to its own backend reads.
+ *
+ * The same idiom as `ConnectedAiAgentSettings` and
+ * `ConnectedAiPermissionSettings`, and for the same reason: the host should
+ * not have to know which commands a section needs. It matters more here,
+ * because the host is now the app's Settings workspace rather than the
+ * assistant — `DNSManager` has no business holding provider state, and if it
+ * read the agent config on mount then an install that never opens Settings
+ * would still issue `ai_*` commands at startup.
+ *
+ * Mounted only while the Assistant section is open, so every read it makes is
+ * paid for by a user who asked for this screen.
+ *
+ * There is **one writer** of the agent config in the app, `useAiConfig`, and
+ * instances of it in different trees stay in step through the revision counter
+ * in `use-ai-chat.ts`. That is what stops this screen and an open assistant
+ * disagreeing about whether tool use is on.
+ */
+export function ConnectedAiSettingsPanel({
+  section,
+  onSectionChange,
+}: Pick<AiSettingsPanelProps, "section" | "onSectionChange">) {
+  const { t } = useI18n();
+  const providers = useAiProviders();
+  const agentConfig = useAiConfig();
+  const [configBusy, setConfigBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  /**
+   * Write the whole config for a one-field change.
+   *
+   * A partial write would reset whatever the other sections last stored, which
+   * is the same reason the tool-use switch and the Behaviour form both send
+   * `{ ...current }`.
+   */
+  const writeConfig = (patch: Partial<AgentConfig>, fallback: string): void => {
+    const current = agentConfig.config;
+    if (!current) return;
+    setConfigBusy(true);
+    setError(null);
+    void agentConfig
+      .update({ ...current, ...patch })
+      .catch((cause) => {
+        setError(describeAiError(cause, fallback).message);
+      })
+      .finally(() => setConfigBusy(false));
+  };
+
+  return (
+    <div className="min-w-0 space-y-3">
+      {error ? (
+        <p
+          role="alert"
+          data-testid="ai-settings-error"
+          className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive"
+        >
+          {error}
+        </p>
+      ) : null}
+      <AiSettingsPanel
+        section={section}
+        onSectionChange={onSectionChange}
+        providers={providers.providers}
+        providersLoading={providers.loading}
+        providersError={providers.loadError}
+        onRefreshProviders={() => void providers.refresh()}
+        onSaveProvider={providers.configure}
+        onDeleteProvider={providers.remove}
+        config={agentConfig.config}
+        configBusy={configBusy}
+        // Rejects on refusal so the form can show the backend's own message.
+        onSaveConfig={agentConfig.update}
+        onSelectPersona={(personaId) =>
+          writeConfig(
+            { personaId },
+            t(
+              "The persona could not be selected.",
+              "The persona could not be selected.",
+            ),
+          )
+        }
+        onSetDefaultProvider={(defaultProviderId) => {
+          if (agentConfig.config?.defaultProviderId === defaultProviderId) {
+            return;
+          }
+          writeConfig(
+            { defaultProviderId },
+            t(
+              "The default provider could not be set.",
+              "The default provider could not be set.",
+            ),
+          );
+        }}
+      />
     </div>
   );
 }
