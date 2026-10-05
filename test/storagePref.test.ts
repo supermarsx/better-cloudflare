@@ -72,3 +72,13 @@ test("a stored bubble position is kept unclamped", async () => {
     bottom: 99_000,
   });
 });
+
+test("clearing settings forgets the bubble position too", async () => {
+  // Every other assistant preference is dropped by `clearSettings`, so a
+  // position left behind would survive a reset and put the bubble somewhere
+  // the user did not choose in their reset session.
+  storageManager.setAiAssistantBubblePosition({ right: 321, bottom: 123 });
+  assert.notEqual(storageManager.getAiAssistantBubblePosition(), null);
+  storageManager.clearSettings();
+  assert.equal(storageManager.getAiAssistantBubblePosition(), null);
+});

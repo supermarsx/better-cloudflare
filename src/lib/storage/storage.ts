@@ -2152,6 +2152,8 @@ export class StorageManager {
     delete this.data.confirmWindowClose;
     delete this.data.closeTabOnMiddleClick;
     delete this.data.assistantPresentation;
+    delete this.data.assistantBubbleRight;
+    delete this.data.assistantBubbleBottom;
     delete this.data.rewriteCopiedRecordDomains;
     delete this.data.mcpServerEnabled;
     delete this.data.mcpServerHost;
