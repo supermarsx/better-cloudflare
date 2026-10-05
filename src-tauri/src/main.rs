@@ -511,6 +511,56 @@ mod tests {
         manager.shutdown();
     }
 
+    /// The audit trail must be attached before the builder runs.
+    ///
+    /// The five AI commands that can settle a tool call each attach it too,
+    /// and `each_command_on_its_own_records_into_the_managed_store` executes
+    /// four of those. `ai_send_message` is the exception -- it takes a
+    /// runtime-concrete `AppHandle` a mock app cannot supply -- so for that
+    /// one path this eager attach is what stands between a tool call and the
+    /// record of it. An unattached ledger records nothing and says nothing,
+    /// by design, so the wiring gets its own assertion.
+    ///
+    /// Source-text, with the floor that implies: it answers "is this written
+    /// down", not "does this run". Comments are stripped so a commented-out
+    /// attach cannot satisfy it, but a `#[cfg]`-disabled one still would.
+    /// `main` cannot be executed from a test, so this is the strongest check
+    /// available here, and the ordering assertion is the part a careless edit
+    /// is most likely to break.
+    #[test]
+    fn the_audit_trail_is_attached_before_the_builder() {
+        let source = include_str!("main.rs");
+        let production = source
+            .split_once("#[cfg(test)]")
+            .map(|(production, _)| production)
+            .expect("main.rs should retain a separate test module");
+        let production: String = production
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join(
+                "
+",
+            );
+
+        let attach = production
+            .find("agent.attach_audit_trail(storage.audit_trail());")
+            .expect(
+                "main must attach the audit trail: without it, a tool call on                  a path whose own attach is missing goes unrecorded in silence",
+            );
+        let manage = production
+            .find(".manage(storage)")
+            .expect("main must hand the same store to the builder");
+        assert!(
+            attach < manage,
+            "the trail must be attached before the builder takes the store,              so no command can dispatch a tool before the agent can record it"
+        );
+        assert!(
+            !production.contains(".manage(Storage::default())"),
+            "a second Storage would give the agent a different store from the              one the commands read"
+        );
+    }
+
     #[test]
     fn every_notification_command_is_registered() {
         let source = include_str!("main.rs");
