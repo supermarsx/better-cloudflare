@@ -446,7 +446,10 @@ mod tests {
             let recovered = crypto.decrypt(envelope, &password).unwrap_or_else(|error| {
                 panic!("stored vault became unreadable for vector '{label}': {error:?}")
             });
-            assert_eq!(&recovered, expected, "plaintext changed for vector '{label}'");
+            assert_eq!(
+                &recovered, expected,
+                "plaintext changed for vector '{label}'"
+            );
         }
     }
 
