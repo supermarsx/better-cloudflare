@@ -1992,6 +1992,21 @@ mod tests {
             .split_once("mod tests {")
             .map(|(production, _)| production)
             .expect("ai_commands.rs should retain a separate test module");
+        // Comments are stripped before anything is searched for. This test
+        // asks whether a call is *present*, and a commented-out call still
+        // contains its own text -- so without this, commenting the attach out
+        // left the trail unwired with this test still green. Verified both
+        // ways: commenting it out passes without this filter and fails with
+        // it, and deleting the line fails either way.
+        let production: String = production
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join(
+                "
+",
+            );
+        let production = production.as_str();
 
         for (command, delegate) in TRAIL_ATTACHING_COMMANDS {
             // Up to the next command attribute, which is the end of this
