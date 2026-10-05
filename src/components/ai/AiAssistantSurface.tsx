@@ -642,6 +642,17 @@ export function AiAssistantSurface({
         )}
         aria-expanded={open}
         aria-label={open ? t("Close assistant", "Close assistant") : label}
+        // How anyone finds out the bubble moves at all. A `title` and not
+        // `aria-keyshortcuts`, which is specified for shortcuts that focus or
+        // activate an element — arrow keys steering an already-focused widget
+        // are not that, and claiming otherwise would put a false statement in
+        // the accessibility tree. The `aria-label` above keeps its job as the
+        // accessible name, so this lands as a description rather than
+        // competing with it.
+        title={t(
+          "Drag or use arrow keys to move",
+          "Drag or use arrow keys to move",
+        )}
         onPointerDown={drag.onPointerDown}
         onKeyDown={drag.onKeyDown}
         onClick={(event) => {

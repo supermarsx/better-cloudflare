@@ -819,6 +819,28 @@ test("a nudge cannot walk the bubble off the screen", () => {
   assert.equal(bubble.style.right, "956px");
 });
 
+test("the launcher says it can be moved, without that becoming its name", () => {
+  installBackend();
+  render(<Harness presentation="bubble" />);
+  const launcher = bubbleLauncher();
+
+  // Without this nothing on screen tells anyone the bubble moves at all.
+  assert.equal(
+    launcher.getAttribute("title"),
+    "Drag or use arrow keys to move",
+  );
+
+  // And it is a description, not the name. This query resolves by *computed*
+  // accessible name, so it fails the moment `title` starts winning — which
+  // matters beyond this file: `DNSManager.assistant.test.tsx` pins that
+  // exactly one control is named just "Assistant", and the command bar's
+  // control is told apart from this one by name alone.
+  assert.ok(
+    screen.getByRole("button", { name: "Assistant" }) === launcher,
+    "the accessible name must still come from aria-label",
+  );
+});
+
 test("the dock is not movable", async () => {
   installBackend();
   render(<Harness presentation="sidebar" initiallyOpen />);
