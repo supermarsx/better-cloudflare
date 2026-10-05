@@ -6528,7 +6528,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       type?: string;
       name?: string;
       content?: string;
-    }) => `${record.type ?? ""} ${record.name ?? ""} ${record.content ?? ""}`;
+    }) =>
+      `${record.type ?? ""}\u0000${record.name ?? ""}\u0000${record.content ?? ""}`;
 
     const seen = new Set(tab.records.map(recordKey));
     const items: PreparedCopiedDnsRecord[] = [];
