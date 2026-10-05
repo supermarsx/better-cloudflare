@@ -1906,6 +1906,107 @@ mod tests {
         assert!(!delete_plan_inner(&agent, conversation_id).await);
     }
 
+    /// The whole chain, with nothing stubbed out: the command helper attaches
+    /// a real store, a plan runs through the real command entry points, and
+    /// the entries are read back out of the store the way the audit dialog
+    /// reads them.
+    ///
+    /// Every other test of this feature stops one layer short. The ledger
+    /// tests assert against a recording sink, which proves the ledger builds
+    /// the right entry but not that anything persists it; the storage tests
+    /// call `AuditTrail::record` directly, which proves persistence but not
+    /// that a tool call reaches it. This is the seam between them — the
+    /// `attach_trail` the commands call, the `OnceLock` it sets, the
+    /// `impl AuditTrail for Storage`, the actor-aware append, and
+    /// `get_audit_entries` — and a break anywhere along it is silent, because
+    /// recording is deliberately infallible.
+    #[tokio::test]
+    async fn an_assistant_tool_call_lands_in_the_store_the_audit_dialog_reads() {
+        let storage = Storage::new(false);
+        let agent = plan_agent(AiPermissionMode::ReadOnly).await;
+        // The real wiring, not a test double: this is the line every
+        // dispatching command runs.
+        attach_trail(&agent, &storage);
+        let conversation_id = create_valid_conversation(&agent).await;
+
+        propose(
+            &agent,
+            conversation_id,
+            serde_json::json!([
+                { "title": "parse it", "tool": "dns_parse_spf", "arguments": { "content": "v=spf1 -all" } },
+                {
+                    "title": "drop the stale record",
+                    "tool": "cf_delete_dns_record",
+                    "arguments": {
+                        "api_key": "cf-token-must-never-be-recorded",
+                        "zone_id": "zone-1",
+                        "record_id": "record-1",
+                    },
+                },
+            ]),
+        )
+        .await;
+        approve_plan_inner(&agent, conversation_id)
+            .await
+            .expect("approve");
+        run_plan_inner(&agent, conversation_id).await.expect("run");
+
+        let entries = storage
+            .get_audit_entries()
+            .await
+            .expect("read the audit log");
+        let operations: Vec<&str> = entries
+            .iter()
+            .filter_map(|entry| entry.get("operation").and_then(|value| value.as_str()))
+            .collect();
+        assert_eq!(
+            operations,
+            vec![
+                "assistant:plan_approved",
+                "assistant:tool_call",
+                "assistant:tool_call",
+            ],
+            "the stored log, in the order things happened: {entries:#?}"
+        );
+
+        assert_eq!(entries[0]["actor"], serde_json::json!("user"));
+        assert_eq!(entries[0]["mutating_step_count"], serde_json::json!(1));
+
+        assert_eq!(
+            entries[1]["actor"],
+            serde_json::json!("assistant"),
+            "{entries:#?}"
+        );
+        assert_eq!(entries[1]["resource"], serde_json::json!("dns_parse_spf"));
+        assert_eq!(entries[1]["outcome"], serde_json::json!("succeeded"));
+
+        // The refused half, which is the one a user opens the log to find.
+        assert_eq!(
+            entries[2]["resource"],
+            serde_json::json!("cf_delete_dns_record")
+        );
+        assert_eq!(entries[2]["outcome"], serde_json::json!("denied"));
+        assert_eq!(
+            entries[2]["denied_by"],
+            serde_json::json!("assistant_policy"),
+            "read-only mode is the assistant's own policy, not the MCP grants"
+        );
+        assert_eq!(entries[2]["zone_id"], serde_json::json!("zone-1"));
+        assert_eq!(entries[2]["record_id"], serde_json::json!("record-1"));
+
+        // Every stored entry is timestamped and carries no credential, read
+        // back from the store rather than inspected before it was written.
+        for entry in &entries {
+            assert!(entry["timestamp"].as_str().is_some(), "{entry}");
+            assert!(
+                !entry
+                    .to_string()
+                    .contains("cf-token-must-never-be-recorded"),
+                "a credential reached the stored log: {entry}"
+            );
+        }
+    }
+
     /// What the whole plan-time resolution exists for: before approving
     /// anything, the user is told which steps cannot run and which of the two
     /// permission lists stops each one.
