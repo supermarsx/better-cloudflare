@@ -572,7 +572,7 @@ pub fn run_domain_audit(
     // ── Security checks ─────────────────────────────────────────────────
 
     if options.include_categories.security {
-        audit_security(&mut items, records);
+        audit_security(&mut items, records, &apex);
     }
 
     // ── Email checks ────────────────────────────────────────────────────
@@ -1330,7 +1330,23 @@ fn audit_hygiene(
 
 // ── Security ────────────────────────────────────────────────────────────────
 
-fn audit_security(items: &mut Vec<AuditItem>, records: &[DNSRecord]) {
+/// What the iodef suggestion on `caa-analysis` does *not* cover.
+///
+/// `caa-analysis` is one finding built from several independent CAA problems
+/// joined into one `details` block, but a finding carries at most one
+/// `suggestion` and the UI offers it under a generic "Add suggested record…"
+/// label. Of the three problems it reports, only the missing iodef tag is fixed
+/// by adding a record; the other two ask for existing records to be changed or
+/// removed. Without this sentence a user reading a three-line finding with one
+/// button has no way to tell which line the button addresses.
+///
+/// Kept as its own literal, joined with `\n\n` at the call site rather than
+/// written into the surrounding `format!`, so that it fingerprints identically
+/// to the TypeScript template literal that `test/domain-audit-parity.test.ts`
+/// compares it against.
+const CAA_IODEF_SUGGESTION_SCOPE: &str = "The suggested record adds the iodef tag only; the other points listed here each need a separate change.";
+
+fn audit_security(items: &mut Vec<AuditItem>, records: &[DNSRecord], apex: &str) {
     let caa_records: Vec<&DNSRecord> = records.iter().filter(|r| r.r#type == "CAA").collect();
     if !caa_records.is_empty() {
         let parsed: Vec<(Option<u8>, Option<String>, Option<String>)> =
@@ -1368,21 +1384,55 @@ fn audit_security(items: &mut Vec<AuditItem>, records: &[DNSRecord]) {
                 "CAA exists but contains no issue/issuewild tags (may be ineffective).".to_string(),
             );
         }
-        items.push(item(
-            "caa-analysis",
-            AuditCategory::Security,
-            if issues.is_empty() {
-                AuditSeverity::Pass
-            } else {
-                AuditSeverity::Warn
-            },
-            "CAA policy review",
-            if issues.is_empty() {
-                "CAA present and looks reasonable.".to_string()
-            } else {
-                issues.join("\n")
-            },
-        ));
+        // The note belongs on the finding only when the suggestion is offered
+        // *and* there is another line beside the iodef one. With the iodef line
+        // alone there is nothing for a reader to mistake the button for, and the
+        // sentence would not be true.
+        let scope_note = !has_iodef && issues.len() > 1;
+        let details = if issues.is_empty() {
+            "CAA present and looks reasonable.".to_string()
+        } else if scope_note {
+            format!("{}\n\n{}", issues.join("\n"), CAA_IODEF_SUGGESTION_SCOPE)
+        } else {
+            issues.join("\n")
+        };
+        let severity = if issues.is_empty() {
+            AuditSeverity::Pass
+        } else {
+            AuditSeverity::Warn
+        };
+        // Of the three problems this finding reports, only a missing iodef tag
+        // is repaired by adding a record, so the suggestion is offered on
+        // exactly that condition. The other two ask for records that already
+        // exist to be changed or removed, which a pre-filled add-record form
+        // cannot express.
+        //
+        // Flags `0` is not a style choice. A CA that does not recognise a tag
+        // marked critical must refuse to issue (RFC 8659 §4.1), so `128 iodef`
+        // would hand the zone an outage in exchange for a contact address. The
+        // mailbox is a template the user edits before saving — the app cannot
+        // know the real contact — and `security@` is the local part RFC 9116
+        // already uses for exactly this purpose.
+        items.push(if has_iodef {
+            item(
+                "caa-analysis",
+                AuditCategory::Security,
+                severity,
+                "CAA policy review",
+                details,
+            )
+        } else {
+            item_with_suggestion(
+                "caa-analysis",
+                AuditCategory::Security,
+                severity,
+                "CAA policy review",
+                details,
+                "CAA",
+                "@",
+                &format!("0 iodef \"mailto:security@{}\"", apex),
+            )
+        });
     } else {
         items.push(item(
             "caa-analysis",
@@ -1954,6 +2004,134 @@ mod tests {
         assert_eq!(incomplete.len(), 1);
         assert_eq!(incomplete[0].severity, AuditSeverity::Warn);
         assert!(incomplete[0].details.contains("iodef"));
+    }
+
+    /// The suggested iodef record has to survive the round trip the app will
+    /// put it through: `parse_caa` reads it back as the tag the finding asked
+    /// for, and re-auditing the zone with it published clears the finding. A
+    /// suggestion this crate's own parser could not read would be worse than
+    /// offering none, and only the second half proves that end to end.
+    #[test]
+    fn the_suggested_iodef_record_parses_and_clears_the_finding() {
+        let issuer = record("CAA", ZONE, "0 issue \"letsencrypt.org\"");
+        let items = run_domain_audit(
+            ZONE,
+            std::slice::from_ref(&issuer),
+            &options(false, true, false),
+        );
+        let caa = finding(&items, "caa-analysis");
+        let suggestion = caa
+            .suggestion
+            .as_ref()
+            .expect("a missing iodef tag should carry a repair suggestion");
+
+        assert_eq!(suggestion.record_type, "CAA");
+        assert_eq!(suggestion.name, "@");
+        assert_eq!(
+            suggestion.content,
+            "0 iodef \"mailto:security@example.com\""
+        );
+
+        let (flags, tag, value) = parse_caa(&suggestion.content);
+        assert_eq!(
+            flags,
+            Some(0),
+            "an iodef tag marked critical can block issuance outright"
+        );
+        assert_eq!(tag.as_deref(), Some("iodef"));
+        assert_eq!(value.as_deref(), Some("mailto:security@example.com"));
+
+        let repaired = run_domain_audit(
+            ZONE,
+            &[issuer, record("CAA", ZONE, &suggestion.content)],
+            &options(false, true, false),
+        );
+        let repaired_caa = finding(&repaired, "caa-analysis");
+        assert_eq!(repaired_caa.severity, AuditSeverity::Pass);
+        assert!(
+            repaired_caa.suggestion.is_none(),
+            "a zone that already has an iodef tag has nothing to add"
+        );
+    }
+
+    /// The suggestion repairs one line of a finding that can report several, so
+    /// a finding carrying more than the iodef line has to say which line the
+    /// generic "Add suggested record…" button addresses — and a finding
+    /// carrying only that line must not say it.
+    #[test]
+    fn the_caa_finding_scopes_its_suggestion_only_when_it_reports_more() {
+        let four_issuers = [
+            "0 issue \"letsencrypt.org\"",
+            "0 issue \"digicert.com\"",
+            "0 issue \"sectigo.com\"",
+            "0 issue \"globalsign.com\"",
+        ]
+        .map(|content| record("CAA", ZONE, content));
+
+        let crowded = run_domain_audit(ZONE, &four_issuers, &options(false, true, false));
+        let crowded_caa = finding(&crowded, "caa-analysis");
+        assert!(
+            crowded_caa.details.contains("CAA allows many issuers (4)"),
+            "expected the issuer count alongside the iodef line: {}",
+            crowded_caa.details
+        );
+        assert!(
+            crowded_caa.details.contains(CAA_IODEF_SUGGESTION_SCOPE),
+            "a finding reporting more than the iodef line must scope its suggestion: {}",
+            crowded_caa.details
+        );
+        assert!(crowded_caa.suggestion.is_some());
+
+        let only_iodef = run_domain_audit(
+            ZONE,
+            &[record("CAA", ZONE, "0 issue \"letsencrypt.org\"")],
+            &options(false, true, false),
+        );
+        let only_iodef_caa = finding(&only_iodef, "caa-analysis");
+        assert!(
+            !only_iodef_caa.details.contains(CAA_IODEF_SUGGESTION_SCOPE),
+            "with nothing else listed there is nothing to scope against: {}",
+            only_iodef_caa.details
+        );
+        assert!(only_iodef_caa.suggestion.is_some());
+
+        // An issuer problem on its own is not something adding a record fixes.
+        let mut with_contact = four_issuers.to_vec();
+        with_contact.push(record(
+            "CAA",
+            ZONE,
+            "0 iodef \"mailto:security@example.com\"",
+        ));
+        let no_suggestion = run_domain_audit(ZONE, &with_contact, &options(false, true, false));
+        let no_suggestion_caa = finding(&no_suggestion, "caa-analysis");
+        assert_eq!(no_suggestion_caa.severity, AuditSeverity::Warn);
+        assert!(no_suggestion_caa.suggestion.is_none());
+        assert!(!no_suggestion_caa
+            .details
+            .contains(CAA_IODEF_SUGGESTION_SCOPE));
+    }
+
+    /// The suggested record names the zone it was generated for, not the zone
+    /// the fixtures happen to use.
+    #[test]
+    fn the_suggested_iodef_mailbox_follows_the_zone_apex() {
+        let items = run_domain_audit(
+            "sub.example.org.",
+            &[record(
+                "CAA",
+                "sub.example.org",
+                "0 issue \"letsencrypt.org\"",
+            )],
+            &options(false, true, false),
+        );
+        let suggestion = finding(&items, "caa-analysis")
+            .suggestion
+            .as_ref()
+            .expect("a missing iodef tag should carry a repair suggestion");
+        assert_eq!(
+            suggestion.content,
+            "0 iodef \"mailto:security@sub.example.org\""
+        );
     }
 
     #[test]

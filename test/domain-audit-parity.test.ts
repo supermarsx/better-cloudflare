@@ -521,10 +521,13 @@ const TS_ONLY = new Map<string, string>();
  * So these numbers are expected to change, and changing them is the point: it
  * turns a silent reduction in coverage into a line someone has to write on
  * purpose. Raised by t32-e1, which spotted that the floor left exactly this gap.
+ *
+ * Last moved by the `caa-analysis` iodef suggestion: +2 on each side, for the
+ * suggested record's content template and the sentence scoping what it fixes.
  */
-const EXPECTED_TS_STRINGS = 173;
+const EXPECTED_TS_STRINGS = 175;
 /** One higher than TypeScript: the chrono format string in {@link RUST_ONLY}. */
-const EXPECTED_RS_STRINGS = 174;
+const EXPECTED_RS_STRINGS = 176;
 const EXPECTED_FINDING_IDS = 45;
 
 function coverageMessage(

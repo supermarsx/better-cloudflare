@@ -427,6 +427,25 @@ function parseMx(
   };
 }
 
+/**
+ * What the iodef suggestion on `caa-analysis` does *not* cover.
+ *
+ * `caa-analysis` is one finding built from several independent CAA problems
+ * joined into one `details` block, but a finding carries at most one
+ * `suggestion` and the UI offers it under a generic "Add suggested record…"
+ * label. Of the three problems it reports, only the missing iodef tag is fixed
+ * by adding a record; the other two ask for existing records to be changed or
+ * removed. Without this sentence a user reading a three-line finding with one
+ * button has no way to tell which line the button addresses.
+ *
+ * Kept as its own literal, joined with `\n\n` at the call site rather than
+ * concatenated into the surrounding text, so that it fingerprints identically
+ * to the Rust `format!("{}\n\n{}", …)` that `test/domain-audit-parity.test.ts`
+ * compares it against.
+ */
+const CAA_IODEF_SUGGESTION_SCOPE =
+  "The suggested record adds the iodef tag only; the other points listed here each need a separate change.";
+
 export function runDomainAudit(
   zoneName: string,
   records: DNSRecord[],
@@ -982,15 +1001,45 @@ export function runDomainAudit(
         issues.push(
           "CAA exists but contains no issue/issuewild tags (may be ineffective).",
         );
-      items.push({
+      // The note belongs on the finding only when the suggestion is offered
+      // *and* there is another line beside the iodef one. With the iodef line
+      // alone there is nothing for a reader to mistake the button for, and the
+      // sentence would not be true.
+      const scopeNote = !hasIodef && issues.length > 1;
+      let details: string;
+      if (issues.length === 0) {
+        details = "CAA present and looks reasonable.";
+      } else if (scopeNote) {
+        details = `${issues.join("\n")}\n\n${CAA_IODEF_SUGGESTION_SCOPE}`;
+      } else {
+        details = issues.join("\n");
+      }
+      const caaItem: DomainAuditItem = {
         id: "caa-analysis",
         category: "security",
         severity: issues.length ? "warn" : "pass",
         title: "CAA policy review",
-        details: issues.length
-          ? issues.join("\n")
-          : "CAA present and looks reasonable.",
-      });
+        details,
+      };
+      // Of the three problems this finding reports, only a missing iodef tag is
+      // repaired by adding a record, so the suggestion is offered on exactly
+      // that condition. The other two ask for records that already exist to be
+      // changed or removed, which a pre-filled add-record form cannot express.
+      //
+      // Flags `0` is not a style choice. A CA that does not recognise a tag
+      // marked critical must refuse to issue (RFC 8659 §4.1), so `128 iodef`
+      // would hand the zone an outage in exchange for a contact address. The
+      // mailbox is a template the user edits before saving — the app cannot
+      // know the real contact — and `security@` is the local part RFC 9116
+      // already uses for exactly this purpose.
+      if (!hasIodef) {
+        caaItem.suggestion = {
+          recordType: "CAA",
+          name: "@",
+          content: `0 iodef "mailto:security@${apex}"`,
+        };
+      }
+      items.push(caaItem);
     } else {
       items.push({
         id: "caa-analysis",
