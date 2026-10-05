@@ -948,5 +948,6 @@
   "Verifying…": "Verifying…",
   "{{field}} must not contain control characters.": "{{field}} must not contain control characters.",
   "You already have the maximum of {{limit}} providers. Delete one before adding another.": "You already have the maximum of {{limit}} providers. Delete one before adding another.",
-  "Base URL must be a full http:// or https:// address with no spaces and no embedded username or password, or empty to use the protocol default.": "Base URL must be a full http:// or https:// address with no spaces and no embedded username or password, or empty to use the protocol default."
+  "Base URL must be a full http:// or https:// address with no spaces and no embedded username or password, or empty to use the protocol default.": "Base URL must be a full http:// or https:// address with no spaces and no embedded username or password, or empty to use the protocol default.",
+  "Drag or use arrow keys to move": "Drag or use arrow keys to move"
 }
