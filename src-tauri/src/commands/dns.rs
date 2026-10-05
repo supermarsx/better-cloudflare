@@ -1373,6 +1373,33 @@ pub fn run_domain_audit(
     bc_domain_audit::run_domain_audit(&zone_name, &records, &options)
 }
 
+/// Look up a domain's registry record.
+///
+/// The audit's `domain-expiry` finding needs an expiry date and the registry is
+/// the only authority for one, so the audit had to tell the user to go and run
+/// a lookup by hand. This makes the lookup available to it directly.
+///
+/// It runs in the host rather than the web view for two reasons. The outbound
+/// request stays off the renderer, which is the same reason the rest of this
+/// app's network calls live here. And it reuses the RDAP implementation the
+/// notification service already uses, so the audit and the expiry notification
+/// cannot disagree about when one domain expires -- `bc_notify::rdap` is
+/// explicit that it holds the single definition of expiry for that reason.
+///
+/// That module also does the hardening: it validates and percent-encodes the
+/// hostname, follows only HTTPS redirects and only to a bounded depth, stops
+/// reading the body at a byte ceiling whether or not a length was declared,
+/// and caps how many statuses, nameservers and fields one answer may
+/// contribute. The record it returns is a deliberate projection that omits
+/// registrant, admin and technical contact vCards, so a lookup cannot pull
+/// personal data into the app.
+#[tauri::command]
+pub async fn lookup_domain_registry(domain: String) -> Result<bc_notify::RdapRegistration, String> {
+    bc_notify::fetch_rdap_registration(bc_notify::rdap::shared_client(), &domain)
+        .await
+        .map_err(|error| error.to_string())
+}
+
 // ─── DNS Propagation ────────────────────────────────────────────────────────
 
 #[tauri::command]

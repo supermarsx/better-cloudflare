@@ -15,6 +15,7 @@
 //! its hostname is reported in [`RdapRegistration::whois_server`] and nothing
 //! in this crate ever contacts it.
 
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
@@ -187,6 +188,17 @@ pub fn default_client() -> reqwest::Client {
         .user_agent("better-cloudflare-notify/0.1")
         .build()
         .unwrap_or_else(|_| reqwest::Client::new())
+}
+
+/// A process-wide client, for callers that do one-off lookups.
+///
+/// The notification service builds a client once and keeps it for its polling
+/// loop. A lookup driven by the UI has no such loop to hang one on, and
+/// building a fresh TLS stack per lookup is waste, so this hands out a shared
+/// one with the same bounds.
+pub fn shared_client() -> &'static reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT.get_or_init(default_client)
 }
 
 /// Fetch one RDAP document, bounded in every direction: a validated and

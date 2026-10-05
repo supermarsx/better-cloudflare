@@ -1238,6 +1238,24 @@ export class TauriClient {
     return invoke("run_domain_audit", { zoneName, records, options });
   }
 
+  /**
+   * Look up a domain's registry record.
+   *
+   * The audit needs an expiry date and only the registry has one. This goes
+   * through the host so the request leaves from there rather than the web
+   * view, and so it reuses the same RDAP implementation the expiry
+   * notifications use -- the two must not disagree about one domain's date.
+   *
+   * Rejects rather than resolving when the registry has no data for the name:
+   * a TLD with no RDAP service answers 404, which is a real answer ("unknown")
+   * and not an expiry of null.
+   */
+  static async lookupDomainRegistry(
+    domain: string,
+  ): Promise<DomainRegistryRecord> {
+    return invoke("lookup_domain_registry", { domain });
+  }
+
   // ── Biometric Authentication ──────────────────────────────────────────────
 
   static async biometricStatus(): Promise<BiometricStatus> {
@@ -2533,6 +2551,42 @@ export interface RecordChangePayload {
   recordName: string;
   before?: RecordChangeSnapshot;
   after?: RecordChangeSnapshot;
+}
+
+/**
+ * The operationally useful half of an RDAP domain object, as the host projects
+ * it (`bc_notify::rdap::RdapRegistration`).
+ *
+ * A projection, not a passthrough: the host deliberately never reads the
+ * registrant, administrative or technical contact vCards, so no personal name,
+ * postal address or phone number of a domain owner reaches the app. The
+ * registrar's abuse contact is here because it is an organisational role
+ * account published for exactly this purpose.
+ */
+export interface DomainRegistryRecord {
+  /** The domain as queried, normalised: lowercase, no trailing dot. */
+  domain: string;
+  /** The registry's own `ldhName`, when it differs from the queried name. */
+  registryDomain?: string;
+  /** `unicodeName`, when a punycode query named an IDN. */
+  unicodeName?: string;
+  handle?: string;
+  registrar?: string;
+  registrarIanaId?: string;
+  /** EPP status codes verbatim (`clientTransferProhibited`, ...). */
+  statuses: string[];
+  /** RFC 3339 */
+  registeredAt?: string;
+  /** RFC 3339 */
+  expiresAt?: string;
+  /** RFC 3339 */
+  updatedAt?: string;
+  nameservers: string[];
+  dnssecSigned?: boolean;
+  abuseEmail?: string;
+  abusePhone?: string;
+  /** Where classic WHOIS lives, if the registry says. Reported, never contacted. */
+  whoisServer?: string;
 }
 
 export interface DomainExpiryPayload {

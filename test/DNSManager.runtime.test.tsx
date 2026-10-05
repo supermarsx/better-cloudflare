@@ -291,6 +291,132 @@ function zoneTab(
   };
 }
 
+async function openZoneAuditTab(zoneName: string): Promise<void> {
+  const zoneSelector = await screen.findByRole("combobox", {
+    name: "Domain/Zone",
+  });
+  fireEvent.click(zoneSelector);
+  fireEvent.click(
+    await screen.findByRole("option", { name: `${zoneName} (active)` }),
+  );
+  await clickActionTab(/audit/i);
+}
+
+async function clickActionTab(label: RegExp): Promise<void> {
+  let button: HTMLButtonElement | undefined;
+  await waitFor(() => {
+    button = Array.from(
+      document.querySelectorAll<HTMLButtonElement>("button.ui-segment"),
+    ).find((candidate) => label.test(candidate.textContent ?? ""));
+    assert.ok(button, `no action tab matching ${label}`);
+  });
+  fireEvent.click(button!);
+}
+
+test("the audit looks up the registry expiry itself, once per domain", async () => {
+  setDesktopWindow();
+  const zoneId = "expiry-zone";
+  const zoneName = "example.com";
+  const lookups: string[] = [];
+  // 20 days out, which the audit grades `warn`. A date far in the future
+  // grades `pass`, and the findings list does not render passing checks, so
+  // asserting on one would prove nothing. This is also the case worth having:
+  // a renewal warning the user would never have seen while the date was
+  // reachable only by running a registry lookup by hand.
+  const expiresAt = new Date(
+    Date.now() + 20 * 24 * 60 * 60 * 1000,
+  ).toISOString();
+
+  mockDnsRuntime(async () => ({}), undefined, {
+    zones: [
+      {
+        id: zoneId,
+        name: zoneName,
+        status: "active",
+        name_servers: [],
+      } as unknown as TauriZone,
+    ],
+    getDNSRecords: async () => [],
+  });
+  mock.method(TauriClient, "lookupDomainRegistry", async (domain: string) => {
+    lookups.push(domain);
+    return { domain, statuses: [], nameservers: [], expiresAt };
+  });
+
+  render(<DNSManager apiKey="test-key" onLogout={() => {}} />);
+  await openZoneAuditTab(zoneName);
+
+  // The whole point: the audit reports a date without the user going off to
+  // run a registry lookup by hand.
+  await waitFor(() =>
+    assert.ok(
+      screen.queryByText(/Domain expiry approaching/),
+      "the automatic lookup should have produced a dated expiry finding",
+    ),
+  );
+  assert.ok(screen.queryByText(/20 days remaining/));
+  assert.equal(
+    screen.queryByText(/Domain expiry date is unavailable/),
+    null,
+    "the audit must not still be asking for a manual registry lookup",
+  );
+  assert.deepEqual(lookups, [zoneName]);
+
+  // Leaving the audit and returning must not spend a second request on a
+  // date already in hand.
+  await clickActionTab(/records/i);
+  await clickActionTab(/audit/i);
+  await waitFor(() =>
+    assert.ok(screen.queryByText(/Domain expiry approaching/)),
+  );
+  assert.deepEqual(lookups, [zoneName], "one lookup per domain");
+});
+
+test("a registry with no expiry is not asked twice", async () => {
+  setDesktopWindow();
+  const zoneId = "no-rdap-zone";
+  const zoneName = "example.com";
+  const lookups: string[] = [];
+
+  mockDnsRuntime(async () => ({}), undefined, {
+    zones: [
+      {
+        id: zoneId,
+        name: zoneName,
+        status: "active",
+        name_servers: [],
+      } as unknown as TauriZone,
+    ],
+    getDNSRecords: async () => [],
+  });
+  // What a TLD with no RDAP service does: answer 404, which the host surfaces
+  // as a rejection. That is a real answer -- "no date" -- not a fault to retry.
+  mock.method(TauriClient, "lookupDomainRegistry", async (domain: string) => {
+    lookups.push(domain);
+    throw new Error("RDAP returned HTTP 404");
+  });
+
+  render(<DNSManager apiKey="test-key" onLogout={() => {}} />);
+  await openZoneAuditTab(zoneName);
+
+  await waitFor(() => assert.equal(lookups.length, 1));
+  // The audit still says the date is unavailable, which is honest here.
+  await waitFor(() =>
+    assert.ok(screen.queryByText(/Domain expiry date is unavailable/)),
+  );
+
+  await clickActionTab(/records/i);
+  await clickActionTab(/audit/i);
+  await waitFor(() =>
+    assert.ok(screen.queryByText(/Domain expiry date is unavailable/)),
+  );
+  assert.deepEqual(
+    lookups,
+    [zoneName],
+    "a registry that has no date must not be polled again",
+  );
+});
+
 test("opens and creates a normalized domain-audit suggestion", async () => {
   setDesktopWindow();
   const zoneId = "suggestion-zone";

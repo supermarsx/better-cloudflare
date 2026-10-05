@@ -294,6 +294,7 @@ fn main() {
             commands::parse_spf,
             // Domain Audit
             commands::run_domain_audit,
+            commands::lookup_domain_registry,
             // Biometric Authentication
             commands::biometric_status,
             commands::biometric_authenticate,

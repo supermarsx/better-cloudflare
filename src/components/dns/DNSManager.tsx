@@ -2510,36 +2510,121 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     [],
   );
 
-  useEffect(() => {
-    if (!activeTab || activeTab.kind !== "zone") {
-      setDomainAuditItems([]);
-      return;
-    }
-    let active = true;
-    const zone = activeTab.zoneName.trim().toLowerCase();
-    const registrarExpiry =
-      registrarDomainResult &&
-      registrarDomainResult.domain.trim().toLowerCase() === zone
-        ? registrarDomainResult.expires_at
-        : null;
-    const rdapEventsRaw = Array.isArray(
+  /**
+   * Registry expiry dates, keyed by the domain each was looked up for.
+   *
+   * `null` is a real answer and not "unknown yet": the lookup ran and the
+   * registry had no expiry for that name, which is what a TLD with no RDAP
+   * service reports. Keeping the two apart is what stops the audit asking
+   * again for a name that will never answer.
+   */
+  const [registryExpiryByDomain, setRegistryExpiryByDomain] = useState<
+    Record<string, string | null>
+  >({});
+  /**
+   * Domains a lookup has already been started for. A ref rather than state
+   * because it must not itself cause a render -- it exists to stop a second
+   * request for a domain whose first is still in flight.
+   */
+  const registryExpiryRequested = useRef(new Set<string>());
+
+  const auditZoneName =
+    activeTab?.kind === "zone" ? activeTab.zoneName.trim().toLowerCase() : null;
+
+  /** Expiry from the registrar's own API, when it is for the zone on screen. */
+  const registrarExpiry = useMemo(() => {
+    if (!auditZoneName || !registrarDomainResult) return null;
+    return registrarDomainResult.domain.trim().toLowerCase() === auditZoneName
+      ? registrarDomainResult.expires_at
+      : null;
+  }, [auditZoneName, registrarDomainResult]);
+
+  /** Expiry read out of an RDAP document the user already loaded by hand. */
+  const rdapExpiryEvent = useMemo(() => {
+    const events = Array.isArray(
       (rdapResult as Record<string, unknown> | null)?.events,
     )
       ? ((rdapResult as Record<string, unknown>).events as Array<
           Record<string, unknown>
         >)
       : [];
-    const rdapExpiryEvent =
-      rdapEventsRaw
+    return (
+      events
         .find((event) =>
           String(event.eventAction ?? "")
             .toLowerCase()
             .includes("expiration"),
         )
-        ?.eventDate?.toString() ?? null;
+        ?.eventDate?.toString() ?? null
+    );
+  }, [rdapResult]);
+
+  /**
+   * The date the audit gets, from whichever source has one.
+   *
+   * Ordered by how much the user asked for it: registrar data and a manually
+   * loaded RDAP document are already in hand and were requested explicitly,
+   * so they win over the lookup this component makes on its own.
+   */
+  const domainExpiresAt =
+    registrarExpiry ??
+    rdapExpiryEvent ??
+    (auditZoneName ? (registryExpiryByDomain[auditZoneName] ?? null) : null);
+
+  /**
+   * Look the expiry date up, rather than telling the user to go and do it.
+   *
+   * The audit's expiry check has no date of its own -- the registry is the
+   * only authority for one -- so without this the finding could only say the
+   * date was unavailable and ask for a manual registry lookup.
+   *
+   * Scoped to the audit being on screen: opening a zone should not spend a
+   * request on the registry for a date nothing is reading yet. Desktop only,
+   * because the point of going through the host is that the request does not
+   * leave from the web view; on web the manual lookup in Registry still works.
+   */
+  useEffect(() => {
+    if (!isDesktop()) return;
+    if (actionTab !== "domain-audit") return;
+    if (!auditZoneName) return;
+    // A source the user already has beats spending a request.
+    if (registrarExpiry || rdapExpiryEvent) return;
+    if (registryExpiryRequested.current.has(auditZoneName)) return;
+    registryExpiryRequested.current.add(auditZoneName);
+    let active = true;
+    TauriClient.lookupDomainRegistry(auditZoneName)
+      .then((registration) => {
+        if (!active) return;
+        setRegistryExpiryByDomain((prev) => ({
+          ...prev,
+          [auditZoneName]: registration.expiresAt ?? null,
+        }));
+      })
+      .catch((error) => {
+        // A registry with no data for this name is an ordinary outcome, not a
+        // fault to report at the user. Record it as "no date" so the audit
+        // says the date is unavailable instead of retrying every render.
+        reportDnsManagerFailure(error, "Look up domain registry expiry");
+        if (!active) return;
+        setRegistryExpiryByDomain((prev) => ({
+          ...prev,
+          [auditZoneName]: null,
+        }));
+      });
+    return () => {
+      active = false;
+    };
+  }, [actionTab, auditZoneName, registrarExpiry, rdapExpiryEvent]);
+
+  useEffect(() => {
+    if (!activeTab || activeTab.kind !== "zone") {
+      setDomainAuditItems([]);
+      return;
+    }
+    let active = true;
     const opts = {
       includeCategories: domainAuditCategories,
-      domainExpiresAt: registrarExpiry ?? rdapExpiryEvent,
+      domainExpiresAt,
     };
     if (isDesktop()) {
       const records =
@@ -2564,7 +2649,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     return () => {
       active = false;
     };
-  }, [activeTab, domainAuditCategories, rdapResult, registrarDomainResult]);
+  }, [activeTab, domainAuditCategories, domainExpiresAt]);
 
   const domainAuditItemsWithOverrides = useMemo(() => {
     if (!activeTab || activeTab.kind !== "zone") return domainAuditItems;
