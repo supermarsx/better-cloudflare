@@ -196,11 +196,19 @@ fn main() {
     // the assistant can reach — and it cannot widen them.
     let mcp = McpServerManager::default();
     let agent = AgentManager::with_mcp_grants(mcp.grant_handle());
+    // One audit trail for the process, attached here rather than only at the
+    // commands that dispatch tools. Those commands do attach it, and a test
+    // pins that they all do, but an unattached ledger records nothing and says
+    // nothing -- so the wiring is done once up front and the per-command
+    // attach becomes a redundant no-op instead of the only thing standing
+    // between an assistant tool call and the record of it.
+    let storage = Storage::default();
+    agent.attach_audit_trail(storage.audit_trail());
 
     let run_result = tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_notification::init())
-        .manage(Storage::default())
+        .manage(storage)
         // `PasskeyState` is managed in `initialize_app` instead: it needs an
         // `AppHandle` to reach the window whose origin scopes the relying party.
         .manage(mcp)
