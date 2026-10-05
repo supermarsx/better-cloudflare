@@ -245,6 +245,13 @@ let restoreLayout: (() => void) | null = null;
  * against. Patched on the prototype rather than on one node because the
  * mount-time clamp has to be observable, and at that moment the node to patch
  * does not exist yet.
+ *
+ * The box *follows its own inline insets*, which is the part that matters for
+ * the arrow keys: both gestures measure the rendered box to find out where
+ * they are starting from, so a stub that answered the same rect forever would
+ * make every nudge start from the default corner and silently turn "ten
+ * nudges accumulate" into "the last nudge wins". A browser moves the box; so
+ * does this.
  */
 function stubLayout(
   box: { right: number; bottom: number; width: number; height: number },
@@ -260,18 +267,30 @@ function stubLayout(
   const innerWidth = Object.getOwnPropertyDescriptor(window, "innerWidth");
   const innerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
 
-  Element.prototype.getBoundingClientRect = () =>
-    ({
-      x: box.right - box.width,
-      y: box.bottom - box.height,
-      left: box.right - box.width,
-      top: box.bottom - box.height,
-      right: box.right,
-      bottom: box.bottom,
+  Element.prototype.getBoundingClientRect = function (this: Element) {
+    // An element carrying inline insets is positioned by them, against the
+    // window as it is *now* — `resizeWindow` changes that out from under us.
+    const inline = (this as HTMLElement).style;
+    const insetRight = inline?.right ? Number.parseFloat(inline.right) : null;
+    const insetBottom = inline?.bottom
+      ? Number.parseFloat(inline.bottom)
+      : null;
+    const right =
+      insetRight === null ? box.right : window.innerWidth - insetRight;
+    const bottom =
+      insetBottom === null ? box.bottom : window.innerHeight - insetBottom;
+    return {
+      x: right - box.width,
+      y: bottom - box.height,
+      left: right - box.width,
+      top: bottom - box.height,
+      right,
+      bottom,
       width: box.width,
       height: box.height,
       toJSON: () => ({}),
-    }) as DOMRect;
+    } as DOMRect;
+  };
   Object.defineProperty(proto, "offsetWidth", {
     configurable: true,
     get: () => box.width,
@@ -648,6 +667,156 @@ test("a position that arrives after mount is adopted", async () => {
   });
   assert.equal(bubble.style.right, "300px");
   assert.equal(bubble.style.bottom, "200px");
+});
+
+/** The launcher in the default corner of a 1000x800 window: 16 right, 64 bottom. */
+function renderMovableBubble(
+  stored: AiAssistantBubblePosition[],
+  bubblePosition?: AiAssistantBubblePosition,
+): { bubble: HTMLElement; launcher: HTMLElement } {
+  installBackend();
+  stubLayout(
+    { right: 984, bottom: 736, width: 44, height: 44 },
+    { width: 1000, height: 800 },
+  );
+  render(
+    <Harness
+      presentation="bubble"
+      bubblePosition={bubblePosition}
+      onBubblePositionChange={(p) => stored.push(p)}
+    />,
+  );
+  return {
+    bubble: screen.getByTestId("ai-assistant-bubble"),
+    launcher: bubbleLauncher(),
+  };
+}
+
+test("arrow keys nudge the bubble, and each nudge is stored", () => {
+  const stored: AiAssistantBubblePosition[] = [];
+  const { bubble, launcher } = renderMovableBubble(stored);
+
+  // Insets are measured from the bottom-right, so moving left grows `right`.
+  act(() => {
+    fireEvent.keyDown(launcher, { key: "ArrowLeft" });
+  });
+  assert.equal(bubble.style.right, "32px");
+  assert.equal(bubble.style.bottom, "64px");
+
+  // Accumulating, not restarting: the second nudge reads back where the first
+  // one left the box rather than the corner it began in.
+  act(() => {
+    fireEvent.keyDown(launcher, { key: "ArrowLeft" });
+  });
+  assert.equal(bubble.style.right, "48px");
+
+  // Shift is the coarse step — 64px, the default corner's own block inset.
+  act(() => {
+    fireEvent.keyDown(launcher, { key: "ArrowUp", shiftKey: true });
+  });
+  assert.equal(bubble.style.bottom, "128px");
+
+  act(() => {
+    fireEvent.keyDown(launcher, { key: "ArrowRight" });
+  });
+  assert.equal(bubble.style.right, "32px");
+
+  // A keypress is a finished gesture — there is no release to wait for — so a
+  // user who nudges four times and walks away has the fourth one stored.
+  assert.deepEqual(stored, [
+    { right: 32, bottom: 64 },
+    { right: 48, bottom: 64 },
+    { right: 48, bottom: 128 },
+    { right: 32, bottom: 128 },
+  ]);
+});
+
+test("an arrow is swallowed only where it moves the bubble", () => {
+  const stored: AiAssistantBubblePosition[] = [];
+  const { bubble, launcher } = renderMovableBubble(stored);
+
+  // On the launcher the page must not also scroll underneath the thing being
+  // moved, so the key is consumed.
+  const onLauncher = fireEvent.keyDown(launcher, {
+    key: "ArrowLeft",
+    cancelable: true,
+  });
+  assert.equal(onLauncher, false, "an arrow that moves the bubble is consumed");
+
+  // Anywhere else it is the page's key. The handler lives on the button, so
+  // this is scoped by focus in a browser; here it is scoped by target.
+  const elsewhere = fireEvent.keyDown(document.body, {
+    key: "ArrowLeft",
+    cancelable: true,
+  });
+  assert.equal(elsewhere, true, "an arrow elsewhere still scrolls the page");
+  assert.equal(bubble.style.right, "32px", "and moved nothing");
+
+  // Modified arrows belong to the browser and the window manager — Alt+Left is
+  // Back — so they are left alone even on the launcher.
+  const withCtrl = fireEvent.keyDown(launcher, {
+    key: "ArrowLeft",
+    ctrlKey: true,
+    cancelable: true,
+  });
+  assert.equal(withCtrl, true, "Ctrl+Arrow is not ours to take");
+  assert.equal(bubble.style.right, "32px");
+  assert.deepEqual(stored, [{ right: 32, bottom: 64 }]);
+});
+
+test("nudging never toggles the assistant, and Enter still does", () => {
+  const stored: AiAssistantBubblePosition[] = [];
+  const { bubble, launcher } = renderMovableBubble(stored);
+
+  act(() => {
+    fireEvent.keyDown(launcher, { key: "ArrowUp" });
+    fireEvent.keyDown(launcher, { key: "ArrowLeft" });
+  });
+  assert.equal(
+    bubble.dataset.open,
+    "false",
+    "a bare arrow is not an activation",
+  );
+  assertAbsent(screen.queryByTestId("ai-panel"), "panel opened by a nudge");
+
+  // Enter and Space are the button's. The handler must not consume them, or
+  // the browser would never synthesise the click that activates it.
+  const onEnter = fireEvent.keyDown(launcher, {
+    key: "Enter",
+    cancelable: true,
+  });
+  assert.equal(onEnter, true, "Enter belongs to the button");
+  const onSpace = fireEvent.keyDown(launcher, { key: " ", cancelable: true });
+  assert.equal(onSpace, true, "Space belongs to the button");
+
+  // And that activation still opens, after all the nudging.
+  act(() => {
+    fireEvent.click(launcher);
+  });
+  assert.equal(bubble.dataset.open, "true");
+});
+
+test("a nudge cannot walk the bubble off the screen", () => {
+  const stored: AiAssistantBubblePosition[] = [];
+  // 34px short of the far edge, with a coarse 64px step aimed at it.
+  const { bubble } = renderMovableBubble(stored, { right: 922, bottom: 700 });
+  const launcher = bubbleLauncher();
+
+  act(() => {
+    fireEvent.keyDown(launcher, { key: "ArrowLeft", shiftKey: true });
+  });
+
+  // 922 + 64 = 986, past the 1000 - 44 ceiling, so it stops at the edge with
+  // the launcher still on screen. What is stored is the clamped point, not the
+  // overshoot — the same rule the drag follows on release.
+  assert.equal(bubble.style.right, "956px");
+  assert.deepEqual(stored, [{ right: 956, bottom: 700 }]);
+
+  // Still pinned after another push in the same direction.
+  act(() => {
+    fireEvent.keyDown(launcher, { key: "ArrowLeft", shiftKey: true });
+  });
+  assert.equal(bubble.style.right, "956px");
 });
 
 test("the dock is not movable", async () => {

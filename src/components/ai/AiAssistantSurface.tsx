@@ -25,13 +25,15 @@
  * every render makes the page unusable — and returns to whatever opened it when
  * it closes.
  *
- * **Movement.** The bubble is draggable by its launcher and remembers where it
- * was put. Two things that make it more than a `mousemove` handler: a drag must
- * not read as a click, or moving the assistant would open and close it; and the
- * point must be clamped to the viewport, or a bubble dragged to an edge and
- * then persisted survives a window resize as something the user cannot reach
- * or un-stick without clearing their settings. See {@link useBubbleDrag}. The
- * dock is deliberately not movable — it is docked.
+ * **Movement.** The bubble is movable by its launcher — dragged with a pointer
+ * or nudged with the arrow keys — and remembers where it was put. Three things
+ * that make it more than a `mousemove` handler: a drag must not read as a
+ * click, or moving the assistant would open and close it; the point must be
+ * clamped to the viewport, or a bubble dragged to an edge and then persisted
+ * survives a window resize as something the user cannot reach or un-stick
+ * without clearing their settings; and "movable" has to include people who do
+ * not use a pointer. See {@link useBubbleDrag}. The dock is deliberately not
+ * movable — it is docked.
  *
  * **State across tabs.** Once opened, the panel stays mounted and is hidden
  * with the `hidden` attribute rather than unmounted. Closing the bubble during
@@ -169,6 +171,16 @@ function useSurfaceFocus(
 const BUBBLE_DRAG_SLOP_PX = 4;
 
 /**
+ * How far one arrow key moves the bubble, and how far with Shift held.
+ *
+ * 16px is the default corner's own inline inset (`right-4`) and 64px is its
+ * block one (`bottom-16`), so a keyboard user moves the bubble on the grid the
+ * design already places it on rather than on a number invented here.
+ */
+const BUBBLE_NUDGE_PX = 16;
+const BUBBLE_NUDGE_COARSE_PX = 64;
+
+/**
  * Hold an inset inside the viewport.
  *
  * `extent - size` goes negative whenever the surface is bigger than the window
@@ -186,6 +198,11 @@ interface BubbleDrag {
   dragging: boolean;
   /** Attach to the element the user grabs. */
   onPointerDown: (event: ReactPointerEvent<HTMLElement>) => void;
+  /**
+   * Attach to the same element. Arrow keys move the bubble; everything else,
+   * Enter and Space included, is left to the button.
+   */
+  onKeyDown: (event: ReactKeyboardEvent<HTMLElement>) => void;
   /**
    * True exactly once, for the click a finished drag leaves behind. Call it
    * from the handle's own `onClick` and do nothing else when it answers true.
@@ -275,6 +292,26 @@ function useBubbleDrag(
     return () => window.removeEventListener("resize", clampToViewport);
   }, [clampToViewport, enabled, surfaceVisible]);
 
+  /**
+   * Where the bubble is, measured rather than remembered.
+   *
+   * Both gestures start here, and they have to ask the DOM rather than read
+   * `placed` back: until something has moved it there is no `placed` at all,
+   * and the corner it is sitting in is a rem inset while all of this works in
+   * pixels. Measuring also means a nudge picks up where the last one left off
+   * without the two having to agree about anything but the rendered box.
+   */
+  const measureInsets = useCallback(
+    (node: HTMLElement): AiAssistantBubblePosition => {
+      const rect = node.getBoundingClientRect();
+      return {
+        right: window.innerWidth - rect.right,
+        bottom: window.innerHeight - rect.bottom,
+      };
+    },
+    [],
+  );
+
   const onPointerDown = useCallback(
     (event: ReactPointerEvent<HTMLElement>) => {
       // Primary button only: a right-click still belongs to the context menu,
@@ -283,14 +320,7 @@ function useBubbleDrag(
       const node = nodeRef.current;
       if (node === null || typeof window === "undefined") return;
 
-      // Measured, not read back from `placed`, so the first drag starts from
-      // wherever the default corner actually put it — that default is a rem
-      // inset and this works in pixels.
-      const rect = node.getBoundingClientRect();
-      const origin: AiAssistantBubblePosition = {
-        right: window.innerWidth - rect.right,
-        bottom: window.innerHeight - rect.bottom,
-      };
+      const origin = measureInsets(node);
       const startX = event.clientX;
       const startY = event.clientY;
       let moved = false;
@@ -343,7 +373,77 @@ function useBubbleDrag(
       window.addEventListener("pointerup", finish);
       window.addEventListener("pointercancel", finish);
     },
-    [enabled, onPositionChange],
+    [enabled, measureInsets, onPositionChange],
+  );
+
+  /**
+   * Move the bubble from the keyboard.
+   *
+   * A pointer-only "movable" surface is not movable for anyone who does not
+   * use a pointer, so the launcher answers the arrow keys too. Three things
+   * this is careful about:
+   *
+   * **It takes only the four arrows, and only unmodified.** `Ctrl`, `Alt` and
+   * `Meta` arrows belong to the browser and the window manager — `Alt`+`Left`
+   * is Back — so they are left alone. `Shift` is ours and means a coarser
+   * step. Everything else falls through untouched, which is what keeps `Enter`
+   * and `Space` activating the button.
+   *
+   * **It only swallows the key when it actually moves something.** The
+   * `preventDefault` that stops the page scrolling sits after the decision,
+   * not before it, so an arrow this handler is not going to act on still
+   * scrolls the page.
+   *
+   * **A keypress is a whole gesture.** There is no release to wait for, so
+   * each one persists — ten nudges are ten writes, the same rate at which the
+   * host stores every other preference, and the position of someone who
+   * nudges the bubble and walks away is already saved.
+   */
+  const onKeyDown = useCallback(
+    (event: ReactKeyboardEvent<HTMLElement>) => {
+      if (!enabled || event.ctrlKey || event.altKey || event.metaKey) return;
+      const step = event.shiftKey ? BUBBLE_NUDGE_COARSE_PX : BUBBLE_NUDGE_PX;
+      let dx = 0;
+      let dy = 0;
+      switch (event.key) {
+        case "ArrowLeft":
+          dx = -step;
+          break;
+        case "ArrowRight":
+          dx = step;
+          break;
+        case "ArrowUp":
+          dy = -step;
+          break;
+        case "ArrowDown":
+          dy = step;
+          break;
+        default:
+          return;
+      }
+      const node = nodeRef.current;
+      if (node === null || typeof window === "undefined") return;
+      event.preventDefault();
+
+      // The same sign convention as the drag: an inset shrinks as the bubble
+      // travels towards its own edge.
+      const origin = measureInsets(node);
+      const next: AiAssistantBubblePosition = {
+        right: clampInset(
+          origin.right - dx,
+          window.innerWidth,
+          node.offsetWidth,
+        ),
+        bottom: clampInset(
+          origin.bottom - dy,
+          window.innerHeight,
+          node.offsetHeight,
+        ),
+      };
+      setPlaced(next);
+      onPositionChange?.(next);
+    },
+    [enabled, measureInsets, onPositionChange],
   );
 
   const consumeDragClick = useCallback(() => {
@@ -359,6 +459,7 @@ function useBubbleDrag(
         : { right: `${placed.right}px`, bottom: `${placed.bottom}px` },
     dragging,
     onPointerDown,
+    onKeyDown,
     consumeDragClick,
     attach: (node) => {
       nodeRef.current = node;
@@ -524,12 +625,13 @@ export function AiAssistantSurface({
           {panel}
         </div>
       )}
-      {/* The launcher is also the grab handle. `touch-none` keeps a touch drag
-          from scrolling the page out from under it, and `cursor-grab` says the
-          thing is movable before anyone tries. It stays a real button, so
-          Enter and Space still toggle the assistant; `pointerdown` is
-          deliberately not default-prevented, which would take the click focus
-          with it. */}
+      {/* The launcher is also the grab handle, by pointer and by keyboard.
+          `touch-none` keeps a touch drag from scrolling the page out from
+          under it, and `cursor-grab` says the thing is movable before anyone
+          tries. It stays a real button, so Enter and Space still toggle the
+          assistant and the arrow keys only reach it while it has focus;
+          `pointerdown` is deliberately not default-prevented, which would take
+          the click focus with it. */}
       <Button
         type="button"
         size="icon"
@@ -541,6 +643,7 @@ export function AiAssistantSurface({
         aria-expanded={open}
         aria-label={open ? t("Close assistant", "Close assistant") : label}
         onPointerDown={drag.onPointerDown}
+        onKeyDown={drag.onKeyDown}
         onClick={(event) => {
           // A drag that ends over the launcher still produces a click. Letting
           // it through would mean the assistant opened or closed every time it
