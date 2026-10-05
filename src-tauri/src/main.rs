@@ -367,6 +367,8 @@ fn main() {
             ai_commands::ai_run_plan,
             ai_commands::ai_cancel_plan,
             ai_commands::ai_delete_plan,
+            ai_commands::ai_get_run_summary,
+            ai_commands::ai_get_links,
             // Notifications
             notifications::notifications_start,
             notifications::notifications_stop,

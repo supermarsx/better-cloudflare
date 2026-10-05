@@ -54,6 +54,15 @@ pub enum AgentError {
         actual: usize,
     },
 
+    /// A model-offered link failed its kind's validation rule. One variant
+    /// covers both malformed and over-long values: the message names the rule
+    /// that was broken, and the model needs the rule rather than a category.
+    #[error("invalid link field {field}: {message}")]
+    InvalidLink {
+        field: &'static str,
+        message: String,
+    },
+
     #[error("this conversation has no plan")]
     PlanNotFound,
 
@@ -166,6 +175,13 @@ impl AgentError {
             // names the field rather than echoing the model's input.
             Self::InvalidPlan { field, message } => {
                 format!("Invalid plan field {field}: {message}.")
+            }
+            // Every validation message states the rule rather than echoing
+            // the rejected target, so a hostile URL cannot ride a refusal
+            // into a UI string. The one message not written here is serde's
+            // own, which names a field or variant and is bounded first.
+            Self::InvalidLink { field, message } => {
+                format!("Invalid link field {field}: {message}.")
             }
             Self::PlanLimit {
                 resource,

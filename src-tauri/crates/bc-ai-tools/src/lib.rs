@@ -23,4 +23,4 @@ pub use permissions::{
     RefusalSource, ToolAvailability, ToolClassification,
 };
 pub use registry::ToolRegistry;
-pub use safety::{SafetyPolicy, ToolApproval};
+pub use safety::{effect_mutates, is_read_only, mutates, SafetyPolicy, ToolApproval};

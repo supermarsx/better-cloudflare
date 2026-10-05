@@ -24,8 +24,10 @@ use crate::agent;
 use crate::config::{AgentConfig, AGENT_EVENT_CHANNEL_CAPACITY, DEFAULT_PERSONA_ID};
 use crate::error::AgentError;
 use crate::events::AgentEvent;
+use crate::links::{AiLink, LinkStore};
 use crate::personas::{AiPersona, AiPersonaInput, PersonaStore};
 use crate::plan::{AiPlan, PlanStore, StepApproval, StepDispatch, StepOutcome, MAX_PLAN_STEPS};
+use crate::run_summary::{AiRunSummary, RunLedger};
 
 const APPROVED_TOOL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 
@@ -76,6 +78,12 @@ pub struct AgentManager {
     pub chat: Arc<ChatManager>,
     pub personas: Arc<PersonaStore>,
     pub plans: Arc<PlanStore>,
+    pub links: Arc<LinkStore>,
+    /// The harness's record of what it ran, per conversation. Shared with
+    /// `plans` and with the agent loop, because a plan step and a free-turn
+    /// tool call settle in two different places and the account has to be
+    /// complete across both.
+    pub runs: Arc<RunLedger>,
     active_turns: Arc<Mutex<HashMap<Uuid, ActiveTurn>>>,
     active_approvals: Arc<Mutex<HashMap<Uuid, ActiveApproval>>>,
 }
@@ -99,6 +107,7 @@ impl AgentManager {
         // One enabled-tool set: the executor resolves permissions against the
         // same registry the provider tool list is built from.
         let registry = Arc::new(ToolRegistry::default());
+        let runs = Arc::new(RunLedger::default());
         Self {
             providers: RwLock::new(HashMap::new()),
             profiles: RwLock::new(HashMap::new()),
@@ -110,7 +119,9 @@ impl AgentManager {
             registry,
             chat: Arc::new(ChatManager::default()),
             personas: Arc::new(PersonaStore::default()),
-            plans: Arc::new(PlanStore::default()),
+            plans: Arc::new(PlanStore::with_ledger(Arc::clone(&runs))),
+            links: Arc::new(LinkStore::default()),
+            runs,
             active_turns: Arc::new(Mutex::new(HashMap::new())),
             active_approvals: Arc::new(Mutex::new(HashMap::new())),
         }
@@ -462,6 +473,7 @@ impl AgentManager {
         let registry = Arc::clone(&self.registry);
         let executor = Arc::clone(&self.executor);
         let plans = Arc::clone(&self.plans);
+        let links = Arc::clone(&self.links);
         let task_active_turns = Arc::clone(&self.active_turns);
         let task_event_tx = event_tx.clone();
         let (start_tx, start_rx) = oneshot::channel();
@@ -475,6 +487,7 @@ impl AgentManager {
                 registry.as_ref(),
                 executor.as_ref(),
                 plans.as_ref(),
+                links.as_ref(),
                 &config,
                 persona_prompt,
                 conversation_id,
@@ -574,14 +587,38 @@ impl AgentManager {
             .cloned()
             .ok_or(AgentError::ToolCallNotFound)?;
 
+        // The third place a tool call can leave the harness, and therefore
+        // the third place the run account is kept. Opened before the
+        // dispatch so a write approved and in flight is never unaccounted
+        // for; closed with the executor's own verdict.
+        let attempt = self
+            .runs
+            .open_turn_call(conversation_id, &pending.name)
+            .await;
         let result = self
             .run_approved_operation(
                 conversation_id,
                 disposal,
                 self.executor.execute_approved(&pending),
             )
-            .await?;
-        match result {
+            .await;
+        match &result {
+            Ok(execution) => {
+                self.runs
+                    .close_turn_call(conversation_id, attempt, &pending.name, execution)
+                    .await
+            }
+            // Cancelled, timed out, or the conversation closed. The call did
+            // leave the harness, so it is recorded as dispatched and failed
+            // rather than withdrawn: `anyChangeAttempted` must not go quiet
+            // because a write stopped being observable.
+            Err(_) => {
+                self.runs
+                    .abandon_turn_call(conversation_id, attempt, &pending.name)
+                    .await
+            }
+        }
+        match result? {
             bc_ai_tools::executor::ExecutionResult::Success(result)
             | bc_ai_tools::executor::ExecutionResult::Error(result) => {
                 self.push_tool_result(conversation_id, result).await?;
@@ -723,6 +760,20 @@ impl AgentManager {
     /// Discard the conversation's plan. Returns whether there was one.
     pub async fn delete_plan(&self, conversation_id: Uuid) -> bool {
         self.plans.delete(conversation_id).await
+    }
+
+    /// The harness's account of what it ran in this conversation.
+    ///
+    /// Covers plan steps and the tool calls the model makes in ordinary
+    /// turns. `None` until something has actually run.
+    pub async fn run_summary(&self, conversation_id: Uuid) -> Option<AiRunSummary> {
+        self.runs.summary(conversation_id).await
+    }
+
+    /// The validated links the assistant is currently pointing at. Empty when
+    /// it has offered none.
+    pub async fn links(&self, conversation_id: Uuid) -> Vec<AiLink> {
+        self.links.get(conversation_id).await
     }
 
     /// Run one step, re-resolving its permissions first.
@@ -887,6 +938,8 @@ impl AgentManager {
     /// sit in the store until eviction.
     pub async fn delete_conversation(&self, conversation_id: Uuid) -> bool {
         self.plans.delete(conversation_id).await;
+        self.links.delete(conversation_id).await;
+        self.runs.delete(conversation_id).await;
         self.chat.delete_conversation(conversation_id).await
     }
 

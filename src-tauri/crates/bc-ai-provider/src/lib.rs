@@ -29,8 +29,8 @@ pub mod openai;
 pub use config::{ProviderConfig, ProviderProtocol};
 pub use error::AiProviderError;
 pub use profile::{
-    validate_provider_id, AiProviderProfile, AiProviderProfileInput, ProviderProfile,
-    MAX_PROVIDER_ID_BYTES, MAX_PROVIDER_LABEL_BYTES, MAX_PROVIDER_PROFILES,
+    validate_base_url, validate_provider_id, AiProviderProfile, AiProviderProfileInput,
+    ProviderProfile, MAX_PROVIDER_ID_BYTES, MAX_PROVIDER_LABEL_BYTES, MAX_PROVIDER_PROFILES,
 };
 pub use sampling::{honoured_fields, honours, protocol_capabilities, AdvancedField};
 pub use traits::AiProvider;

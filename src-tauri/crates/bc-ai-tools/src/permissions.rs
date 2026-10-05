@@ -99,9 +99,10 @@ pub enum AiToolPermission {
     Deny,
 }
 
-/// Read/write classification of a tool, derived from the name prefixes in
-/// [`crate::safety`]. Anything not recognised as read-only counts as a write
-/// so an unclassified tool is governed by the stricter branch.
+/// Read/write classification of a tool, read from the MCP permission
+/// registry's effect tier by [`crate::safety::mutates`]. A tool the registry
+/// does not define counts as a write, so an unclassified name is governed by
+/// the stricter branch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ToolClassification {
@@ -162,7 +163,9 @@ impl PermissionDecision {
     }
 }
 
-/// Classify a tool by name. Only the known read-only prefixes count as reads.
+/// Classify a tool by its registry entry. Only the `Read` and `Analysis`
+/// effect tiers count as reads; everything else, including a name the
+/// registry does not know, is a write.
 pub fn classify(tool_name: &str) -> ToolClassification {
     if is_read_only(tool_name) {
         ToolClassification::Read

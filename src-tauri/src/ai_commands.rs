@@ -14,7 +14,7 @@ use uuid::Uuid;
 
 use bc_ai_agent::personas::{AiPersona, AiPersonaInput, MAX_PERSONA_ID_BYTES};
 use bc_ai_agent::plan::AiPlan;
-use bc_ai_agent::{AgentConfig, AgentError, AgentEvent, AgentManager};
+use bc_ai_agent::{AgentConfig, AgentError, AgentEvent, AgentManager, AiLink, AiRunSummary};
 use bc_ai_chat::{ChatError, ChatMessage, ConversationMeta};
 use bc_ai_provider::{
     AdvancedField, AiProviderError, AiProviderProfile, AiProviderProfileInput, Model,
@@ -30,7 +30,7 @@ use bc_error::sanitize_error_text;
 /// `main.rs`. A command the renderer is written against but that was never
 /// registered fails only at runtime, so the list is asserted at build time.
 #[cfg(test)]
-pub const COMMAND_NAMES: [&str; 31] = [
+pub const COMMAND_NAMES: [&str; 33] = [
     "ai_list_providers",
     "ai_configure_provider",
     "ai_delete_provider",
@@ -62,6 +62,8 @@ pub const COMMAND_NAMES: [&str; 31] = [
     "ai_run_plan",
     "ai_cancel_plan",
     "ai_delete_plan",
+    "ai_get_run_summary",
+    "ai_get_links",
 ];
 
 const MAX_MODEL_RESULTS: usize = 1_024;
@@ -339,7 +341,7 @@ fn map_agent_error(error: AgentError, operation: &'static str) -> AiCommandError
                 Some("Allow the tool in the AI permission settings, then retry.");
             error
         }
-        AgentError::InvalidPlan { field, message } => {
+        AgentError::InvalidPlan { field, message } | AgentError::InvalidLink { field, message } => {
             AiCommandError::validation(field, message, operation)
         }
         AgentError::PlanLimit {
@@ -1160,6 +1162,69 @@ pub async fn ai_delete_plan(
     Ok(delete_plan_inner(&agent, conversation_id).await)
 }
 
+// ─── Run summaries and links ───────────────────────────────────────────────
+//
+// Both are read-only and infallible: an absent summary is `null` and an
+// assistant pointing at nothing is `[]`, neither of which is an error.
+//
+// The summary is deliberately *not* folded into the return of `ai_run_plan`
+// or `ai_cancel_plan`. Every plan command in this file resolves to the
+// authoritative plan, and the renderer is written against that one shape; a
+// command that resolved to a plan-plus-summary pair would make the family
+// inconsistent for the sake of saving a call. The re-read pattern is already
+// the documented one — `ai_get_plan` after `ai_approve_tool_call` — so
+// `ai_get_run_summary` follows it.
+
+async fn get_run_summary_inner(
+    agent: &AgentManager,
+    conversation_id: Uuid,
+) -> Option<AiRunSummary> {
+    agent.run_summary(conversation_id).await
+}
+
+/// The harness's account of what it ran in this conversation, or `null`.
+///
+/// Covers both ways a tool can run: the steps of an approved plan, and the
+/// calls the model makes in an ordinary turn. `planId` is `null` for a
+/// conversation that has run tools without a plan, and `toolRuns[].stepIndex`
+/// is `null` for a call that came from no step — neither is defaulted,
+/// because an invented plan id or step index is exactly the kind of
+/// plausible-looking field a UI renders as fact.
+///
+/// `null` until something has actually run. Every counted field is derived
+/// from what the application dispatched and what came back — the model cannot
+/// write any of them, and the one field it can write, `narrative`, is read by
+/// none of the others. A user asking "what did you just change in my
+/// account" is answered from this, not from the transcript.
+#[tauri::command]
+pub async fn ai_get_run_summary(
+    agent: State<'_, AgentManager>,
+    conversation_id: Uuid,
+) -> Result<Option<AiRunSummary>, AiCommandError> {
+    Ok(get_run_summary_inner(&agent, conversation_id).await)
+}
+
+async fn get_links_inner(agent: &AgentManager, conversation_id: Uuid) -> Vec<AiLink> {
+    agent.links(conversation_id).await
+}
+
+/// The validated links the assistant is currently pointing at, or `[]`.
+///
+/// Every link has already passed its kind's rule: a `workspace` target is one
+/// of the application's own workspace ids, `zone` and `record` targets are
+/// charset-bounded ids, `domainRegistry` is a hostname validated exactly as
+/// `dns_check_registration` validates its argument, and `external` is an
+/// absolute `https:` URL with no embedded credentials. A `javascript:`,
+/// `data:` or `file:` target cannot be stored, so the renderer never has to
+/// decide whether one is safe to follow.
+#[tauri::command]
+pub async fn ai_get_links(
+    agent: State<'_, AgentManager>,
+    conversation_id: Uuid,
+) -> Result<Vec<AiLink>, AiCommandError> {
+    Ok(get_links_inner(&agent, conversation_id).await)
+}
+
 // ─── Export ────────────────────────────────────────────────────────────────
 
 /// Export a conversation to JSON.
@@ -1927,6 +1992,290 @@ mod tests {
             .expect_err("a cancelled plan advances no further");
         assert_eq!(error.code, "AI_PLAN_STATE_CONFLICT");
         assert_eq!(error.details.kind, Some("cancelled"));
+    }
+
+    // ─── Run summaries and links ───────────────────────────────────────────
+
+    /// The command the question "what did you just do to my DNS" is answered
+    /// from, end to end, through the real manager dispatch path.
+    #[tokio::test]
+    async fn the_run_summary_command_answers_from_the_harnesss_own_record() {
+        let agent = plan_agent(AiPermissionMode::ReadOnly).await;
+        let conversation_id = create_valid_conversation(&agent).await;
+        assert!(
+            get_run_summary_inner(&agent, conversation_id)
+                .await
+                .is_none(),
+            "no plan means nothing to account for"
+        );
+
+        let draft = propose(
+            &agent,
+            conversation_id,
+            serde_json::json!([
+                {
+                    "title": "parse it",
+                    "tool": "dns_parse_spf",
+                    "arguments": { "content": "v=spf1 -all" }
+                },
+                { "title": "delete it", "tool": "cf_delete_dns_record" },
+            ]),
+        )
+        .await;
+        assert!(
+            get_run_summary_inner(&agent, conversation_id)
+                .await
+                .is_none(),
+            "a draft has run nothing"
+        );
+
+        approve_plan_inner(&agent, conversation_id)
+            .await
+            .expect("approve");
+        run_plan_inner(&agent, conversation_id)
+            .await
+            .expect("run stops on the blocked step");
+
+        let summary = get_run_summary_inner(&agent, conversation_id)
+            .await
+            .expect("an approved run has a summary");
+        assert_eq!(summary.plan_id, Some(draft.id));
+        assert_eq!(summary.step_totals.done, 1);
+        assert_eq!(summary.step_totals.blocked, 1);
+        assert!(
+            summary.mutating_tools_run.is_empty(),
+            "the write was refused before dispatch, so nothing was attempted"
+        );
+        assert!(!summary.any_change_attempted);
+        assert_eq!(summary.refusals.len(), 1);
+        assert_eq!(summary.refusals[0].tool, "cf_delete_dns_record");
+
+        // The camelCase wire shape the renderer switches on.
+        let value = serde_json::to_value(&summary).expect("serializes");
+        for key in [
+            "planId",
+            "title",
+            "startedAt",
+            "stepTotals",
+            "toolRuns",
+            "refusals",
+            "mutatingToolsRun",
+            "anyChangeAttempted",
+        ] {
+            assert!(value.get(key).is_some(), "summary missing {key}: {value}");
+        }
+        assert!(value.get("plan_id").is_none(), "{value}");
+        assert!(value.get("mutating_tools_run").is_none(), "{value}");
+        for key in ["done", "blocked", "failed", "skipped", "pending"] {
+            assert!(
+                value["stepTotals"].get(key).is_some(),
+                "stepTotals missing {key}"
+            );
+        }
+        assert_eq!(value["toolRuns"][0]["tool"], "dns_parse_spf");
+        assert_eq!(value["toolRuns"][0]["outcome"], "ok");
+        assert_eq!(value["toolRuns"][1]["outcome"], "denied");
+        assert_eq!(value["refusals"][0]["source"], "assistantPolicy");
+        assert_eq!(value["anyChangeAttempted"], false);
+        assert!(value["narrative"].is_null());
+
+        // Deleting the conversation takes the account with it.
+        assert!(agent.delete_conversation(conversation_id).await);
+        assert!(get_run_summary_inner(&agent, conversation_id)
+            .await
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn the_links_command_returns_only_validated_links() {
+        let agent = plan_agent(AiPermissionMode::ReadOnly).await;
+        let conversation_id = create_valid_conversation(&agent).await;
+        assert!(get_links_inner(&agent, conversation_id).await.is_empty());
+
+        let offered = agent
+            .links
+            .offer(
+                conversation_id,
+                serde_json::from_value(serde_json::json!([
+                    { "kind": "workspace", "label": "Registry", "target": "registry" },
+                    { "kind": "domainRegistry", "label": "example.com", "target": "Example.COM." },
+                    {
+                        "kind": "external",
+                        "label": "Cloudflare DNS docs",
+                        "target": "https://developers.cloudflare.com/dns/"
+                    },
+                ]))
+                .expect("a well-formed offer"),
+            )
+            .await
+            .expect("every link passes its rule");
+        assert_eq!(offered.len(), 3);
+
+        let links = get_links_inner(&agent, conversation_id).await;
+        let value = serde_json::to_value(&links).expect("serializes");
+        assert_eq!(value[0]["kind"], "workspace");
+        assert_eq!(value[0]["label"], "Registry");
+        assert_eq!(value[0]["target"], "registry");
+        assert_eq!(
+            value[1]["target"], "example.com",
+            "a registry hostname is normalised the way a lookup normalises it"
+        );
+        assert_eq!(value[2]["kind"], "external");
+
+        // A hostile target is refused whole, and the previous offer stands.
+        let error = map_agent_error(
+            agent
+                .links
+                .offer(
+                    conversation_id,
+                    serde_json::from_value(serde_json::json!([
+                        { "kind": "external", "label": "docs", "target": "javascript:alert(1)" },
+                    ]))
+                    .expect("a well-formed offer shape"),
+                )
+                .await
+                .expect_err("a javascript: target must not be storable"),
+            "ai:get_links",
+        );
+        assert_eq!(error.code, "AI_VALIDATION");
+        assert_eq!(error.details.field, Some("target"));
+        let still_there = get_links_inner(&agent, conversation_id).await;
+        assert_eq!(still_there.len(), 3);
+        assert!(
+            !still_there
+                .iter()
+                .any(|link| link.target.contains("javascript")),
+            "a refused target must never be stored"
+        );
+
+        assert!(agent.delete_conversation(conversation_id).await);
+        assert!(get_links_inner(&agent, conversation_id).await.is_empty());
+    }
+
+    /// The gap the plan-scoped summary left: most tool calls are not plan
+    /// steps, so a summary silent about them answers "what did you change"
+    /// with silence, which reads as "nothing".
+    #[tokio::test]
+    async fn the_run_summary_command_covers_calls_made_without_a_plan() {
+        let agent = plan_agent(AiPermissionMode::Autonomous).await;
+        let conversation_id = create_valid_conversation(&agent).await;
+        assert!(get_run_summary_inner(&agent, conversation_id)
+            .await
+            .is_none());
+
+        // Straight through the ledger, the way the agent loop records a call
+        // the model makes in an ordinary turn.
+        let attempt = agent
+            .runs
+            .open_turn_call(conversation_id, "cf_delete_dns_record")
+            .await;
+        agent
+            .runs
+            .close_turn_call(
+                conversation_id,
+                attempt,
+                "cf_delete_dns_record",
+                &bc_ai_tools::executor::ExecutionResult::Error(bc_ai_provider::ToolResult {
+                    tool_call_id: "call-1".into(),
+                    content: "the API rejected it".into(),
+                    is_error: true,
+                }),
+            )
+            .await;
+
+        let summary = get_run_summary_inner(&agent, conversation_id)
+            .await
+            .expect("a free-turn call is accounted for");
+        let value = serde_json::to_value(&summary).expect("serializes");
+        assert!(
+            value["planId"].is_null(),
+            "there is no plan, and the summary must not invent one: {value}"
+        );
+        assert!(value["title"].is_null(), "{value}");
+        assert!(
+            value["toolRuns"][0]["stepIndex"].is_null(),
+            "a free-turn call has no step index: {value}"
+        );
+        assert_eq!(value["toolRuns"][0]["outcome"], "failed");
+        assert_eq!(value["mutatingToolsRun"][0], "cf_delete_dns_record");
+        assert_eq!(
+            value["anyChangeAttempted"], true,
+            "a write that was dispatched and failed can still have landed"
+        );
+        // Every nullable key is present and null, never absent.
+        for key in ["planId", "title", "finishedAt", "narrative"] {
+            assert!(value.get(key).is_some(), "{key} missing from {value}");
+        }
+
+        assert!(agent.delete_conversation(conversation_id).await);
+        assert!(get_run_summary_inner(&agent, conversation_id)
+            .await
+            .is_none());
+    }
+
+    /// A conversation that does both gets one account, not two.
+    #[tokio::test]
+    async fn one_summary_covers_a_plan_run_and_free_turn_calls_together() {
+        let agent = plan_agent(AiPermissionMode::Autonomous).await;
+        let conversation_id = create_valid_conversation(&agent).await;
+
+        // A free-turn write first, before any plan exists.
+        let attempt = agent
+            .runs
+            .open_turn_call(conversation_id, "cf_create_dns_record")
+            .await;
+        agent
+            .runs
+            .close_turn_call(
+                conversation_id,
+                attempt,
+                "cf_create_dns_record",
+                &bc_ai_tools::executor::ExecutionResult::Success(bc_ai_provider::ToolResult {
+                    tool_call_id: "call-1".into(),
+                    content: "{}".into(),
+                    is_error: false,
+                }),
+            )
+            .await;
+
+        // Then a plan, approved and run.
+        let draft = propose(
+            &agent,
+            conversation_id,
+            serde_json::json!([{
+                "title": "parse it",
+                "tool": "dns_parse_spf",
+                "arguments": { "content": "v=spf1 -all" }
+            }]),
+        )
+        .await;
+        approve_plan_inner(&agent, conversation_id)
+            .await
+            .expect("approve");
+        run_plan_inner(&agent, conversation_id).await.expect("run");
+
+        let summary = get_run_summary_inner(&agent, conversation_id)
+            .await
+            .expect("a summary");
+        assert_eq!(
+            summary.plan_id,
+            Some(draft.id),
+            "the plan is named once there is one"
+        );
+        assert_eq!(summary.step_totals.done, 1, "the plan step ran");
+        assert_eq!(
+            summary.mutating_tools_run,
+            vec!["cf_create_dns_record".to_string()],
+            "approving a plan must not un-change what the assistant already changed"
+        );
+        assert!(summary.any_change_attempted);
+
+        // Both halves are in `toolRuns`, and only the plan step has an index.
+        let indexed: Vec<Option<usize>> =
+            summary.tool_runs.iter().map(|run| run.step_index).collect();
+        assert_eq!(indexed, vec![Some(0), None]);
+        assert_eq!(summary.tool_runs[0].tool, "dns_parse_spf");
+        assert_eq!(summary.tool_runs[1].tool, "cf_create_dns_record");
     }
 
     /// Untrusted model input is refused as a bounded, structured error rather

@@ -17,7 +17,9 @@ use bc_ai_tools::ToolRegistry;
 use crate::config::AgentConfig;
 use crate::error::AgentError;
 use crate::events::AgentEvent;
+use crate::links::{self, LinkStore};
 use crate::plan::{self, PlanStore};
+use crate::run_summary::RunLedger;
 
 async fn lifecycle_termination(
     cancellation: &mut watch::Receiver<bool>,
@@ -155,33 +157,82 @@ pub(crate) fn tool_result_message(result: bc_ai_provider::ToolResult) -> ChatMes
     }
 }
 
-/// Run one tool call, serving the assistant's own planning tools locally and
+/// The assistant's own local tools, as one bundle.
+///
+/// They are offered and intercepted together because they are the same kind
+/// of thing: exact names that are not in the MCP catalogue, hold no MCP
+/// permission, and dispatch nothing. They write harness-owned state — a draft
+/// plan, one prose field of a run record, a set of validated links — and no
+/// more.
+fn local_tool_definitions() -> Vec<ToolDefinition> {
+    let mut definitions = plan::tool_definitions();
+    definitions.extend(links::tool_definitions());
+    definitions
+}
+
+/// Whether a name is one of those local tools.
+///
+/// Only the test that pins "everything offered is also intercepted" needs the
+/// union. Production code gates each store on its own predicate instead, so a
+/// change to what is offered cannot quietly leave one of them interceptable.
+#[cfg(test)]
+fn is_local_tool(name: &str) -> bool {
+    plan::is_plan_tool(name) || links::is_link_tool(name)
+}
+
+/// Run one tool call, serving the assistant's own local tools locally and
 /// everything else through the permission gate.
 ///
-/// The local branch matches two exact names that are not MCP tools and that
-/// dispatch nothing: they record a *draft* plan and no more. Every call that
-/// could actually do something still goes through [`ToolExecutor::execute`],
-/// so this is not a second dispatch path. `plans` is `None` when the planning
-/// tools were not advertised, in which case the names fall through to the
-/// executor, which refuses them as unregistered MCP tools.
+/// Every call that could actually do something still goes through
+/// [`ToolExecutor::execute`], so this is not a second dispatch path. Each
+/// store is `None` when its tools were not advertised, in which case those
+/// names fall through to the executor, which refuses them as unregistered MCP
+/// tools.
+///
+/// Everything that reaches the executor is recorded in `runs`, opened before
+/// the dispatch and closed after it. That is the free-turn half of the run
+/// summary: without it a `cf_delete_dns_record` the model calls in an
+/// ordinary turn would leave no trace a user could be shown, and silence
+/// reads as "nothing happened". The local tools above are deliberately *not*
+/// recorded — they are not MCP tools, they dispatch nothing, and they change
+/// nothing in the user's account.
 async fn execute_one_tool_call(
     tool_call: &ToolCall,
     executor: &ToolExecutor,
     plans: Option<&PlanStore>,
+    links: Option<&LinkStore>,
+    runs: &RunLedger,
     conversation_id: Uuid,
 ) -> ExecutionResult {
     if let Some(plans) = plans {
         if let Some(result) =
             plan::try_execute_plan_tool(plans, executor, conversation_id, tool_call).await
         {
-            return if result.is_error {
-                ExecutionResult::Error(result)
-            } else {
-                ExecutionResult::Success(result)
-            };
+            return local_result(result);
         }
     }
-    executor.execute(tool_call, false).await
+    if let Some(links) = links {
+        if let Some(result) = links::try_execute_link_tool(links, conversation_id, tool_call).await
+        {
+            return local_result(result);
+        }
+    }
+    // Opened first, so there is no instant in which a write is in flight and
+    // the run summary does not know it; closed with the executor's own
+    // verdict, which withdraws the attempt if the gate refused the call.
+    let attempt = runs.open_turn_call(conversation_id, &tool_call.name).await;
+    let result = executor.execute(tool_call, false).await;
+    runs.close_turn_call(conversation_id, attempt, &tool_call.name, &result)
+        .await;
+    result
+}
+
+fn local_result(result: ToolResult) -> ExecutionResult {
+    if result.is_error {
+        ExecutionResult::Error(result)
+    } else {
+        ExecutionResult::Success(result)
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -189,6 +240,8 @@ async fn execute_tool_calls(
     tool_calls: &[ToolCall],
     executor: &ToolExecutor,
     plans: Option<&PlanStore>,
+    links: Option<&LinkStore>,
+    runs: &RunLedger,
     chat: &ChatManager,
     conversation_id: Uuid,
     event_tx: &mpsc::Sender<AgentEvent>,
@@ -197,7 +250,7 @@ async fn execute_tool_calls(
 ) -> Result<bool, AgentError> {
     for tool_call in tool_calls {
         let result = until_lifecycle(
-            execute_one_tool_call(tool_call, executor, plans, conversation_id),
+            execute_one_tool_call(tool_call, executor, plans, links, runs, conversation_id),
             cancellation,
             disposal,
             event_tx,
@@ -330,6 +383,7 @@ pub async fn run_turn(
     registry: &ToolRegistry,
     executor: &ToolExecutor,
     plans: &PlanStore,
+    links: &LinkStore,
     config: &AgentConfig,
     persona_prompt: Option<String>,
     conversation_id: Uuid,
@@ -354,7 +408,7 @@ pub async fn run_turn(
     // policy. Offering the rest buys a refused round, and offering an empty
     // list tells the model it has tools when it has none.
     //
-    // The assistant's own planning tools ride along with them, and only with
+    // The assistant's own local tools ride along with them, and only with
     // them: a plan whose steps can call nothing is theatre, and a model
     // offered nothing but `plan_propose` would propose plans it could never
     // carry out. They are appended only while there is room inside
@@ -366,22 +420,32 @@ pub async fn run_turn(
             .await;
         (!usable.is_empty()).then(|| {
             let mut tools = usable;
-            let planning = plan::tool_definitions();
-            if tools.len().saturating_add(planning.len()) <= MAX_REQUEST_TOOLS {
-                tools.extend(planning);
+            let local = local_tool_definitions();
+            if tools.len().saturating_add(local.len()) <= MAX_REQUEST_TOOLS {
+                tools.extend(local);
             }
             tools
         })
     } else {
         None
     };
-    // No planning tools advertised means no local interception either, so a
+    // A local tool that was not advertised is not intercepted either, so a
     // model that calls one anyway is refused by the gate like any other
-    // unregistered name.
-    let plans = tools
-        .as_ref()
-        .is_some_and(|tools| tools.iter().any(|tool| plan::is_plan_tool(&tool.name)))
-        .then_some(plans);
+    // unregistered name. Each store is gated on its own tools rather than on
+    // the bundle, so a future change to what is offered cannot quietly leave
+    // one of them interceptable.
+    // Taken before `plans` is narrowed to an `Option`: a free-turn call must
+    // be recorded whether or not the planning tools were advertised, and the
+    // ledger is shared with the plan store so both halves of the account
+    // land in one conversation-scoped record.
+    let runs = plans.ledger().as_ref();
+    let advertised = |predicate: fn(&str) -> bool| {
+        tools
+            .as_ref()
+            .is_some_and(|tools| tools.iter().any(|tool| predicate(&tool.name)))
+    };
+    let plans = advertised(plan::is_plan_tool).then_some(plans);
+    let links = advertised(links::is_link_tool).then_some(links);
 
     for _round in 0..config.max_tool_rounds {
         let messages = chat
@@ -477,6 +541,8 @@ pub async fn run_turn(
                 &tool_calls,
                 executor,
                 plans,
+                links,
+                runs,
                 chat,
                 conversation_id,
                 &event_tx,
@@ -523,9 +589,34 @@ mod tests {
 
     use super::*;
     use crate::config::MIN_CONTEXT_TOKENS;
+    use crate::run_summary::{AiRunStepTotals, AiRunToolOutcome};
 
     const READ_TOOL: &str = "dns_parse_spf";
     const WRITE_TOOL: &str = "cf_delete_dns_record";
+
+    /// What is offered and what is intercepted must be the same set. A local
+    /// tool advertised but not intercepted would be dispatched to the
+    /// executor and refused as an unregistered MCP tool, and the model would
+    /// be told its own harness has no such tool.
+    #[test]
+    fn every_advertised_local_tool_is_also_intercepted() {
+        let definitions = local_tool_definitions();
+        assert!(!definitions.is_empty());
+        for definition in &definitions {
+            assert!(
+                is_local_tool(&definition.name),
+                "{} is advertised but would fall through to the executor",
+                definition.name
+            );
+            assert!(
+                bc_mcp::permissions::permission_for_invocation(&definition.name).is_none(),
+                "{} is an MCP tool; the local interception would shadow it",
+                definition.name
+            );
+        }
+        assert!(!is_local_tool(READ_TOOL));
+        assert!(!is_local_tool(WRITE_TOOL));
+    }
 
     /// Asks for the same tool on every round, like a model that will not take
     /// a refusal for an answer.
@@ -645,6 +736,7 @@ mod tests {
         registry: Arc<ToolRegistry>,
         executor: ToolExecutor,
         plans: PlanStore,
+        links: LinkStore,
         conversation_id: Uuid,
     }
 
@@ -680,6 +772,7 @@ mod tests {
                 registry,
                 executor,
                 plans: PlanStore::default(),
+                links: LinkStore::default(),
                 conversation_id,
             }
         }
@@ -703,6 +796,7 @@ mod tests {
                 self.registry.as_ref(),
                 &self.executor,
                 &self.plans,
+                &self.links,
                 config,
                 persona_prompt,
                 self.conversation_id,
@@ -953,6 +1047,157 @@ mod tests {
     /// A model proposing a plan gets a draft and nothing else: no dispatch,
     /// no approval, no step run. This is the only effect either planning tool
     /// can have.
+    /// MUTATION PROOF: a mutating tool the model calls in an ordinary turn —
+    /// no plan anywhere — must reach `mutatingToolsRun`.
+    ///
+    /// Drop the `open_turn_call`/`close_turn_call` pair from
+    /// `execute_one_tool_call` and this fails: the summary goes silent about
+    /// a write, and silence is what a user reads as "nothing happened".
+    #[tokio::test]
+    async fn a_free_turn_mutating_call_is_accounted_for_without_any_plan() {
+        let harness = Harness::new(AiPermissions {
+            mode: AiPermissionMode::Autonomous,
+            tools: BTreeMap::new(),
+        })
+        .await;
+        let provider = ToolLoopProvider::with_arguments(
+            WRITE_TOOL,
+            serde_json::json!({ "confirmHighRisk": true }),
+        );
+
+        let error = harness
+            .run(&provider, &config(1), None)
+            .await
+            .expect_err("round limit");
+        assert!(matches!(error, AgentError::ToolRoundLimit(1)));
+
+        // No plan was ever proposed, let alone approved.
+        assert!(harness.plans.get(harness.conversation_id).await.is_none());
+
+        let summary = harness
+            .plans
+            .ledger()
+            .summary(harness.conversation_id)
+            .await
+            .expect("a free-turn call is still accounted for");
+        assert!(
+            summary.plan_id.is_none(),
+            "there is no plan, so the summary must not name one"
+        );
+        assert!(summary.title.is_none());
+        assert_eq!(summary.step_totals, AiRunStepTotals::default());
+        assert_eq!(
+            summary.mutating_tools_run,
+            vec![WRITE_TOOL.to_string()],
+            "a write the model ran in an ordinary turn must be named"
+        );
+        assert!(
+            summary.any_change_attempted,
+            "the user asking what changed must not be told nothing did"
+        );
+
+        // It is one call, recorded with no step index rather than a fake one.
+        assert_eq!(summary.tool_runs.len(), 1);
+        assert_eq!(summary.tool_runs[0].tool, WRITE_TOOL);
+        assert!(summary.tool_runs[0].step_index.is_none());
+    }
+
+    /// A read the model runs in an ordinary turn is recorded, and is not a
+    /// change. The two halves of that matter equally: over-reporting a read
+    /// as a write would make the field useless by crying wolf.
+    #[tokio::test]
+    async fn a_free_turn_read_is_recorded_without_claiming_a_change() {
+        let harness = Harness::new(AiPermissions::default()).await;
+        let provider = ToolLoopProvider::new(READ_TOOL);
+
+        let error = harness
+            .run(&provider, &config(1), None)
+            .await
+            .expect_err("round limit");
+        assert!(matches!(error, AgentError::ToolRoundLimit(1)));
+
+        let summary = harness
+            .plans
+            .ledger()
+            .summary(harness.conversation_id)
+            .await
+            .expect("a summary");
+        assert_eq!(summary.tool_runs.len(), 1);
+        assert_eq!(summary.tool_runs[0].tool, READ_TOOL);
+        assert_eq!(summary.tool_runs[0].outcome, AiRunToolOutcome::Ok);
+        assert!(summary.mutating_tools_run.is_empty());
+        assert!(!summary.any_change_attempted);
+        assert!(
+            summary.finished_at.is_some(),
+            "nothing is outstanding once the call has returned"
+        );
+    }
+
+    /// A refused write dispatched nothing, so it must not be reported as a
+    /// change — even though the model asked for it.
+    #[tokio::test]
+    async fn a_free_turn_write_the_policy_refuses_is_not_a_change() {
+        let harness = Harness::new(AiPermissions {
+            mode: AiPermissionMode::ReadOnly,
+            tools: BTreeMap::new(),
+        })
+        .await;
+        let provider = ToolLoopProvider::with_arguments(
+            WRITE_TOOL,
+            serde_json::json!({ "confirmHighRisk": true }),
+        );
+
+        let error = harness
+            .run(&provider, &config(1), None)
+            .await
+            .expect_err("round limit");
+        assert!(matches!(error, AgentError::ToolRoundLimit(1)));
+
+        let summary = harness
+            .plans
+            .ledger()
+            .summary(harness.conversation_id)
+            .await
+            .expect("a summary");
+        assert_eq!(summary.tool_runs[0].outcome, AiRunToolOutcome::Denied);
+        assert!(
+            summary.mutating_tools_run.is_empty(),
+            "a refused call never left the harness"
+        );
+        assert!(!summary.any_change_attempted);
+        assert_eq!(summary.refusals.len(), 1);
+        assert_eq!(summary.refusals[0].tool, WRITE_TOOL);
+    }
+
+    /// The assistant's own local tools change nothing in the user's account,
+    /// so they must not appear in the account of what ran.
+    #[tokio::test]
+    async fn a_local_tool_is_not_recorded_as_a_tool_run() {
+        let harness = Harness::new(AiPermissions::default()).await;
+        let provider = ToolLoopProvider::with_arguments(
+            links::LINK_OFFER_TOOL,
+            serde_json::json!({
+                "links": [{ "kind": "workspace", "label": "Audit", "target": "audit" }]
+            }),
+        );
+
+        let error = harness
+            .run(&provider, &config(1), None)
+            .await
+            .expect_err("round limit");
+        assert!(matches!(error, AgentError::ToolRoundLimit(1)));
+        assert_eq!(harness.links.get(harness.conversation_id).await.len(), 1);
+        assert!(
+            harness
+                .plans
+                .ledger()
+                .summary(harness.conversation_id)
+                .await
+                .is_none(),
+            "offering a link dispatches nothing, so there is nothing to account for"
+        );
+    }
+
     #[tokio::test]
     async fn a_model_proposing_a_plan_gets_a_draft_and_runs_nothing() {
         let harness = Harness::new(AiPermissions {
@@ -1149,6 +1394,7 @@ mod tests {
             harness.registry.as_ref(),
             &harness.executor,
             &harness.plans,
+            &harness.links,
             &config(2),
             Some("You are the persona.".into()),
             conversation_id,

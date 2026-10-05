@@ -25,6 +25,7 @@
 //! and are lost on restart.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -38,6 +39,9 @@ use bc_ai_tools::permissions::RefusalSource;
 use bc_ai_tools::{ToolExecutor, ToolGateDecision};
 
 use crate::error::AgentError;
+use crate::run_summary::{
+    narrate_tool_report, AiRunNarration, AiRunSummary, RunLedger, RUN_NARRATE_TOOL,
+};
 
 // ─── Bounds ────────────────────────────────────────────────────────────────
 //
@@ -522,7 +526,7 @@ fn validate_steps(steps: &[AiPlanStepInput], limits: &PlanLimits) -> Result<(), 
 
 /// Keep the leading bytes of `text`, cut on a character boundary, marking the
 /// cut so a reader never mistakes an excerpt for the whole output.
-fn bounded_excerpt(text: &str, ceiling: usize) -> String {
+pub(crate) fn bounded_excerpt(text: &str, ceiling: usize) -> String {
     if text.len() <= ceiling {
         return text.to_string();
     }
@@ -679,14 +683,51 @@ impl StepOutcome {
 ///
 /// Keying by conversation *is* the cardinality rule: one plan per
 /// conversation, with no way to express a second one.
-#[derive(Default)]
+///
+/// It also owns the run ledger. That is not a second responsibility bolted
+/// on: [`Self::finish_step`] is the single place every step outcome is
+/// written, dispatched or not, so it is the only place from which a record of
+/// what executed can be complete. A ledger kept anywhere else would have to
+/// re-derive outcomes from the plan it was handed, and would miss the ones
+/// that never reached a dispatch.
 pub struct PlanStore {
     plans: RwLock<HashMap<Uuid, AiPlan>>,
     /// The user's configured plan limits, already clamped.
     limits: RwLock<PlanLimits>,
+    /// The harness's record of what each conversation ran. Shared with the
+    /// agent loop, which records the tool calls the model makes outside any
+    /// plan: there are two places a call can settle, and the record has to be
+    /// complete across both.
+    ///
+    /// Always locked after `plans`, never before it.
+    runs: Arc<RunLedger>,
+}
+
+impl Default for PlanStore {
+    fn default() -> Self {
+        Self::with_ledger(Arc::new(RunLedger::default()))
+    }
 }
 
 impl PlanStore {
+    /// A store that records into the given ledger.
+    ///
+    /// The manager builds one ledger and hands the same handle to this store
+    /// and to the agent loop, so a plan step and a free-turn call land in one
+    /// conversation-scoped record rather than two partial ones.
+    pub fn with_ledger(runs: Arc<RunLedger>) -> Self {
+        Self {
+            plans: RwLock::new(HashMap::new()),
+            limits: RwLock::new(PlanLimits::default()),
+            runs,
+        }
+    }
+
+    /// The ledger this store records into, for the agent loop to share.
+    pub fn ledger(&self) -> &Arc<RunLedger> {
+        &self.runs
+    }
+
     /// The plan limits in force, already clamped to the hard ceilings.
     pub async fn limits(&self) -> PlanLimits {
         *self.limits.read().await
@@ -708,14 +749,45 @@ impl PlanStore {
         self.plans.read().await.get(&conversation_id).cloned()
     }
 
-    /// Drop the conversation's plan. Returns whether there was one.
+    /// Drop the conversation's plan, and the plan half of its run record.
+    ///
+    /// Only the plan half: the record is conversation-scoped, so discarding a
+    /// plan must not also discard the account of what the assistant ran
+    /// outside it. "Forget this plan" is not "forget that you deleted my MX
+    /// record in the chat". The record is dropped outright when the plan was
+    /// all it held.
     pub async fn delete(&self, conversation_id: Uuid) -> bool {
-        self.plans.write().await.remove(&conversation_id).is_some()
+        let removed = self.plans.write().await.remove(&conversation_id).is_some();
+        self.runs.detach_plan(conversation_id).await;
+        removed
+    }
+
+    /// The harness's account of what this conversation ran, if anything.
+    ///
+    /// Covers plan steps and free-turn tool calls alike — see
+    /// [`crate::run_summary`].
+    pub async fn run_summary(&self, conversation_id: Uuid) -> Option<AiRunSummary> {
+        self.runs.summary(conversation_id).await
+    }
+
+    /// Attach the model's prose to the run record, and return the summary it
+    /// now reads as.
+    pub async fn narrate(
+        &self,
+        conversation_id: Uuid,
+        narrative: &str,
+    ) -> Result<AiRunSummary, AgentError> {
+        self.runs.narrate(conversation_id, narrative).await
     }
 
     #[cfg(test)]
     async fn count(&self) -> usize {
         self.plans.read().await.len()
+    }
+
+    #[cfg(test)]
+    async fn run_count(&self) -> usize {
+        self.runs.count().await
     }
 
     #[cfg(test)]
@@ -848,7 +920,16 @@ impl PlanStore {
         stored.steps = plan.steps;
         stored.status = AiPlanStatus::Approved;
         stored.updated_at = Utc::now();
-        Ok(stored.clone())
+        let approved = stored.clone();
+        drop(plans);
+
+        // Approval is the earliest moment a *step* could run, so it is where
+        // the plan is attached to the conversation's record. Attaching it
+        // here is what lets a plan cancelled before any step ran still answer
+        // "nothing happened" rather than answering nothing at all, and it
+        // keeps whatever the conversation already ran outside the plan.
+        self.runs.attach_plan(&approved).await;
+        Ok(approved)
     }
 
     /// Cancel a plan. Final: a cancelled plan advances no further.
@@ -857,23 +938,34 @@ impl PlanStore {
     /// `ai_cancel_generation` is the control for in-flight work, and a plan
     /// step runs under it.
     pub async fn cancel(&self, conversation_id: Uuid) -> Result<AiPlan, AgentError> {
-        let mut plans = self.plans.write().await;
-        let plan = plans
-            .get_mut(&conversation_id)
-            .ok_or(AgentError::PlanNotFound)?;
-        match plan.status {
-            // Idempotent: cancelling a cancelled plan is what the caller wanted.
-            AiPlanStatus::Cancelled => Ok(plan.clone()),
-            AiPlanStatus::Done => Err(AgentError::PlanStateConflict {
-                state: plan.status.as_str(),
-                action: "be cancelled",
-            }),
-            _ => {
-                plan.status = AiPlanStatus::Cancelled;
-                plan.updated_at = Utc::now();
-                Ok(plan.clone())
+        let cancelled = {
+            let mut plans = self.plans.write().await;
+            let plan = plans
+                .get_mut(&conversation_id)
+                .ok_or(AgentError::PlanNotFound)?;
+            match plan.status {
+                // Idempotent: cancelling a cancelled plan is what the caller
+                // wanted.
+                AiPlanStatus::Cancelled => plan.clone(),
+                AiPlanStatus::Done => {
+                    return Err(AgentError::PlanStateConflict {
+                        state: plan.status.as_str(),
+                        action: "be cancelled",
+                    })
+                }
+                _ => {
+                    plan.status = AiPlanStatus::Cancelled;
+                    plan.updated_at = Utc::now();
+                    plan.clone()
+                }
             }
-        }
+        };
+        // Cancelling closes the account: `finished_at` is set, and the step
+        // tally is whatever the steps say now. A call already in flight is
+        // *not* aborted, which is exactly why the record also tracks whether
+        // a write is outstanding — see `AiRunSummary::any_change_attempted`.
+        self.runs.observe_plan(&cancelled).await;
+        Ok(cancelled)
     }
 
     /// Decide what running one step means right now.
@@ -929,7 +1021,7 @@ impl PlanStore {
             name: tool,
             arguments: arguments.unwrap_or_else(|| json!({})),
         };
-        {
+        let running = {
             let mut plans = self.plans.write().await;
             let plan = plans
                 .get_mut(&conversation_id)
@@ -947,7 +1039,13 @@ impl PlanStore {
             step.refusal = None;
             plan.status = AiPlanStatus::Running;
             plan.updated_at = Utc::now();
-        }
+            plan.clone()
+        };
+        // Recorded *before* the call leaves, so there is no instant in which a
+        // write is in flight and the run summary does not know it. A user who
+        // cancels mid-write and asks what happened gets "something may have"
+        // rather than a false all-clear.
+        self.runs.observe_plan(&running).await;
         Ok(StepDispatch::Dispatch {
             plan_id,
             step_id,
@@ -967,15 +1065,22 @@ impl PlanStore {
         step_id: Uuid,
         outcome: StepOutcome,
     ) -> Option<AiPlan> {
-        let mut plans = self.plans.write().await;
-        let plan = plans
-            .values_mut()
-            .find(|plan| plan.id == plan_id && plan.step(step_id).is_some())?;
-        let step = plan.step_mut(step_id)?;
-        outcome.apply(step);
-        plan.recompute_status();
-        plan.updated_at = Utc::now();
-        Some(plan.clone())
+        let (settled, step_index) = {
+            let mut plans = self.plans.write().await;
+            let plan = plans
+                .values_mut()
+                .find(|plan| plan.id == plan_id && plan.step(step_id).is_some())?;
+            let step = plan.step_mut(step_id)?;
+            outcome.apply(step);
+            let step_index = step.index;
+            plan.recompute_status();
+            plan.updated_at = Utc::now();
+            (plan.clone(), step_index)
+        };
+        // The one chokepoint for every step outcome, dispatched or not, and
+        // therefore the one place the run account can be kept complete.
+        self.runs.record_step(&settled, step_index).await;
+        Some(settled)
     }
 
     /// Write an outcome for a step that was never dispatched.
@@ -1131,9 +1236,15 @@ fn step_schema() -> Value {
 /// The assistant's own planning tools.
 ///
 /// These are *not* MCP tools: they are not in the MCP catalogue, they hold no
-/// MCP permission, and they dispatch nothing. They mutate draft plan state and
-/// nothing else, which is why the agent loop can serve them locally instead of
-/// through the tool executor.
+/// MCP permission, and they dispatch nothing. Two of them mutate draft plan
+/// state and the third writes one prose field of the run record, which is why
+/// the agent loop can serve them locally instead of through the tool
+/// executor.
+///
+/// None of the three can set a step's status, record an outcome, approve a
+/// plan or run anything. That is enforced by the input types — see
+/// [`AiPlanStepInput`] and [`crate::run_summary::AiRunNarration`], both of
+/// which reject unknown fields — rather than by the descriptions below.
 pub fn tool_definitions() -> Vec<ToolDefinition> {
     vec![
         ToolDefinition {
@@ -1188,12 +1299,16 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
                 "additionalProperties": false
             }),
         },
+        crate::run_summary::tool_definition(),
     ]
 }
 
 /// Whether a tool name is one of the assistant's own planning tools.
+///
+/// [`RUN_NARRATE_TOOL`] counts: it is scoped to the plan run, served by the
+/// same local branch, and writes nothing a plan tool could not.
 pub fn is_plan_tool(name: &str) -> bool {
-    name == PLAN_PROPOSE_TOOL || name == PLAN_REVISE_TOOL
+    name == PLAN_PROPOSE_TOOL || name == PLAN_REVISE_TOOL || name == RUN_NARRATE_TOOL
 }
 
 /// What the model is told about a plan it just proposed or revised.
@@ -1231,7 +1346,7 @@ fn plan_tool_report(plan: &AiPlan) -> String {
 /// Serve one of the assistant's own planning tools, or decline to.
 ///
 /// Returns `None` for any other name, so the caller falls through to the tool
-/// executor. The two names this matches are not MCP tools, so falling through
+/// executor. The names this matches are not MCP tools, so falling through
 /// would refuse them — see the test below that pins that they can never
 /// shadow a real tool.
 pub async fn try_execute_plan_tool(
@@ -1242,6 +1357,29 @@ pub async fn try_execute_plan_tool(
 ) -> Option<ToolResult> {
     if !is_plan_tool(&tool_call.name) {
         return None;
+    }
+    // Narrating answers with the run record rather than with the plan, so it
+    // returns before the plan branches below.
+    if tool_call.name == RUN_NARRATE_TOOL {
+        let outcome = match serde_json::from_value::<AiRunNarration>(tool_call.arguments.clone()) {
+            Ok(narration) => plans.narrate(conversation_id, &narration.narrative).await,
+            Err(error) => Err(invalid(
+                "narrative",
+                bounded_excerpt(&error.to_string(), 512),
+            )),
+        };
+        return Some(match outcome {
+            Ok(summary) => ToolResult {
+                tool_call_id: tool_call.id.clone(),
+                content: narrate_tool_report(&summary),
+                is_error: false,
+            },
+            Err(error) => ToolResult {
+                tool_call_id: tool_call.id.clone(),
+                content: bounded_excerpt(&error.public_message(), MAX_PLAN_STEP_RESULT_BYTES),
+                is_error: true,
+            },
+        });
     }
     let outcome = if tool_call.name == PLAN_PROPOSE_TOOL {
         match serde_json::from_value::<AiPlanProposal>(tool_call.arguments.clone()) {
@@ -1284,6 +1422,9 @@ mod tests {
     use bc_mcp::{McpGrantHandle, McpGrantSet};
 
     use super::*;
+    use crate::run_summary::{
+        AiRunStepTotals, AiRunToolOutcome, MAX_RETAINED_RUN_SUMMARIES, MAX_RUN_REFUSAL_REASON_BYTES,
+    };
 
     const READ_TOOL: &str = "dns_parse_spf";
     const WRITE_TOOL: &str = "cf_delete_dns_record";
@@ -1323,6 +1464,58 @@ mod tests {
         AiPlanProposal {
             title: "Tidy the zone".into(),
             steps,
+        }
+    }
+
+    /// Run one step the way `AgentManager::run_plan_step_with` does: begin,
+    /// dispatch through the one gate, hand the outcome back to the store.
+    ///
+    /// Spelled out rather than hidden, because the mapping from
+    /// `ExecutionResult` to `StepOutcome` is what the run record is derived
+    /// from; a test that took a shortcut here would be testing a shortcut.
+    async fn run_step(
+        executor: &ToolExecutor,
+        plans: &PlanStore,
+        conversation_id: Uuid,
+        step_id: Uuid,
+    ) -> AiPlan {
+        use bc_ai_tools::executor::ExecutionResult;
+
+        match plans
+            .begin_step(executor, conversation_id, step_id, StepApproval::Required)
+            .await
+            .expect("begin")
+        {
+            StepDispatch::Settled(plan) => plan,
+            StepDispatch::Dispatch {
+                plan_id,
+                step_id,
+                tool_call,
+                approved,
+            } => {
+                let outcome = match executor.execute(&tool_call, approved).await {
+                    ExecutionResult::Success(result) => StepOutcome::Done {
+                        result: result.content,
+                    },
+                    ExecutionResult::Error(result) => StepOutcome::Failed {
+                        reason: result.content,
+                    },
+                    ExecutionResult::Denied { source, result } => StepOutcome::Blocked {
+                        source,
+                        reason: result.content,
+                    },
+                    ExecutionResult::NeedsApproval { reason, .. } => {
+                        StepOutcome::AwaitingApproval { reason }
+                    }
+                    ExecutionResult::Rejected(error) => StepOutcome::Failed {
+                        reason: error.to_string(),
+                    },
+                };
+                plans
+                    .finish_step(plan_id, step_id, outcome)
+                    .await
+                    .expect("finish")
+            }
         }
     }
 
@@ -2067,19 +2260,35 @@ mod tests {
         assert_eq!(plan.steps[0].status, AiPlanStepStatus::Pending);
     }
 
-    /// The model has no tool that approves a plan or runs a step. Its whole
-    /// surface is these two names, and both only ever produce a draft.
+    /// The model has no tool that approves a plan, runs a step, or records an
+    /// outcome. Its whole surface is these three names: two produce a draft,
+    /// and the third writes one prose field.
     #[test]
-    fn the_models_tool_surface_is_two_tools_and_neither_approves_nor_runs() {
+    fn the_models_tool_surface_is_three_tools_and_none_approves_or_runs() {
         let definitions = tool_definitions();
         let names: Vec<&str> = definitions
             .iter()
             .map(|definition| definition.name.as_str())
             .collect();
-        assert_eq!(names, vec![PLAN_PROPOSE_TOOL, PLAN_REVISE_TOOL]);
+        assert_eq!(
+            names,
+            vec![PLAN_PROPOSE_TOOL, PLAN_REVISE_TOOL, RUN_NARRATE_TOOL]
+        );
         for definition in &definitions {
             let schema = &definition.input_schema;
             assert_eq!(schema["additionalProperties"], json!(false));
+            // The narrate tool has no steps; what matters about it is that it
+            // advertises nothing but prose.
+            if definition.name == RUN_NARRATE_TOOL {
+                let properties = schema["properties"]
+                    .as_object()
+                    .expect("an object schema")
+                    .keys()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>();
+                assert_eq!(properties, vec!["narrative"]);
+                continue;
+            }
             let step = &schema["properties"]["steps"]["items"];
             assert_eq!(step["additionalProperties"], json!(false));
             for owned in ["status", "result", "refusal", "id", "index"] {
@@ -2096,12 +2305,12 @@ mod tests {
         }
     }
 
-    /// The local interception in the agent loop matches two exact names. If
-    /// either were ever an MCP tool, the interception would shadow a real tool
-    /// and route a dispatch away from the permission gate.
+    /// The local interception in the agent loop matches exact names. If any
+    /// were ever an MCP tool, the interception would shadow a real tool and
+    /// route a dispatch away from the permission gate.
     #[test]
     fn the_plan_tool_names_are_not_mcp_tools() {
-        for name in [PLAN_PROPOSE_TOOL, PLAN_REVISE_TOOL] {
+        for name in [PLAN_PROPOSE_TOOL, PLAN_REVISE_TOOL, RUN_NARRATE_TOOL] {
             assert!(
                 bc_mcp::permissions::permission_for_invocation(name).is_none(),
                 "{name} is an MCP tool; the local interception would shadow it"
@@ -2526,6 +2735,429 @@ mod tests {
                 .is_none(),
             "an outcome must never be written to a plan it did not come from"
         );
+    }
+
+    // ─── Run summaries ─────────────────────────────────────────────────────
+    //
+    // Every assertion below is about the same property from a different
+    // angle: the summary says what the harness did, and the model cannot
+    // reach any of it.
+
+    /// A plan whose first step reads, whose second writes, and whose third is
+    /// the user's to carry out.
+    fn mixed_proposal() -> AiPlanProposal {
+        AiPlanProposal {
+            title: "Tidy the zone".into(),
+            steps: vec![
+                step("parse the SPF record", Some(READ_TOOL)),
+                step("delete the stale record", Some(WRITE_TOOL)),
+                step("tell the registrar", None),
+            ],
+        }
+    }
+
+    async fn approved_mixed_plan(
+        executor: &ToolExecutor,
+        plans: &PlanStore,
+        conversation_id: Uuid,
+    ) -> AiPlan {
+        plans
+            .propose(executor, conversation_id, mixed_proposal())
+            .await
+            .expect("draft");
+        plans
+            .approve(executor, conversation_id)
+            .await
+            .expect("approve")
+    }
+
+    #[tokio::test]
+    async fn a_run_summary_is_derived_from_what_the_harness_dispatched() {
+        let executor = open_executor().await;
+        let plans = PlanStore::default();
+        let conversation_id = Uuid::new_v4();
+        let plan = approved_mixed_plan(&executor, &plans, conversation_id).await;
+
+        // Approving opens the account, and nothing has run yet.
+        let opened = plans
+            .run_summary(conversation_id)
+            .await
+            .expect("approval opens a run record");
+        assert_eq!(opened.plan_id, Some(plan.id));
+        assert_eq!(opened.step_totals.pending, 3);
+        assert!(opened.tool_runs.is_empty());
+        assert!(!opened.any_change_attempted, "nothing has been dispatched");
+        assert!(opened.finished_at.is_none());
+
+        for step in &plan.steps {
+            run_step(&executor, &plans, conversation_id, step.id).await;
+        }
+
+        let summary = plans.run_summary(conversation_id).await.expect("a summary");
+        assert_eq!(summary.plan_id, Some(plan.id));
+        assert_eq!(summary.title.as_deref(), Some("Tidy the zone"));
+
+        // The read dispatched and succeeded; the write dispatched and was
+        // rejected at the MCP boundary; the third step named no tool.
+        assert_eq!(summary.step_totals.done, 1);
+        assert_eq!(summary.step_totals.failed, 1);
+        assert_eq!(summary.step_totals.skipped, 1);
+        assert_eq!(summary.step_totals.blocked, 0);
+        assert_eq!(summary.step_totals.pending, 0);
+
+        // Only steps that named a tool appear, in plan order.
+        assert_eq!(
+            summary
+                .tool_runs
+                .iter()
+                .map(|run| (run.step_index, run.tool.as_str(), run.outcome))
+                .collect::<Vec<_>>(),
+            vec![
+                (Some(0), READ_TOOL, AiRunToolOutcome::Ok),
+                (Some(1), WRITE_TOOL, AiRunToolOutcome::Failed),
+            ]
+        );
+
+        // The write-tool answer, which is the one that has to be right.
+        assert_eq!(summary.mutating_tools_run, vec![WRITE_TOOL.to_string()]);
+        assert!(summary.any_change_attempted);
+        assert!(
+            !summary.mutating_tools_run.contains(&READ_TOOL.to_string()),
+            "an analysis tool is not a write, whatever its name looks like"
+        );
+        assert!(summary.refusals.is_empty(), "nothing was refused");
+        assert!(
+            summary.finished_at.is_some(),
+            "a plan that has failed has finished"
+        );
+        assert!(summary.narrative.is_none());
+    }
+
+    /// MUTATION PROOF (a): the model's prose cannot reach a factual field.
+    ///
+    /// Make `RunRecord::summary` derive `any_change_attempted` — or any other
+    /// counted field — from `self.narrative`, and this fails.
+    #[tokio::test]
+    async fn a_model_supplied_narrative_cannot_alter_the_totals() {
+        let executor = open_executor().await;
+        let plans = PlanStore::default();
+        let conversation_id = Uuid::new_v4();
+        let plan = plans
+            .propose(
+                &executor,
+                conversation_id,
+                proposal(vec![step("parse the SPF record", Some(READ_TOOL))]),
+            )
+            .await
+            .expect("draft");
+        plans
+            .approve(&executor, conversation_id)
+            .await
+            .expect("approve");
+        run_step(&executor, &plans, conversation_id, plan.steps[0].id).await;
+
+        let before = plans.run_summary(conversation_id).await.expect("a summary");
+        assert_eq!(before.step_totals.done, 1);
+        assert!(before.mutating_tools_run.is_empty());
+        assert!(!before.any_change_attempted);
+
+        // A narrative claiming work that never happened, through the only
+        // route the model has.
+        const FORGED: &str = "I created three A records and deleted the old MX record.";
+        let call = ToolCall {
+            id: "call-narrate".into(),
+            name: RUN_NARRATE_TOOL.into(),
+            arguments: json!({ "narrative": FORGED }),
+        };
+        let result = try_execute_plan_tool(&plans, &executor, conversation_id, &call)
+            .await
+            .expect("the narrate tool serves its own name");
+        assert!(
+            !result.is_error,
+            "narrating is allowed; believing it is not"
+        );
+
+        let after = plans.run_summary(conversation_id).await.expect("a summary");
+        assert_eq!(after.narrative.as_deref(), Some(FORGED));
+        assert_eq!(
+            after.step_totals, before.step_totals,
+            "prose must not move a count"
+        );
+        assert_eq!(after.tool_runs, before.tool_runs);
+        assert_eq!(after.refusals, before.refusals);
+        assert_eq!(
+            after.mutating_tools_run, before.mutating_tools_run,
+            "prose claiming writes must not add a write"
+        );
+        assert_eq!(
+            after.any_change_attempted, before.any_change_attempted,
+            "prose claiming writes must not flip the change flag"
+        );
+        assert!(after.mutating_tools_run.is_empty());
+        assert!(!after.any_change_attempted);
+
+        // What the model is told back is the record, not its own claim.
+        assert!(result.content.contains("\"anyChangeAttempted\":false"));
+        assert!(result.content.contains("\"mutatingToolsRun\":[]"));
+    }
+
+    #[tokio::test]
+    async fn a_blocked_write_is_not_reported_as_a_change_attempt() {
+        let executor = executor(
+            AiPermissionMode::ReadOnly,
+            McpGrantHandle::new(McpGrantSet::all()),
+        )
+        .await;
+        let plans = PlanStore::default();
+        let conversation_id = Uuid::new_v4();
+        let plan = approved_mixed_plan(&executor, &plans, conversation_id).await;
+        for step in &plan.steps {
+            run_step(&executor, &plans, conversation_id, step.id).await;
+        }
+
+        let summary = plans.run_summary(conversation_id).await.expect("a summary");
+        assert_eq!(summary.step_totals.blocked, 1);
+        assert_eq!(
+            summary
+                .tool_runs
+                .iter()
+                .find(|run| run.tool == WRITE_TOOL)
+                .expect("the write step is recorded")
+                .outcome,
+            AiRunToolOutcome::Denied
+        );
+        assert!(
+            summary.mutating_tools_run.is_empty(),
+            "a refused call dispatched nothing, so nothing was attempted"
+        );
+        assert!(!summary.any_change_attempted);
+        assert_eq!(summary.refusals.len(), 1);
+        assert_eq!(summary.refusals[0].tool, WRITE_TOOL);
+        assert_eq!(summary.refusals[0].source, RefusalSource::AssistantPolicy);
+        assert!(summary.refusals[0].reason.len() <= MAX_RUN_REFUSAL_REASON_BYTES);
+    }
+
+    #[tokio::test]
+    async fn cancelling_a_plan_that_ran_nothing_still_says_nothing_happened() {
+        let executor = open_executor().await;
+        let plans = PlanStore::default();
+        let conversation_id = Uuid::new_v4();
+        approved_mixed_plan(&executor, &plans, conversation_id).await;
+        plans.cancel(conversation_id).await.expect("cancel");
+
+        // "I did nothing" is an answer; no summary at all is not.
+        let summary = plans.run_summary(conversation_id).await.expect("a summary");
+        assert_eq!(summary.step_totals.pending, 3);
+        assert_eq!(summary.step_totals.done, 0);
+        assert!(summary.tool_runs.is_empty());
+        assert!(summary.mutating_tools_run.is_empty());
+        assert!(!summary.any_change_attempted);
+        assert!(
+            summary.finished_at.is_some(),
+            "a cancelled run has finished"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_plan_the_user_has_not_approved_has_no_run_summary() {
+        let executor = open_executor().await;
+        let plans = PlanStore::default();
+        let conversation_id = Uuid::new_v4();
+        plans
+            .propose(&executor, conversation_id, mixed_proposal())
+            .await
+            .expect("draft");
+        assert!(
+            plans.run_summary(conversation_id).await.is_none(),
+            "nothing could have run, so there is nothing to account for"
+        );
+        assert!(plans.run_summary(Uuid::new_v4()).await.is_none());
+    }
+
+    /// The reason the record is not simply derived from the stored plan: a
+    /// model may propose a replacement the moment a run finishes, and "what
+    /// did you just do" still has to answer about the run that happened.
+    #[tokio::test]
+    async fn a_run_summary_survives_the_model_proposing_a_replacement_plan() {
+        let executor = open_executor().await;
+        let plans = PlanStore::default();
+        let conversation_id = Uuid::new_v4();
+        let plan = plans
+            .propose(
+                &executor,
+                conversation_id,
+                proposal(vec![step("parse", Some(READ_TOOL))]),
+            )
+            .await
+            .expect("draft");
+        plans
+            .approve(&executor, conversation_id)
+            .await
+            .expect("approve");
+        run_step(&executor, &plans, conversation_id, plan.steps[0].id).await;
+
+        plans
+            .propose(
+                &executor,
+                conversation_id,
+                proposal(vec![step("something else entirely", None)]),
+            )
+            .await
+            .expect("the finished plan may be replaced");
+
+        let summary = plans
+            .run_summary(conversation_id)
+            .await
+            .expect("the finished run is still accounted for");
+        assert_eq!(
+            summary.plan_id,
+            Some(plan.id),
+            "it describes the run that ran"
+        );
+        assert_eq!(summary.step_totals.done, 1);
+        assert_eq!(summary.tool_runs.len(), 1);
+
+        // Discarding the plan drops the plan half of the account, and with
+        // nothing else recorded that is the whole of it.
+        assert!(plans.delete(conversation_id).await);
+        assert!(plans.run_summary(conversation_id).await.is_none());
+    }
+
+    /// Discarding a plan must not discard what the assistant ran outside it.
+    /// The record is conversation-scoped, so the two halves are deleted by
+    /// different gestures: `ai_delete_plan` drops the plan,
+    /// `ai_delete_conversation` drops everything.
+    #[tokio::test]
+    async fn discarding_a_plan_keeps_what_ran_outside_it() {
+        let executor = open_executor().await;
+        let plans = PlanStore::default();
+        let conversation_id = Uuid::new_v4();
+
+        // A write in an ordinary turn, before any plan exists.
+        let attempt = plans
+            .ledger()
+            .open_turn_call(conversation_id, WRITE_TOOL)
+            .await;
+        plans
+            .ledger()
+            .close_turn_call(
+                conversation_id,
+                attempt,
+                WRITE_TOOL,
+                &bc_ai_tools::executor::ExecutionResult::Success(ToolResult {
+                    tool_call_id: "call-1".into(),
+                    content: "{}".into(),
+                    is_error: false,
+                }),
+            )
+            .await;
+
+        let plan = approved_mixed_plan(&executor, &plans, conversation_id).await;
+        run_step(&executor, &plans, conversation_id, plan.steps[0].id).await;
+        let before = plans.run_summary(conversation_id).await.expect("a summary");
+        assert_eq!(before.plan_id, Some(plan.id));
+        assert!(before.step_totals.done >= 1);
+
+        assert!(plans.delete(conversation_id).await);
+        let after = plans
+            .run_summary(conversation_id)
+            .await
+            .expect("the free-turn half survives discarding the plan");
+        assert!(after.plan_id.is_none(), "the plan half is gone");
+        assert!(after.title.is_none());
+        assert_eq!(after.step_totals, AiRunStepTotals::default());
+        assert!(
+            after.tool_runs.iter().all(|run| run.step_index.is_none()),
+            "no plan step survives, so no entry carries an index"
+        );
+        assert_eq!(
+            after.mutating_tools_run,
+            vec![WRITE_TOOL.to_string()],
+            "the write the assistant ran in the chat is still accounted for"
+        );
+        assert!(after.any_change_attempted);
+    }
+
+    #[tokio::test]
+    async fn a_narrative_is_dropped_when_another_step_settles() {
+        let executor = open_executor().await;
+        let plans = PlanStore::default();
+        let conversation_id = Uuid::new_v4();
+        let plan = approved_mixed_plan(&executor, &plans, conversation_id).await;
+        run_step(&executor, &plans, conversation_id, plan.steps[0].id).await;
+        plans
+            .narrate(conversation_id, "Parsed the record; nothing else to do.")
+            .await
+            .expect("narrate");
+        assert!(plans
+            .run_summary(conversation_id)
+            .await
+            .expect("a summary")
+            .narrative
+            .is_some());
+
+        run_step(&executor, &plans, conversation_id, plan.steps[1].id).await;
+        let summary = plans.run_summary(conversation_id).await.expect("a summary");
+        assert!(
+            summary.narrative.is_none(),
+            "prose describing an earlier state must not sit beside numbers that moved"
+        );
+        assert!(summary.any_change_attempted);
+    }
+
+    #[tokio::test]
+    async fn narrating_a_conversation_that_has_run_nothing_is_refused() {
+        let executor = open_executor().await;
+        let plans = PlanStore::default();
+        let conversation_id = Uuid::new_v4();
+        plans
+            .propose(&executor, conversation_id, mixed_proposal())
+            .await
+            .expect("draft");
+
+        assert!(matches!(
+            plans.narrate(conversation_id, "already done").await,
+            Err(AgentError::InvalidPlan {
+                field: "narrative",
+                ..
+            })
+        ));
+        let call = ToolCall {
+            id: "call-narrate".into(),
+            name: RUN_NARRATE_TOOL.into(),
+            arguments: json!({ "narrative": "already done" }),
+        };
+        let result = try_execute_plan_tool(&plans, &executor, conversation_id, &call)
+            .await
+            .expect("served");
+        assert!(result.is_error);
+        assert!(plans.run_summary(conversation_id).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn the_retained_run_record_count_is_capped() {
+        let executor = open_executor().await;
+        let plans = PlanStore::default();
+        // Raise the plan ceiling out of the way: this is about the ledger's
+        // own bound, not the plan store's.
+        plans
+            .set_limits(PlanLimits {
+                max_plan_steps: MAX_PLAN_STEPS,
+                max_retained_plans: MAX_RETAINED_PLANS,
+            })
+            .await;
+        for _ in 0..MAX_RETAINED_RUN_SUMMARIES + 8 {
+            let conversation_id = Uuid::new_v4();
+            plans
+                .propose(&executor, conversation_id, proposal(vec![step("a", None)]))
+                .await
+                .expect("draft");
+            plans
+                .approve(&executor, conversation_id)
+                .await
+                .expect("approve");
+        }
+        assert!(plans.run_count().await <= MAX_RETAINED_RUN_SUMMARIES);
     }
 
     #[test]
