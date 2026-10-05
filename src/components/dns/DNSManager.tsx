@@ -99,6 +99,7 @@ import {
 import {
   AiAssistantRelocatedNotice,
   AiAssistantSurface,
+  type AiAssistantBubblePosition,
 } from "@/components/ai/AiAssistantSurface";
 import {
   AI_ASSISTANT_PRESENTATION_OPTIONS,
@@ -1720,6 +1721,15 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     useState<AiAssistantPresentation>(() =>
       storageManager.getAiAssistantPresentation(),
     );
+  /**
+   * Where the floating bubble was dragged to, or `null` for the default
+   * corner. The surface clamps whatever it is given into the current
+   * viewport, so a point stored on a larger window is safe to restore.
+   */
+  const [assistantBubblePosition, setAssistantBubblePosition] =
+    useState<AiAssistantBubblePosition | null>(() =>
+      storageManager.getAiAssistantBubblePosition(),
+    );
   const [assistantOpen, setAssistantOpen] = useState(false);
   /**
    * Translated once, from the shared option list the assistant's own Behaviour
@@ -2186,6 +2196,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
         confirmWindowClose,
         closeTabOnMiddleClick,
         assistantPresentation,
+        assistantBubbleRight: assistantBubblePosition?.right,
+        assistantBubbleBottom: assistantBubblePosition?.bottom,
         mcpServerEnabled,
         mcpServerHost,
         mcpServerPort,
@@ -2232,6 +2244,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       confirmWindowClose,
       closeTabOnMiddleClick,
       assistantPresentation,
+      assistantBubblePosition,
       mcpServerEnabled,
       mcpServerHost,
       mcpServerPort,
@@ -2321,6 +2334,24 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       }
       if (isAiAssistantPresentation(profile.assistantPresentation)) {
         setAssistantPresentation(profile.assistantPresentation);
+      }
+      // Both insets or neither. Half a point is not a point, and a `NaN`
+      // inset renders as a declaration the browser drops, leaving the
+      // launcher somewhere no clamp can retrieve it.
+      const bubbleRight = profile.assistantBubbleRight;
+      const bubbleBottom = profile.assistantBubbleBottom;
+      if (
+        typeof bubbleRight === "number" &&
+        Number.isFinite(bubbleRight) &&
+        bubbleRight >= 0 &&
+        typeof bubbleBottom === "number" &&
+        Number.isFinite(bubbleBottom) &&
+        bubbleBottom >= 0
+      ) {
+        setAssistantBubblePosition({
+          right: bubbleRight,
+          bottom: bubbleBottom,
+        });
       }
       if (typeof profile.mcpServerEnabled === "boolean") {
         setMcpServerEnabled(profile.mcpServerEnabled);
@@ -4516,6 +4547,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     setConfirmWindowClose(storageManager.getConfirmWindowClose());
     setCloseTabOnMiddleClick(storageManager.getCloseTabOnMiddleClick());
     setAssistantPresentation(storageManager.getAiAssistantPresentation());
+    setAssistantBubblePosition(storageManager.getAiAssistantBubblePosition());
     setMcpServerEnabled(storageManager.getMcpServerEnabled());
     setMcpServerHost(storageManager.getMcpServerHost());
     setMcpServerPort(storageManager.getMcpServerPort());
@@ -4817,6 +4849,11 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     storageManager.setConfirmWindowClose(confirmWindowClose);
     storageManager.setCloseTabOnMiddleClick(closeTabOnMiddleClick);
     storageManager.setAiAssistantPresentation(assistantPresentation);
+    // Only once there is a position: `null` means never dragged, and writing
+    // it would clear a point stored on a previous launch.
+    if (assistantBubblePosition) {
+      storageManager.setAiAssistantBubblePosition(assistantBubblePosition);
+    }
     storageManager.setMcpServerEnabled(mcpServerEnabled);
     storageManager.setMcpServerHost(mcpServerHost);
     storageManager.setMcpServerPort(mcpServerPort);
@@ -4931,6 +4968,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     confirmWindowClose,
     closeTabOnMiddleClick,
     assistantPresentation,
+    assistantBubblePosition,
     mcpServerEnabled,
     mcpServerHost,
     mcpServerPort,
@@ -7250,6 +7288,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
           onOpenMcpPermissions={openMcpToolPermissions}
           onOpenAssistantSettings={openAssistantSettings}
           linkNavigation={assistantLinkNavigation}
+          bubblePosition={assistantBubblePosition}
+          onBubblePositionChange={setAssistantBubblePosition}
         />
       }
       commandBar={

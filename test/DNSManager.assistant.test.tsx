@@ -18,6 +18,7 @@ import assert from "node:assert/strict";
 import React from "react";
 import { afterEach, beforeEach, mock, test } from "node:test";
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -875,4 +876,64 @@ test("a blocked plan step lands on Tools & permissions in the Settings workspace
       "true",
     ),
   );
+});
+
+test("a stored bubble position is restored, not reset to the corner", async () => {
+  mockRuntime({
+    assistantPresentation: "bubble",
+    assistantBubbleRight: 220,
+    assistantBubbleBottom: 180,
+  });
+  renderManager();
+
+  const bubble = await screen.findByTestId("ai-assistant-bubble");
+  await waitFor(() => assert.equal(bubble.style.right, "220px"));
+  assert.equal(bubble.style.bottom, "180px");
+  // Restored, not opened: hydrating a preference must not pop a panel open.
+  assertAbsent(screen.queryByTestId("ai-panel"), "panel");
+});
+
+test("half a stored bubble position falls back to the default corner", async () => {
+  // The storage layer refuses a partial, and the host must not paint one
+  // either: a `NaN` inset would render as an invalid declaration the browser
+  // drops, stranding the launcher where no clamp could reach it.
+  mockRuntime({
+    assistantPresentation: "bubble",
+    assistantBubbleRight: 220,
+  });
+  renderManager();
+
+  const bubble = await screen.findByTestId("ai-assistant-bubble");
+  await screen.findByRole("button", { name: "Settings" });
+  assert.equal(bubble.style.right, "", "no inline inset for a partial");
+  assert.equal(bubble.style.bottom, "");
+});
+
+test("moving the bubble writes the position into the session profile", async () => {
+  const harness = mockRuntime({ assistantPresentation: "bubble" });
+  renderManager();
+
+  const launcher = await screen.findByTestId("ai-assistant-bubble-launcher");
+  // Arrow keys are a whole gesture with no release to wait for, so one
+  // keypress is one stored position. jsdom implements no PointerEvent, so a
+  // drag would have to be synthesised from MouseEvent; the nudge exercises
+  // the same persistence path through the host.
+  act(() => {
+    fireEvent.keyDown(launcher, { key: "ArrowLeft" });
+  });
+
+  await waitFor(() => {
+    const position = storageManager.getAiAssistantBubblePosition();
+    assert.ok(position, "a position must have been stored");
+    assert.ok(
+      position.right > 16,
+      `moving left should grow the right inset, got ${position.right}`,
+    );
+  });
+  await waitFor(() => {
+    const profile = writtenProfile(harness);
+    assert.ok(profile, "a session profile must have been written");
+    assert.equal(typeof profile.assistantBubbleRight, "number");
+    assert.equal(typeof profile.assistantBubbleBottom, "number");
+  });
 });
