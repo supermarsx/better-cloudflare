@@ -1,6 +1,6 @@
 [[IgnoredVulns]]
 id = "RUSTSEC-2023-0071"
-ignoreUntil = 2026-10-02
+ignoreUntil = 2026-10-23
 reason = "classification=unpatched; package=rsa@0.9.10; owner=Better Cloudflare security maintainers; review=.github/RELEASE_SECURITY.md#osv-exception-register; reachability=transitive through webauthn-rs 0.6.1-dev and crypto-glue 0.1.15, where the vulnerable rsa private-key surface is linked into the binary but never called because a relying party only verifies signatures with the authenticator public key; rationale=no patched rsa release exists in any line, so this clears only when RustSec publishes a fixed version or when webauthn-rs and crypto-glue drop rsa, and it must be re-verified on every webauthn-rs or crypto-glue bump because the waiver rests on current call paths rather than on absence of the vulnerable code"
 
 [[IgnoredVulns]]
