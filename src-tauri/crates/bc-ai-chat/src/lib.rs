@@ -13,4 +13,5 @@ pub mod types;
 
 pub use conversation::ChatManager;
 pub use error::ChatError;
+pub use limits::ChatLimits;
 pub use types::*;

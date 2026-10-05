@@ -76,6 +76,27 @@ impl Default for ToolExecutor {
     }
 }
 
+/// Both permission layers resolved for one tool name, without dispatching.
+///
+/// [`ToolExecutor::execute`] resolves through [`ToolExecutor::gate`], and so
+/// must anything that needs to know a call's fate *before* dispatching it — a
+/// planner that resolved its own way would eventually disagree with the gate
+/// that actually runs the call, and the disagreement would show up as a step
+/// the user was told would run being refused, or worse.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ToolGateDecision {
+    /// Both layers permit the call; dispatch without prompting.
+    Allow,
+    /// The assistant's policy wants the user to confirm first.
+    Ask { reason: String },
+    /// One of the two layers refuses. `source` names which one, because they
+    /// are configured in two different places.
+    Deny {
+        source: RefusalSource,
+        reason: String,
+    },
+}
+
 /// Result of attempting to execute a tool call.
 #[derive(Debug, Clone)]
 pub enum ExecutionResult {
@@ -87,7 +108,15 @@ pub enum ExecutionResult {
     Error(ToolResult),
     /// The permission policy refused the call. Nothing was dispatched, and the
     /// carried result is the refusal the model must be told about.
-    Denied(ToolResult),
+    ///
+    /// `source` names the layer that refused. It is carried rather than left
+    /// to be recovered from the result prose, because a caller that has to
+    /// record which permission list to change should not be string-matching
+    /// a message written for the model.
+    Denied {
+        source: RefusalSource,
+        result: ToolResult,
+    },
     /// The call or result violated a local safety boundary.
     Rejected(ToolExecutionError),
 }
@@ -153,6 +182,41 @@ impl ToolExecutor {
         }
         let state = self.state.read().await;
         permissions::resolve(state.tools_enabled, &state.permissions, tool_name)
+    }
+
+    /// Resolve both permission layers for one tool name without dispatching.
+    ///
+    /// This is the whole gate, minus the dispatch: the application's MCP
+    /// grants first, then the assistant's own policy, which may only narrow
+    /// them. Callers that have to decide something *before* running a call —
+    /// a plan that wants to show the user which steps cannot run — ask here
+    /// rather than reimplementing the composition.
+    pub async fn gate(&self, tool_name: &str) -> ToolGateDecision {
+        let grants = self.grants.snapshot().await;
+        self.gate_with(&grants, tool_name).await
+    }
+
+    /// [`Self::gate`] against a grant snapshot the caller already holds, so a
+    /// dispatch resolves and executes against one and the same snapshot.
+    async fn gate_with(&self, grants: &PermissionGrantSet, tool_name: &str) -> ToolGateDecision {
+        // Layer 1: the application's MCP grants, checked first so a tool the
+        // application cannot perform is refused outright rather than offered
+        // to the user for approval.
+        if let Err(reason) = granted(grants, tool_name) {
+            return ToolGateDecision::Deny {
+                source: RefusalSource::McpGrants,
+                reason,
+            };
+        }
+        // Layer 2: the assistant's own policy, which may only narrow layer 1.
+        match self.decision(tool_name).await {
+            PermissionDecision::Allow => ToolGateDecision::Allow,
+            PermissionDecision::Ask { reason } => ToolGateDecision::Ask { reason },
+            PermissionDecision::Deny { reason } => ToolGateDecision::Deny {
+                source: RefusalSource::AssistantPolicy,
+                reason,
+            },
+        }
     }
 
     /// What the assistant can actually dispatch right now, across both layers.
@@ -235,35 +299,28 @@ impl ToolExecutor {
             return ExecutionResult::Rejected(error);
         }
 
-        // Layer 1: the application's MCP grants, read live. Checked first so a
-        // tool the application cannot perform is refused outright rather than
-        // offered to the user for approval. The same snapshot is handed to the
-        // dispatcher below, which re-checks it authoritatively.
+        // Both layers, resolved by the one function every caller shares. The
+        // same snapshot is handed to the dispatcher below, which re-checks it
+        // authoritatively.
         let grants = self.grants.snapshot().await;
-        if let Err(reason) = granted(&grants, &tool_call.name) {
-            return ExecutionResult::Denied(ToolResult {
-                tool_call_id: tool_call.id.clone(),
-                content: permissions::refusal_text_from(RefusalSource::McpGrants, &reason),
-                is_error: true,
-            });
-        }
-
-        // Layer 2: the assistant's own policy, which may only narrow layer 1.
-        match self.decision(&tool_call.name).await {
-            PermissionDecision::Deny { reason } => {
-                return ExecutionResult::Denied(ToolResult {
-                    tool_call_id: tool_call.id.clone(),
-                    content: permissions::refusal_text(&reason),
-                    is_error: true,
-                });
+        match self.gate_with(&grants, &tool_call.name).await {
+            ToolGateDecision::Deny { source, reason } => {
+                return ExecutionResult::Denied {
+                    source,
+                    result: ToolResult {
+                        tool_call_id: tool_call.id.clone(),
+                        content: permissions::refusal_text_from(source, &reason),
+                        is_error: true,
+                    },
+                };
             }
-            PermissionDecision::Ask { reason } if !force => {
+            ToolGateDecision::Ask { reason } if !force => {
                 return ExecutionResult::NeedsApproval {
                     tool_call: tool_call.clone(),
                     reason,
                 };
             }
-            PermissionDecision::Ask { .. } | PermissionDecision::Allow => {}
+            ToolGateDecision::Ask { .. } | ToolGateDecision::Allow => {}
         }
 
         // Dispatch through the single MCP boundary that enforces the grant,
@@ -525,7 +582,7 @@ mod tests {
 
     fn refusal(result: &ExecutionResult) -> &str {
         match result {
-            ExecutionResult::Denied(result) => &result.content,
+            ExecutionResult::Denied { result, .. } => &result.content,
             other => panic!("expected a denial, got {other:?}"),
         }
     }
@@ -658,6 +715,56 @@ mod tests {
             .contains(MCP_GRANT_REFUSAL_MARKER));
         // The granted tool still runs, so the executor is not refusing wholesale.
         assert_reached_dispatch(&executor.execute(&call(READ_TOOL), false).await);
+    }
+
+    /// `gate` is what `execute` resolves through, so the answer a caller gets
+    /// before dispatching is the answer the dispatch itself will act on. A
+    /// second resolution path would drift, and the drift would show up as a
+    /// call the user was told would run being refused.
+    #[tokio::test]
+    async fn the_gate_answers_exactly_what_dispatch_acts_on() {
+        let cases: [(AiPermissionMode, McpGrantHandle); 4] = [
+            (AiPermissionMode::Autonomous, all_granted()),
+            (AiPermissionMode::Ask, all_granted()),
+            (AiPermissionMode::ReadOnly, all_granted()),
+            (AiPermissionMode::Autonomous, granting(&[READ_TOOL])),
+        ];
+        for (mode, grants) in cases {
+            let executor = executor_with_grants(mode, grants).await;
+            for tool in [READ_TOOL, WRITE_TOOL, "cf_not_a_tool_at_all"] {
+                let gate = executor.gate(tool).await;
+                let executed = executor.execute(&call(tool), false).await;
+                match (&gate, &executed) {
+                    (
+                        ToolGateDecision::Deny { source, reason },
+                        ExecutionResult::Denied {
+                            source: denied_by,
+                            result,
+                        },
+                    ) => {
+                        assert_eq!(
+                            source, denied_by,
+                            "{mode:?}/{tool}: the gate and the dispatch disagree about which layer refused"
+                        );
+                        assert_eq!(
+                            result.content,
+                            permissions::refusal_text_from(*source, reason),
+                            "{mode:?}/{tool}: the gate and the dispatch disagree about the refusal"
+                        );
+                    }
+                    (
+                        ToolGateDecision::Ask { reason },
+                        ExecutionResult::NeedsApproval {
+                            reason: asked_for, ..
+                        },
+                    ) => assert_eq!(reason, asked_for, "{mode:?}/{tool}"),
+                    (ToolGateDecision::Allow, result) => assert_reached_dispatch(result),
+                    (gate, executed) => {
+                        panic!("{mode:?}/{tool}: gate said {gate:?} but dispatch did {executed:?}")
+                    }
+                }
+            }
+        }
     }
 
     /// An executor with no grant handle at all holds an empty grant set, and

@@ -7,7 +7,7 @@ use uuid::Uuid;
 use bc_ai_provider::{Message, ToolCall, Usage};
 
 use crate::error::ChatError;
-use crate::limits::{enforce_conversation_limits, validate_chat_message};
+use crate::limits::{enforce_conversation_limits, validate_chat_message, ChatLimits};
 
 /// Status of an individual chat message.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -136,12 +136,25 @@ impl Conversation {
         let _ = self.try_push_message(msg);
     }
 
-    /// Add a validated message and evict the oldest retained messages as needed.
+    /// Add a validated message and evict the oldest retained messages as
+    /// needed, against the hard ceilings.
+    ///
+    /// A conversation on its own knows nothing about the user's configured
+    /// limits; [`Self::try_push_message_within`] is the variant that does.
     pub fn try_push_message(&mut self, msg: ChatMessage) -> Result<Vec<Uuid>, ChatError> {
-        validate_chat_message(&msg)?;
+        self.try_push_message_within(msg, &ChatLimits::default())
+    }
+
+    /// [`Self::try_push_message`] against the user's configured limits.
+    pub fn try_push_message_within(
+        &mut self,
+        msg: ChatMessage,
+        limits: &ChatLimits,
+    ) -> Result<Vec<Uuid>, ChatError> {
+        validate_chat_message(&msg, limits)?;
         self.updated_at = Utc::now();
         self.messages.push(msg);
-        Ok(enforce_conversation_limits(self))
+        Ok(enforce_conversation_limits(self, limits))
     }
 
     /// Get lightweight metadata for listing.

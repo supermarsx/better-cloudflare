@@ -7,7 +7,8 @@ use uuid::Uuid;
 
 use bc_ai_chat::{ChatManager, ChatMessage, MessageStatus};
 use bc_ai_provider::limits::{
-    validate_string, MAX_ERROR_BODY_BYTES, MAX_TOOL_RESULT_BYTES, STREAM_CHANNEL_CAPACITY,
+    validate_string, MAX_ERROR_BODY_BYTES, MAX_REQUEST_TOOLS, MAX_TOOL_RESULT_BYTES,
+    STREAM_CHANNEL_CAPACITY,
 };
 use bc_ai_provider::*;
 use bc_ai_tools::executor::{ExecutionResult, ToolExecutor};
@@ -16,6 +17,7 @@ use bc_ai_tools::ToolRegistry;
 use crate::config::AgentConfig;
 use crate::error::AgentError;
 use crate::events::AgentEvent;
+use crate::plan::{self, PlanStore};
 
 async fn lifecycle_termination(
     cancellation: &mut watch::Receiver<bool>,
@@ -153,9 +155,40 @@ pub(crate) fn tool_result_message(result: bc_ai_provider::ToolResult) -> ChatMes
     }
 }
 
+/// Run one tool call, serving the assistant's own planning tools locally and
+/// everything else through the permission gate.
+///
+/// The local branch matches two exact names that are not MCP tools and that
+/// dispatch nothing: they record a *draft* plan and no more. Every call that
+/// could actually do something still goes through [`ToolExecutor::execute`],
+/// so this is not a second dispatch path. `plans` is `None` when the planning
+/// tools were not advertised, in which case the names fall through to the
+/// executor, which refuses them as unregistered MCP tools.
+async fn execute_one_tool_call(
+    tool_call: &ToolCall,
+    executor: &ToolExecutor,
+    plans: Option<&PlanStore>,
+    conversation_id: Uuid,
+) -> ExecutionResult {
+    if let Some(plans) = plans {
+        if let Some(result) =
+            plan::try_execute_plan_tool(plans, executor, conversation_id, tool_call).await
+        {
+            return if result.is_error {
+                ExecutionResult::Error(result)
+            } else {
+                ExecutionResult::Success(result)
+            };
+        }
+    }
+    executor.execute(tool_call, false).await
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn execute_tool_calls(
     tool_calls: &[ToolCall],
     executor: &ToolExecutor,
+    plans: Option<&PlanStore>,
     chat: &ChatManager,
     conversation_id: Uuid,
     event_tx: &mpsc::Sender<AgentEvent>,
@@ -164,7 +197,7 @@ async fn execute_tool_calls(
 ) -> Result<bool, AgentError> {
     for tool_call in tool_calls {
         let result = until_lifecycle(
-            executor.execute(tool_call, false),
+            execute_one_tool_call(tool_call, executor, plans, conversation_id),
             cancellation,
             disposal,
             event_tx,
@@ -179,7 +212,7 @@ async fn execute_tool_calls(
             // refused calls count against `max_tool_rounds`.
             ExecutionResult::Success(result)
             | ExecutionResult::Error(result)
-            | ExecutionResult::Denied(result) => {
+            | ExecutionResult::Denied { result, .. } => {
                 if result.content.len() > MAX_TOOL_RESULT_BYTES {
                     return Err(AgentError::ToolOutputLimit {
                         limit: MAX_TOOL_RESULT_BYTES,
@@ -296,6 +329,7 @@ pub async fn run_turn(
     chat: &ChatManager,
     registry: &ToolRegistry,
     executor: &ToolExecutor,
+    plans: &PlanStore,
     config: &AgentConfig,
     persona_prompt: Option<String>,
     conversation_id: Uuid,
@@ -319,14 +353,35 @@ pub async fn run_turn(
     // application's MCP permissions and not denied by the assistant's own
     // policy. Offering the rest buys a refused round, and offering an empty
     // list tells the model it has tools when it has none.
+    //
+    // The assistant's own planning tools ride along with them, and only with
+    // them: a plan whose steps can call nothing is theatre, and a model
+    // offered nothing but `plan_propose` would propose plans it could never
+    // carry out. They are appended only while there is room inside
+    // `MAX_REQUEST_TOOLS`, so adding them can never make a whole request
+    // invalid.
     let tools = if config.tools_enabled {
         let usable = executor
             .usable_definitions(registry.definitions().await)
             .await;
-        (!usable.is_empty()).then_some(usable)
+        (!usable.is_empty()).then(|| {
+            let mut tools = usable;
+            let planning = plan::tool_definitions();
+            if tools.len().saturating_add(planning.len()) <= MAX_REQUEST_TOOLS {
+                tools.extend(planning);
+            }
+            tools
+        })
     } else {
         None
     };
+    // No planning tools advertised means no local interception either, so a
+    // model that calls one anyway is refused by the gate like any other
+    // unregistered name.
+    let plans = tools
+        .as_ref()
+        .is_some_and(|tools| tools.iter().any(|tool| plan::is_plan_tool(&tool.name)))
+        .then_some(plans);
 
     for _round in 0..config.max_tool_rounds {
         let messages = chat
@@ -421,6 +476,7 @@ pub async fn run_turn(
             let paused = execute_tool_calls(
                 &tool_calls,
                 executor,
+                plans,
                 chat,
                 conversation_id,
                 &event_tx,
@@ -475,13 +531,19 @@ mod tests {
     /// a refusal for an answer.
     struct ToolLoopProvider {
         tool_name: &'static str,
+        arguments: serde_json::Value,
         rounds: Arc<AtomicUsize>,
     }
 
     impl ToolLoopProvider {
         fn new(tool_name: &'static str) -> Self {
+            Self::with_arguments(tool_name, serde_json::json!({ "content": "v=spf1 -all" }))
+        }
+
+        fn with_arguments(tool_name: &'static str, arguments: serde_json::Value) -> Self {
             Self {
                 tool_name,
+                arguments,
                 rounds: Arc::new(AtomicUsize::new(0)),
             }
         }
@@ -495,7 +557,7 @@ mod tests {
                         tool_calls: vec![ToolCall {
                             id: format!("call-{round}"),
                             name: self.tool_name.into(),
-                            arguments: serde_json::json!({ "content": "v=spf1 -all" }),
+                            arguments: self.arguments.clone(),
                         }],
                     },
                     tool_call_id: None,
@@ -582,6 +644,7 @@ mod tests {
         chat: ChatManager,
         registry: Arc<ToolRegistry>,
         executor: ToolExecutor,
+        plans: PlanStore,
         conversation_id: Uuid,
     }
 
@@ -616,6 +679,7 @@ mod tests {
                 chat,
                 registry,
                 executor,
+                plans: PlanStore::default(),
                 conversation_id,
             }
         }
@@ -638,6 +702,7 @@ mod tests {
                 &self.chat,
                 self.registry.as_ref(),
                 &self.executor,
+                &self.plans,
                 config,
                 persona_prompt,
                 self.conversation_id,
@@ -836,6 +901,151 @@ mod tests {
         assert!(advertised.iter().any(|tool| tool.name == READ_TOOL));
     }
 
+    /// The planning tools are offered alongside the granted tools, and only
+    /// alongside them: a model offered nothing but `plan_propose` would plan
+    /// work it could never carry out, and advertising two tools where there
+    /// were none would tell a zero-grant install it has tool support.
+    #[tokio::test]
+    async fn the_planning_tools_are_advertised_with_the_granted_tools_and_not_without_them() {
+        let granted = Harness::new(AiPermissions::default()).await;
+        let provider = CapturingProvider::default();
+        granted
+            .run(&provider, &config(2), None)
+            .await
+            .expect("turn completes");
+        let advertised = provider
+            .request
+            .lock()
+            .expect("request")
+            .as_ref()
+            .expect("the provider was called")
+            .tools
+            .clone()
+            .expect("granted tools are advertised");
+        for name in [plan::PLAN_PROPOSE_TOOL, plan::PLAN_REVISE_TOOL] {
+            assert!(
+                advertised.iter().any(|tool| tool.name == name),
+                "{name} must be offered when the assistant has tools at all"
+            );
+        }
+        assert!(advertised.len() <= MAX_REQUEST_TOOLS);
+
+        let ungranted =
+            Harness::with_grants(AiPermissions::default(), McpGrantHandle::default()).await;
+        let provider = CapturingProvider::default();
+        ungranted
+            .run(&provider, &config(2), None)
+            .await
+            .expect("turn completes");
+        assert!(
+            provider
+                .request
+                .lock()
+                .expect("request")
+                .as_ref()
+                .expect("the provider was called")
+                .tools
+                .is_none(),
+            "planning must not turn a zero-grant install into one that advertises tools"
+        );
+    }
+
+    /// A model proposing a plan gets a draft and nothing else: no dispatch,
+    /// no approval, no step run. This is the only effect either planning tool
+    /// can have.
+    #[tokio::test]
+    async fn a_model_proposing_a_plan_gets_a_draft_and_runs_nothing() {
+        let harness = Harness::new(AiPermissions {
+            mode: AiPermissionMode::ReadOnly,
+            tools: BTreeMap::new(),
+        })
+        .await;
+        let provider = ToolLoopProvider::with_arguments(
+            plan::PLAN_PROPOSE_TOOL,
+            serde_json::json!({
+                "title": "Tidy the zone",
+                "steps": [
+                    { "title": "parse it", "tool": READ_TOOL, "arguments": { "content": "v=spf1 -all" } },
+                    { "title": "delete it", "tool": WRITE_TOOL },
+                ],
+            }),
+        );
+
+        let error = harness
+            .run(&provider, &config(1), None)
+            .await
+            .expect_err("round limit");
+        assert!(matches!(error, AgentError::ToolRoundLimit(1)));
+
+        let (content, is_error) = harness
+            .tool_results()
+            .await
+            .pop()
+            .expect("the plan tool answered");
+        assert!(!is_error, "{content}");
+        assert!(
+            !content.starts_with(PERMISSION_REFUSAL_PREFIX),
+            "a planning tool is served locally, not refused by the MCP layer: {content}"
+        );
+        // The model is told which step cannot run, so it can revise or explain.
+        assert!(content.contains("blockedSteps"), "{content}");
+        assert!(
+            content.contains("mcpGrants") || content.contains("assistantPolicy"),
+            "{content}"
+        );
+
+        let plan = harness
+            .plans
+            .get(harness.conversation_id)
+            .await
+            .expect("a draft was recorded");
+        assert_eq!(plan.status, plan::AiPlanStatus::Draft);
+        assert_eq!(plan.steps[0].status, plan::AiPlanStepStatus::Pending);
+        assert_eq!(
+            plan.steps[1].status,
+            plan::AiPlanStepStatus::Blocked,
+            "read-only mode blocks the write step at plan time"
+        );
+        assert!(
+            plan.steps.iter().all(|step| step.result.is_none()),
+            "proposing a plan must execute nothing"
+        );
+    }
+
+    /// With nothing granted the planning tools are not advertised, so a model
+    /// that calls one anyway is refused by the gate like any other name the
+    /// MCP catalogue does not define. There is no unadvertised back door.
+    #[tokio::test]
+    async fn a_plan_tool_call_is_refused_when_planning_was_not_advertised() {
+        let harness =
+            Harness::with_grants(AiPermissions::default(), McpGrantHandle::default()).await;
+        let provider = ToolLoopProvider::with_arguments(
+            plan::PLAN_PROPOSE_TOOL,
+            serde_json::json!({
+                "title": "Tidy the zone",
+                "steps": [{ "title": "parse it" }],
+            }),
+        );
+
+        let error = harness
+            .run(&provider, &config(1), None)
+            .await
+            .expect_err("round limit");
+        assert!(matches!(error, AgentError::ToolRoundLimit(1)));
+        let (content, is_error) = harness
+            .tool_results()
+            .await
+            .pop()
+            .expect("a refusal was recorded");
+        assert!(is_error);
+        assert!(content.starts_with(PERMISSION_REFUSAL_PREFIX), "{content}");
+        assert!(content.contains(MCP_GRANT_REFUSAL_MARKER), "{content}");
+        assert!(
+            harness.plans.get(harness.conversation_id).await.is_none(),
+            "a refused planning call must record no plan"
+        );
+    }
+
     #[tokio::test]
     async fn a_tool_needing_approval_pauses_the_turn_without_a_result() {
         let harness = Harness::new(AiPermissions {
@@ -938,6 +1148,7 @@ mod tests {
             &harness.chat,
             harness.registry.as_ref(),
             &harness.executor,
+            &harness.plans,
             &config(2),
             Some("You are the persona.".into()),
             conversation_id,

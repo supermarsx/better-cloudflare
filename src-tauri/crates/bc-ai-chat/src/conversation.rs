@@ -8,7 +8,8 @@ use uuid::Uuid;
 use crate::error::ChatError;
 use crate::limits::{
     conversation_retained_bytes, enforce_conversation_limits, validate_chat_message,
-    validate_conversation, MAX_CONVERSATIONS, MAX_GLOBAL_RETAINED_BYTES,
+    validate_conversation, ChatLimits, MAX_CONFIGURED_EVICTIONS_PER_WRITE, MAX_CONVERSATIONS,
+    MAX_GLOBAL_RETAINED_BYTES,
 };
 use crate::types::{ChatMessage, Conversation, ConversationMeta};
 
@@ -16,6 +17,11 @@ use crate::types::{ChatMessage, Conversation, ConversationMeta};
 struct ChatState {
     conversations: HashMap<Uuid, Conversation>,
     disposal_senders: HashMap<Uuid, watch::Sender<bool>>,
+    /// The user's configured retention limits, already clamped. Held here
+    /// rather than beside the state so that enforcement, which runs under the
+    /// same write lock as the mutation it follows, cannot read a different
+    /// value than the one validated against.
+    limits: ChatLimits,
 }
 
 impl ChatState {
@@ -46,11 +52,48 @@ impl ChatState {
             .map(|conversation| conversation.id)
     }
 
+    /// Trim the store back inside its retention limits.
+    ///
+    /// Two passes, and the difference between them *is* the retention policy
+    /// for a lowered setting:
+    ///
+    /// 1. The hard ceilings, enforced without bound, exactly as before these
+    ///    limits became configurable. `MAX_GLOBAL_RETAINED_BYTES` exists to
+    ///    bound memory, so nothing may be retained above it.
+    /// 2. A configured limit below its ceiling, enforced by a pass capped at
+    ///    [`MAX_CONFIGURED_EVICTIONS_PER_WRITE`]. Lowering "max
+    ///    conversations" to 5 with 40 stored therefore stops the store
+    ///    growing at once and then walks it down at most one conversation per
+    ///    write — never 35 transcripts at once because somebody typed a
+    ///    smaller number. Usage falls to the configured value as the user
+    ///    deletes conversations themselves.
     fn enforce_global_limits(&mut self) -> Vec<Uuid> {
+        let limits = self.limits.clamped();
+        let mut evicted =
+            self.evict_until(MAX_CONVERSATIONS, MAX_GLOBAL_RETAINED_BYTES, usize::MAX);
+        evicted.extend(self.evict_until(
+            limits.max_conversations,
+            limits.max_global_retained_bytes,
+            MAX_CONFIGURED_EVICTIONS_PER_WRITE,
+        ));
+        evicted
+    }
+
+    /// Remove the deterministic oldest conversations until the store is
+    /// inside both limits, or `budget` have gone, whichever comes first.
+    fn evict_until(
+        &mut self,
+        max_conversations: usize,
+        max_bytes: usize,
+        budget: usize,
+    ) -> Vec<Uuid> {
         let mut evicted = Vec::new();
-        while self.conversations.len() > MAX_CONVERSATIONS
-            || self.total_retained_bytes() > MAX_GLOBAL_RETAINED_BYTES
+        while self.conversations.len() > max_conversations
+            || self.total_retained_bytes() > max_bytes
         {
+            if evicted.len() >= budget {
+                break;
+            }
             let Some(oldest_id) = self.oldest_id() else {
                 break;
             };
@@ -68,6 +111,24 @@ pub struct ChatManager {
 }
 
 impl ChatManager {
+    /// The retention limits in force, already clamped to the hard ceilings.
+    pub async fn limits(&self) -> ChatLimits {
+        self.state.read().await.limits.clamped()
+    }
+
+    /// Install the user's configured retention limits.
+    ///
+    /// The value is clamped here, which is why this takes ownership and why
+    /// there is no field to assign instead: a caller cannot install a limit
+    /// above its ceiling even by mistake. Installing a *lower* limit deletes
+    /// nothing — see [`ChatState::enforce_global_limits`] for what a lowered
+    /// limit does instead.
+    pub async fn set_limits(&self, limits: ChatLimits) -> ChatLimits {
+        let mut state = self.state.write().await;
+        state.limits = limits.clamped();
+        state.limits
+    }
+
     /// Create a validated conversation and evict the deterministic oldest
     /// conversations if global count or byte limits are exceeded.
     pub async fn try_create_conversation(
@@ -84,10 +145,10 @@ impl ChatManager {
         if let Some(system_prompt) = system_prompt {
             conversation = conversation.with_system_prompt(system_prompt);
         }
-        validate_conversation(&conversation)?;
-        let meta = conversation.meta();
         let (disposal_tx, _disposal_rx) = watch::channel(false);
         let mut state = self.state.write().await;
+        validate_conversation(&conversation, &state.limits)?;
+        let meta = conversation.meta();
         state.disposal_senders.insert(conversation.id, disposal_tx);
         state.conversations.insert(conversation.id, conversation);
         state.enforce_global_limits();
@@ -128,13 +189,14 @@ impl ChatManager {
         conversation_id: Uuid,
         message: ChatMessage,
     ) -> Result<Vec<Uuid>, ChatError> {
-        validate_chat_message(&message)?;
         let mut state = self.state.write().await;
+        let limits = state.limits;
+        validate_chat_message(&message, &limits)?;
         let conversation = state
             .conversations
             .get_mut(&conversation_id)
             .ok_or(ChatError::ConversationNotFound(conversation_id))?;
-        let evicted_messages = conversation.try_push_message(message)?;
+        let evicted_messages = conversation.try_push_message_within(message, &limits)?;
         state.enforce_global_limits();
         if !state.conversations.contains_key(&conversation_id) {
             return Err(ChatError::ConversationNotFound(conversation_id));
@@ -152,6 +214,7 @@ impl ChatManager {
         F: FnOnce(&mut ChatMessage),
     {
         let mut state = self.state.write().await;
+        let limits = state.limits;
         let conversation = state
             .conversations
             .get_mut(&conversation_id)
@@ -165,13 +228,13 @@ impl ChatManager {
 
         let mut updated = last.clone();
         updater(&mut updated);
-        validate_chat_message(&updated)?;
+        validate_chat_message(&updated, &limits)?;
         let Some(last) = conversation.messages.last_mut() else {
             return Ok(false);
         };
         *last = updated;
         conversation.updated_at = chrono::Utc::now();
-        enforce_conversation_limits(conversation);
+        enforce_conversation_limits(conversation, &limits);
         state.enforce_global_limits();
         Ok(state.conversations.contains_key(&conversation_id))
     }
@@ -179,6 +242,7 @@ impl ChatManager {
     /// Update a conversation title or return its bounded validation error.
     pub async fn try_set_title(&self, id: Uuid, title: String) -> Result<(), ChatError> {
         let mut state = self.state.write().await;
+        let limits = state.limits;
         let conversation = state
             .conversations
             .get_mut(&id)
@@ -186,7 +250,7 @@ impl ChatManager {
         let mut updated = conversation.clone();
         updated.title = title;
         updated.updated_at = chrono::Utc::now();
-        validate_conversation(&updated)?;
+        validate_conversation(&updated, &limits)?;
         *conversation = updated;
         state.enforce_global_limits();
         Ok(())
@@ -284,6 +348,278 @@ mod tests {
             .await
             .expect("conversation")
             .id
+    }
+
+    // ── Configured limits ──────────────────────────────────────────────────
+
+    /// The failure this policy exists to prevent: typing a smaller number
+    /// must not cost the user their transcripts. Lowering the limit from 128
+    /// to 5 with 40 stored deletes nothing at all, and the store then stops
+    /// growing rather than collapsing to 5.
+    #[tokio::test]
+    async fn lowering_the_conversation_limit_below_current_usage_deletes_nothing() {
+        let manager = ChatManager::default();
+        for _ in 0..40 {
+            conversation(&manager).await;
+        }
+        assert_eq!(manager.count().await, 40);
+
+        let stored = manager
+            .set_limits(ChatLimits {
+                max_conversations: 5,
+                ..ChatLimits::default()
+            })
+            .await;
+        assert_eq!(stored.max_conversations, 5);
+        assert_eq!(
+            manager.count().await,
+            40,
+            "lowering a limit must not delete a single conversation"
+        );
+        assert_eq!(manager.list_conversations().await.len(), 40);
+
+        // Growth stops: a create still succeeds, but the store does not grow
+        // past where it was, and it loses exactly the one oldest conversation
+        // the hard ceiling would have taken on that same write.
+        for expected in [40, 40, 40] {
+            conversation(&manager).await;
+            assert_eq!(
+                manager.count().await,
+                expected,
+                "a configured limit may evict at most {MAX_CONFIGURED_EVICTIONS_PER_WRITE} \
+                 conversation per write"
+            );
+        }
+    }
+
+    /// The same for messages inside one conversation: continuing a long
+    /// conversation stays possible, and it is not emptied down to the new
+    /// limit in one push.
+    #[tokio::test]
+    async fn lowering_the_message_limit_below_current_usage_trims_one_per_write() {
+        let manager = ChatManager::default();
+        let id = conversation(&manager).await;
+        for index in 0..40 {
+            manager
+                .try_push_message(id, ChatMessage::user(format!("message {index}")))
+                .await
+                .expect("push");
+        }
+        let before = manager
+            .get_conversation(id)
+            .await
+            .expect("conversation")
+            .messages
+            .len();
+        assert_eq!(before, 40);
+
+        manager
+            .set_limits(ChatLimits {
+                max_messages_per_conversation: 10,
+                ..ChatLimits::default()
+            })
+            .await;
+        assert_eq!(
+            manager
+                .get_conversation(id)
+                .await
+                .expect("conversation")
+                .messages
+                .len(),
+            40,
+            "lowering a limit must not drop a single message"
+        );
+
+        // Each push trims one, so the history walks down visibly instead of
+        // thirty messages vanishing at once.
+        for expected in [40, 40, 40] {
+            manager
+                .try_push_message(id, ChatMessage::user("another"))
+                .await
+                .expect("a long conversation must stay usable");
+            assert_eq!(
+                manager
+                    .get_conversation(id)
+                    .await
+                    .expect("conversation")
+                    .messages
+                    .len(),
+                expected
+            );
+        }
+    }
+
+    /// A configured limit the store is *under* behaves exactly like the
+    /// ceiling: it caps growth at the configured number.
+    #[tokio::test]
+    async fn a_configured_limit_caps_growth_at_the_configured_number() {
+        let manager = ChatManager::default();
+        manager
+            .set_limits(ChatLimits {
+                max_conversations: 5,
+                ..ChatLimits::default()
+            })
+            .await;
+        for _ in 0..5 {
+            conversation(&manager).await;
+        }
+        assert_eq!(manager.count().await, 5);
+        for _ in 0..4 {
+            conversation(&manager).await;
+            assert_eq!(
+                manager.count().await,
+                5,
+                "the configured limit must hold once usage is inside it"
+            );
+        }
+    }
+
+    /// A lowered byte limit refuses an over-long message rather than
+    /// truncating what the user typed, and names the configured number.
+    #[tokio::test]
+    async fn a_lowered_message_byte_limit_refuses_rather_than_truncating() {
+        let manager = ChatManager::default();
+        let id = conversation(&manager).await;
+        manager
+            .set_limits(ChatLimits {
+                max_chat_message_bytes: 512,
+                ..ChatLimits::default()
+            })
+            .await;
+
+        let error = manager
+            .try_push_message(id, ChatMessage::user("x".repeat(1024)))
+            .await
+            .expect_err("over the configured message limit");
+        assert!(
+            matches!(
+                error,
+                ChatError::LimitExceeded {
+                    resource: "retained chat message",
+                    limit: 512,
+                    ..
+                }
+            ),
+            "the error must name the configured limit, not the ceiling: {error}"
+        );
+        // A message inside the configured limit still goes through.
+        manager
+            .try_push_message(id, ChatMessage::user("short"))
+            .await
+            .expect("inside the configured limit");
+    }
+
+    /// A lowered title limit is enforced, in UTF-8 bytes, and reported as the
+    /// configured number.
+    #[tokio::test]
+    async fn a_lowered_title_limit_is_enforced_in_utf8_bytes() {
+        let manager = ChatManager::default();
+        manager
+            .set_limits(ChatLimits {
+                max_title_bytes: 8,
+                ..ChatLimits::default()
+            })
+            .await;
+        // Four two-byte characters are eight bytes: at the limit, not over.
+        manager
+            .try_create_conversation("ollama".into(), "m".into(), Some("éééé".into()), None)
+            .await
+            .expect("eight UTF-8 bytes is inside an eight-byte limit");
+        assert!(
+            matches!(
+                manager
+                    .try_create_conversation(
+                        "ollama".into(),
+                        "m".into(),
+                        Some("ééééé".into()),
+                        None
+                    )
+                    .await,
+                Err(ChatError::LimitExceeded {
+                    resource: "conversation title",
+                    limit: 8,
+                    ..
+                })
+            ),
+            "five two-byte characters are ten bytes and must be refused"
+        );
+    }
+
+    /// Nothing a caller can pass may raise a ceiling. `set_limits` clamps,
+    /// and it is the only way in.
+    #[tokio::test]
+    async fn set_limits_cannot_raise_a_hard_ceiling() {
+        let manager = ChatManager::default();
+        let stored = manager
+            .set_limits(ChatLimits {
+                max_conversations: usize::MAX,
+                max_messages_per_conversation: usize::MAX,
+                max_chat_message_bytes: usize::MAX,
+                max_conversation_bytes: usize::MAX,
+                max_global_retained_bytes: usize::MAX,
+                max_title_bytes: usize::MAX,
+            })
+            .await;
+        assert_eq!(stored, ChatLimits::default());
+        assert_eq!(manager.limits().await, ChatLimits::default());
+
+        // And zero clamps up to the floor rather than down to a store that
+        // can hold nothing.
+        let stored = manager
+            .set_limits(ChatLimits {
+                max_conversations: 0,
+                max_messages_per_conversation: 0,
+                max_chat_message_bytes: 0,
+                max_conversation_bytes: 0,
+                max_global_retained_bytes: 0,
+                max_title_bytes: 0,
+            })
+            .await;
+        assert_eq!(stored.max_conversations, 1);
+        assert_eq!(stored.max_title_bytes, 1);
+
+        // A one-*byte* retention budget really can hold nothing — one
+        // conversation's own accounting overhead is larger than that — so the
+        // create succeeds and the budget is then honoured. That is the
+        // setting being obeyed, not the store wedging: nothing errors, and
+        // raising the budget to something a conversation fits in makes it
+        // retain again.
+        manager
+            .try_create_conversation("ollama".into(), "m".into(), Some("t".into()), None)
+            .await
+            .expect("a create under an absurd budget still succeeds");
+        assert_eq!(manager.count().await, 0);
+
+        let stored = manager
+            .set_limits(ChatLimits {
+                max_conversations: 1,
+                max_title_bytes: 1,
+                ..ChatLimits::default()
+            })
+            .await;
+        assert_eq!(stored.max_conversations, 1);
+        let id = manager
+            .try_create_conversation("ollama".into(), "m".into(), Some("t".into()), None)
+            .await
+            .expect("the count floor must leave the store usable")
+            .id;
+        assert!(
+            manager.get_conversation(id).await.is_some(),
+            "a floor of one conversation must still retain that one conversation"
+        );
+    }
+
+    /// The hard ceilings are still enforced without bound, so a configured
+    /// limit cannot be used to retain more than the code is built to survive.
+    #[tokio::test]
+    async fn the_hard_ceilings_still_bound_the_store() {
+        let manager = ChatManager::default();
+        manager.set_limits(ChatLimits::default()).await;
+        for _ in 0..(MAX_CONVERSATIONS + 8) {
+            conversation(&manager).await;
+        }
+        assert_eq!(manager.count().await, MAX_CONVERSATIONS);
+        assert!(manager.retained_bytes().await <= MAX_GLOBAL_RETAINED_BYTES);
     }
 
     #[tokio::test]

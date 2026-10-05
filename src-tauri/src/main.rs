@@ -361,6 +361,12 @@ fn main() {
             ai_commands::ai_update_persona,
             ai_commands::ai_delete_persona,
             ai_commands::ai_export_conversation,
+            ai_commands::ai_get_plan,
+            ai_commands::ai_approve_plan,
+            ai_commands::ai_run_plan_step,
+            ai_commands::ai_run_plan,
+            ai_commands::ai_cancel_plan,
+            ai_commands::ai_delete_plan,
             // Notifications
             notifications::notifications_start,
             notifications::notifications_stop,

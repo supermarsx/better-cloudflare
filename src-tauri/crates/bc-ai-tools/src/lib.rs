@@ -17,7 +17,7 @@ pub mod registry;
 pub mod safety;
 
 pub use error::ToolExecutionError;
-pub use executor::ToolExecutor;
+pub use executor::{ToolExecutor, ToolGateDecision};
 pub use permissions::{
     AiPermissionMode, AiPermissions, AiToolDescriptor, AiToolPermission, PermissionDecision,
     RefusalSource, ToolAvailability, ToolClassification,

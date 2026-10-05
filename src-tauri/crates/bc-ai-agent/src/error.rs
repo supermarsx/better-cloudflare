@@ -41,6 +41,31 @@ pub enum AgentError {
     #[error("tool call refused by the permission policy: {reason}")]
     ToolDenied { reason: String },
 
+    #[error("invalid plan field {field}: {message}")]
+    InvalidPlan {
+        field: &'static str,
+        message: String,
+    },
+
+    #[error("{resource} exceeded the plan limit of {limit} (actual: {actual})")]
+    PlanLimit {
+        resource: &'static str,
+        limit: usize,
+        actual: usize,
+    },
+
+    #[error("this conversation has no plan")]
+    PlanNotFound,
+
+    #[error("the plan has no such step")]
+    PlanStepNotFound,
+
+    #[error("a plan in state '{state}' cannot {action}")]
+    PlanStateConflict {
+        state: &'static str,
+        action: &'static str,
+    },
+
     #[error("conversation disposed while generation was active: {0}")]
     ConversationDisposed(Uuid),
 
@@ -136,6 +161,21 @@ impl AgentError {
             // configured mode, so it carries no provider or request detail.
             Self::ToolDenied { reason } => {
                 format!("The AI tool call was refused: {reason}.")
+            }
+            // Plan text is bounded and locally validated, and the message
+            // names the field rather than echoing the model's input.
+            Self::InvalidPlan { field, message } => {
+                format!("Invalid plan field {field}: {message}.")
+            }
+            Self::PlanLimit {
+                resource,
+                limit,
+                actual,
+            } => format!("{resource} exceeded limit {limit} (actual: {actual})."),
+            Self::PlanNotFound => "This conversation has no plan.".into(),
+            Self::PlanStepNotFound => "The plan step was not found.".into(),
+            Self::PlanStateConflict { state, action } => {
+                format!("A plan in state '{state}' cannot {action}.")
             }
             Self::ConversationDisposed(_) => "The AI conversation was closed.".into(),
             Self::ConsumerDropped => "The AI event consumer disconnected.".into(),

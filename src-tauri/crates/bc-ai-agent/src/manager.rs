@@ -25,6 +25,7 @@ use crate::config::{AgentConfig, AGENT_EVENT_CHANNEL_CAPACITY, DEFAULT_PERSONA_I
 use crate::error::AgentError;
 use crate::events::AgentEvent;
 use crate::personas::{AiPersona, AiPersonaInput, PersonaStore};
+use crate::plan::{AiPlan, PlanStore, StepApproval, StepDispatch, StepOutcome, MAX_PLAN_STEPS};
 
 const APPROVED_TOOL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 
@@ -74,6 +75,7 @@ pub struct AgentManager {
     pub executor: Arc<ToolExecutor>,
     pub chat: Arc<ChatManager>,
     pub personas: Arc<PersonaStore>,
+    pub plans: Arc<PlanStore>,
     active_turns: Arc<Mutex<HashMap<Uuid, ActiveTurn>>>,
     active_approvals: Arc<Mutex<HashMap<Uuid, ActiveApproval>>>,
 }
@@ -108,6 +110,7 @@ impl AgentManager {
             registry,
             chat: Arc::new(ChatManager::default()),
             personas: Arc::new(PersonaStore::default()),
+            plans: Arc::new(PlanStore::default()),
             active_turns: Arc::new(Mutex::new(HashMap::new())),
             active_approvals: Arc::new(Mutex::new(HashMap::new())),
         }
@@ -342,9 +345,16 @@ impl AgentManager {
     pub async fn try_set_agent_config(&self, config: AgentConfig) -> Result<(), AgentError> {
         config.validate()?;
         let tools_enabled = config.tools_enabled;
+        let chat_limits = config.chat_limits();
+        let plan_limits = config.plan_limits();
         *self.agent_config.write().await = config;
         // Enforcement happens at dispatch, so the executor needs this flag too.
         self.executor.set_tools_enabled(tools_enabled).await;
+        // Likewise retention: the stores enforce their own limits, so a
+        // configuration change has to reach them to mean anything. Installing
+        // a lower limit deletes nothing — see `ChatManager::set_limits`.
+        self.chat.set_limits(chat_limits).await;
+        self.plans.set_limits(plan_limits).await;
         Ok(())
     }
 
@@ -424,6 +434,11 @@ impl AgentManager {
 
         self.registry.init_all().await;
         self.executor.set_tools_enabled(config.tools_enabled).await;
+        // Re-pushed for the same reason `tools_enabled` is: a turn must run
+        // under the configuration it was started with, even if the stores
+        // were constructed before one was set.
+        self.chat.set_limits(config.chat_limits()).await;
+        self.plans.set_limits(config.plan_limits()).await;
         let persona_prompt = self.personas.system_prompt(&config.persona_id).await;
         let (event_tx, event_rx) = mpsc::channel(AGENT_EVENT_CHANNEL_CAPACITY);
         let (cancellation_tx, cancellation_rx) = watch::channel(false);
@@ -446,6 +461,7 @@ impl AgentManager {
         let chat = Arc::clone(&self.chat);
         let registry = Arc::clone(&self.registry);
         let executor = Arc::clone(&self.executor);
+        let plans = Arc::clone(&self.plans);
         let task_active_turns = Arc::clone(&self.active_turns);
         let task_event_tx = event_tx.clone();
         let (start_tx, start_rx) = oneshot::channel();
@@ -458,6 +474,7 @@ impl AgentManager {
                 chat.as_ref(),
                 registry.as_ref(),
                 executor.as_ref(),
+                plans.as_ref(),
                 &config,
                 persona_prompt,
                 conversation_id,
@@ -509,6 +526,14 @@ impl AgentManager {
     }
 
     /// Approve a pending tool call and append its bounded result.
+    ///
+    /// A `plan-step-` id names a plan step waiting for approval and is routed
+    /// to [`Self::run_plan_step_approved`] instead: the same executor, the
+    /// same timeout and cancellation guard, and the outcome recorded in the
+    /// plan rather than pushed into the transcript — a plan step has no
+    /// assistant `tool_use` message for a tool result to answer, and an
+    /// orphaned tool result is rejected by every provider protocol. Read the
+    /// updated plan back with `ai_get_plan`.
     pub async fn approve_tool_call(
         &self,
         tool_call_id: &str,
@@ -519,6 +544,18 @@ impl AgentManager {
             tool_call_id,
             bc_ai_provider::limits::MAX_TOOL_CALL_ID_BYTES,
         )?;
+        // Falls through unless the conversation's plan really has a step of
+        // that id waiting for approval, so this cannot shadow a pending tool
+        // call from the transcript.
+        if let Some(step_id) = self
+            .plans
+            .awaiting_approval_step(conversation_id, tool_call_id)
+            .await
+        {
+            self.run_plan_step_approved(conversation_id, step_id)
+                .await?;
+            return Ok(());
+        }
         let disposal = self
             .chat
             .subscribe_disposal(conversation_id)
@@ -553,7 +590,7 @@ impl AgentManager {
             // The permission changed while the call was pending. Record the
             // refusal so the transcript stays answerable, then fail the command
             // rather than reporting an approval that ran nothing.
-            bc_ai_tools::executor::ExecutionResult::Denied(result) => {
+            bc_ai_tools::executor::ExecutionResult::Denied { result, .. } => {
                 let reason = result.content.clone();
                 self.push_tool_result(conversation_id, result).await?;
                 Err(AgentError::ToolDenied { reason })
@@ -656,6 +693,203 @@ impl AgentManager {
         }
     }
 
+    // ─── Plans ─────────────────────────────────────────────────────────────
+    //
+    // Plan commands are synchronous: each returns the authoritative plan, so
+    // there is nothing to stream and no second event system. The existing
+    // `AgentEvent` channel belongs to a generation turn and is owned by
+    // `send_message`; a plan command has no turn to attach to. A renderer
+    // uses the returned plan, or re-reads with `plan`.
+
+    /// The conversation's plan, if it has one. One plan per conversation.
+    pub async fn plan(&self, conversation_id: Uuid) -> Option<AiPlan> {
+        self.plans.get(conversation_id).await
+    }
+
+    /// Approve a draft so its steps may run. Refuses any other source state.
+    pub async fn approve_plan(&self, conversation_id: Uuid) -> Result<AiPlan, AgentError> {
+        self.plans
+            .approve(self.executor.as_ref(), conversation_id)
+            .await
+    }
+
+    /// Cancel a plan. A step already in flight is not aborted by this;
+    /// [`Self::cancel`] is the control for in-flight work, and a plan step
+    /// runs under it.
+    pub async fn cancel_plan(&self, conversation_id: Uuid) -> Result<AiPlan, AgentError> {
+        self.plans.cancel(conversation_id).await
+    }
+
+    /// Discard the conversation's plan. Returns whether there was one.
+    pub async fn delete_plan(&self, conversation_id: Uuid) -> bool {
+        self.plans.delete(conversation_id).await
+    }
+
+    /// Run one step, re-resolving its permissions first.
+    pub async fn run_plan_step(
+        &self,
+        conversation_id: Uuid,
+        step_id: Uuid,
+    ) -> Result<AiPlan, AgentError> {
+        self.run_plan_step_with(conversation_id, step_id, StepApproval::Required)
+            .await
+    }
+
+    /// Run a step the user explicitly approved through `ai_approve_tool_call`.
+    ///
+    /// The approval satisfies an `ask`. It does not override a `deny`: the
+    /// executor re-checks both layers, so a permission withdrawn while the
+    /// step was waiting is still honoured.
+    async fn run_plan_step_approved(
+        &self,
+        conversation_id: Uuid,
+        step_id: Uuid,
+    ) -> Result<AiPlan, AgentError> {
+        self.run_plan_step_with(conversation_id, step_id, StepApproval::Granted)
+            .await
+    }
+
+    async fn run_plan_step_with(
+        &self,
+        conversation_id: Uuid,
+        step_id: Uuid,
+        approval: StepApproval,
+    ) -> Result<AiPlan, AgentError> {
+        // A plan step belongs to a live conversation: the disposal signal is
+        // what lets a closed conversation abort work already in flight.
+        let disposal = self
+            .chat
+            .subscribe_disposal(conversation_id)
+            .await
+            .ok_or(bc_ai_chat::ChatError::ConversationNotFound(conversation_id))?;
+
+        let (plan_id, step_id, tool_call, approved) = match self
+            .plans
+            .begin_step(self.executor.as_ref(), conversation_id, step_id, approval)
+            .await?
+        {
+            // Blocked, awaiting approval, or nothing to run: the plan already
+            // records why, and nothing was dispatched.
+            StepDispatch::Settled(plan) => return Ok(plan),
+            StepDispatch::Dispatch {
+                plan_id,
+                step_id,
+                tool_call,
+                approved,
+            } => (plan_id, step_id, tool_call, approved),
+        };
+
+        // The one gate, under the same timeout, cancellation and disposal
+        // guard the chat approval path uses. There is no second dispatcher.
+        let execution = self
+            .run_approved_operation(
+                conversation_id,
+                disposal,
+                self.executor.execute(&tool_call, approved),
+            )
+            .await;
+
+        let outcome = match execution {
+            Ok(bc_ai_tools::executor::ExecutionResult::Success(result)) => StepOutcome::Done {
+                result: result.content,
+            },
+            Ok(bc_ai_tools::executor::ExecutionResult::Error(result)) => StepOutcome::Failed {
+                reason: result.content,
+            },
+            // The gate said allow or approved-ask moments ago and the dispatch
+            // said no, so a permission changed in between. The dispatch is
+            // authoritative: record it as blocked by the layer that refused.
+            Ok(bc_ai_tools::executor::ExecutionResult::Denied { source, result }) => {
+                StepOutcome::Blocked {
+                    source,
+                    reason: result.content,
+                }
+            }
+            Ok(bc_ai_tools::executor::ExecutionResult::NeedsApproval { reason, .. }) => {
+                StepOutcome::AwaitingApproval { reason }
+            }
+            Ok(bc_ai_tools::executor::ExecutionResult::Rejected(error)) => StepOutcome::Failed {
+                reason: error.to_string(),
+            },
+            // Cancelled, timed out, or the conversation closed. The step is
+            // recorded as failed with the reason — there is no `cancelled`
+            // step status, and leaving it `running` for ever would be worse —
+            // and the command still reports the failure to its caller.
+            Err(error) => {
+                self.plans
+                    .finish_step(
+                        plan_id,
+                        step_id,
+                        StepOutcome::Failed {
+                            reason: error.public_message(),
+                        },
+                    )
+                    .await;
+                return Err(error);
+            }
+        };
+
+        self.plans
+            .finish_step(plan_id, step_id, outcome)
+            .await
+            .ok_or(AgentError::PlanNotFound)
+    }
+
+    /// Run the plan from its first incomplete step.
+    ///
+    /// **Stops at the first step that does not complete** — blocked, awaiting
+    /// approval, or failed — rather than carrying on. Steps in a plan are
+    /// ordered and usually dependent: continuing past a failure risks acting
+    /// on a premise that did not hold, such as deleting records a previous
+    /// step was supposed to have exported first. Partial completion is
+    /// visible in the returned plan, because every step carries its own
+    /// status and result; it never has to be inferred.
+    ///
+    /// Running it again resumes from wherever it stopped, re-resolving
+    /// permissions, so the user can grant a permission or approve a step and
+    /// carry on.
+    pub async fn run_plan(&self, conversation_id: Uuid) -> Result<AiPlan, AgentError> {
+        let mut plan = self
+            .plans
+            .get(conversation_id)
+            .await
+            .ok_or(AgentError::PlanNotFound)?;
+        // One pass per step still to do, in plan order, decided up front and
+        // therefore bounded by `MAX_PLAN_STEPS`. A step the plan no longer
+        // has — because the plan was replaced mid-run — fails the run rather
+        // than being executed against a plan it did not come from.
+        debug_assert!(plan.steps.len() <= MAX_PLAN_STEPS);
+        let remaining: Vec<Uuid> = plan
+            .steps
+            .iter()
+            .filter(|step| !step.status.is_complete())
+            .map(|step| step.id)
+            .collect();
+        for step_id in remaining {
+            plan = self
+                .run_plan_step_with(conversation_id, step_id, StepApproval::Required)
+                .await?;
+            let step = plan
+                .steps
+                .iter()
+                .find(|step| step.id == step_id)
+                .ok_or(AgentError::PlanStepNotFound)?;
+            if !step.status.is_complete() {
+                break;
+            }
+        }
+        Ok(plan)
+    }
+
+    /// Delete a conversation and the plan that belongs to it.
+    ///
+    /// The plan would otherwise outlive the transcript it was written for and
+    /// sit in the store until eviction.
+    pub async fn delete_conversation(&self, conversation_id: Uuid) -> bool {
+        self.plans.delete(conversation_id).await;
+        self.chat.delete_conversation(conversation_id).await
+    }
+
     /// Signal cancellation. The running task observes this even while blocked
     /// on provider or event-channel backpressure.
     pub async fn cancel(&self, conversation_id: Uuid) -> Result<bool, AgentError> {
@@ -714,6 +948,7 @@ mod tests {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::time::Duration;
 
+    use crate::plan::{AiPlanStatus, AiPlanStepStatus};
     use async_trait::async_trait;
     use bc_ai_provider::{
         AiProviderError, CompletionRequest, CompletionResponse, Message, Model, StreamDelta,
@@ -1629,6 +1864,537 @@ mod tests {
                 .await
                 .expect("the default takes over"),
             MOCK_PROVIDER_ID
+        );
+    }
+
+    // ─── Plans ─────────────────────────────────────────────────────────────
+
+    const PLAN_READ_TOOL: &str = "dns_parse_spf";
+    const PLAN_WRITE_TOOL: &str = "cf_delete_dns_record";
+
+    /// A manager whose MCP layer grants everything, so the assistant's own
+    /// mode is what decides — the only way to test the assistant layer
+    /// without every case measuring the same MCP refusal.
+    async fn plan_manager(mode: bc_ai_tools::permissions::AiPermissionMode) -> AgentManager {
+        let manager =
+            AgentManager::with_mcp_grants(McpGrantHandle::new(bc_mcp::McpGrantSet::all()));
+        manager
+            .try_set_permissions(AiPermissions {
+                mode,
+                tools: std::collections::BTreeMap::new(),
+            })
+            .await
+            .expect("valid permissions");
+        manager
+    }
+
+    async fn draft_plan(
+        manager: &AgentManager,
+        conversation_id: Uuid,
+        steps: Vec<(&str, Option<&str>)>,
+    ) -> AiPlan {
+        let steps = steps
+            .into_iter()
+            .map(|(title, tool)| crate::plan::AiPlanStepInput {
+                title: title.into(),
+                detail: "because the user asked".into(),
+                tool: tool.map(str::to_string),
+                arguments: tool.map(|_| serde_json::json!({ "content": "v=spf1 -all" })),
+            })
+            .collect();
+        manager
+            .plans
+            .propose(
+                manager.executor.as_ref(),
+                conversation_id,
+                crate::plan::AiPlanProposal {
+                    title: "Tidy the zone".into(),
+                    steps,
+                },
+            )
+            .await
+            .expect("valid draft")
+    }
+
+    /// MUTATION PROOF (a): `run_plan` stops at the first step that does not
+    /// complete. Delete the `if !step.status.is_complete() { break }` in
+    /// `run_plan` and this fails: the step after the blocked one runs.
+    ///
+    /// Nothing else prevents that. The executor refuses the blocked step
+    /// itself, but it has no opinion about whether the *rest of the plan*
+    /// should carry on as though the blocked step had happened.
+    #[tokio::test]
+    async fn run_plan_stops_at_the_first_blocked_step_and_leaves_the_rest_pending() {
+        let manager = plan_manager(bc_ai_tools::permissions::AiPermissionMode::ReadOnly).await;
+        let conversation_id = create_conversation(&manager).await;
+        draft_plan(
+            &manager,
+            conversation_id,
+            vec![
+                ("parse the record", Some(PLAN_READ_TOOL)),
+                ("delete the record", Some(PLAN_WRITE_TOOL)),
+                ("parse it again", Some(PLAN_READ_TOOL)),
+            ],
+        )
+        .await;
+        let approved = manager
+            .approve_plan(conversation_id)
+            .await
+            .expect("the user may approve a plan with blocked steps");
+        assert_eq!(approved.status, AiPlanStatus::Approved);
+        assert_eq!(approved.steps[1].status, AiPlanStepStatus::Blocked);
+
+        let plan = manager.run_plan(conversation_id).await.expect("run");
+
+        assert_eq!(plan.steps[0].status, AiPlanStepStatus::Done);
+        assert!(
+            plan.steps[0]
+                .result
+                .as_ref()
+                .expect("the first step really ran")
+                .contains("v=spf1"),
+            "the step's real output must be recorded: {:?}",
+            plan.steps[0].result
+        );
+        assert_eq!(plan.steps[1].status, AiPlanStepStatus::Blocked);
+        assert!(
+            plan.steps[1].result.is_none(),
+            "a blocked step ran nothing, so it has no result"
+        );
+        assert_eq!(
+            plan.steps[1]
+                .refusal
+                .as_ref()
+                .expect("the user must be told which list to change")
+                .source,
+            bc_ai_tools::permissions::RefusalSource::AssistantPolicy
+        );
+        assert_eq!(
+            plan.steps[2].status,
+            AiPlanStepStatus::Pending,
+            "the run must stop at the blocked step, not step over it"
+        );
+        assert!(plan.steps[2].result.is_none());
+        assert_eq!(
+            plan.status,
+            AiPlanStatus::Paused,
+            "partial completion is visible in the plan, not inferred"
+        );
+    }
+
+    /// A step needing approval stops the run the same way, and is approved
+    /// through the existing `ai_approve_tool_call` command.
+    #[tokio::test]
+    async fn an_ask_step_pauses_the_run_and_the_existing_approval_command_runs_it() {
+        let manager = plan_manager(bc_ai_tools::permissions::AiPermissionMode::Ask).await;
+        let conversation_id = create_conversation(&manager).await;
+        draft_plan(
+            &manager,
+            conversation_id,
+            vec![
+                ("parse the record", Some(PLAN_READ_TOOL)),
+                ("delete the record", Some(PLAN_WRITE_TOOL)),
+            ],
+        )
+        .await;
+        manager
+            .approve_plan(conversation_id)
+            .await
+            .expect("approve");
+
+        let plan = manager.run_plan(conversation_id).await.expect("run");
+        assert_eq!(plan.steps[0].status, AiPlanStepStatus::Done);
+        assert_eq!(plan.steps[1].status, AiPlanStepStatus::AwaitingApproval);
+        assert_eq!(plan.status, AiPlanStatus::Paused);
+
+        // The existing approval command, by the id the plan step carries.
+        let tool_call_id = crate::plan::step_tool_call_id(plan.steps[1].id);
+        manager
+            .approve_tool_call(&tool_call_id, conversation_id)
+            .await
+            .expect("the approval runs the step");
+        let plan = manager.plan(conversation_id).await.expect("stored");
+        assert_ne!(
+            plan.steps[1].status,
+            AiPlanStepStatus::AwaitingApproval,
+            "the approval must actually run the step"
+        );
+        // The write tool demands a high-risk acknowledgement it was not
+        // given, so it fails at the MCP boundary — which is the point: an
+        // approved plan step is not a way around anything the boundary
+        // enforces.
+        assert_eq!(plan.steps[1].status, AiPlanStepStatus::Failed);
+        assert!(plan.steps[1]
+            .result
+            .as_ref()
+            .expect("the failure is recorded")
+            .contains("confirmHighRisk"));
+        assert_eq!(plan.status, AiPlanStatus::Failed);
+
+        // A plan step's result is never pushed into the transcript: it would
+        // be a tool result answering no tool call, which every provider
+        // protocol rejects.
+        let messages = manager
+            .chat
+            .provider_messages(conversation_id)
+            .await
+            .expect("conversation");
+        assert!(
+            !messages.iter().any(|message| matches!(
+                message.content,
+                bc_ai_provider::MessageContent::ToolResult { .. }
+            )),
+            "a plan step must not inject an orphaned tool result"
+        );
+    }
+
+    /// An approval for a plan step does not consume a pending tool call, and
+    /// an id that names no waiting step still reaches the existing path.
+    #[tokio::test]
+    async fn an_approval_for_an_unknown_plan_step_falls_through_to_the_existing_path() {
+        let manager = plan_manager(bc_ai_tools::permissions::AiPermissionMode::Ask).await;
+        let conversation_id = create_conversation(&manager).await;
+        let error = manager
+            .approve_tool_call(
+                &crate::plan::step_tool_call_id(Uuid::new_v4()),
+                conversation_id,
+            )
+            .await
+            .expect_err("no such pending call");
+        assert!(
+            matches!(error, AgentError::ToolCallNotFound),
+            "a plan-shaped id with no waiting step must reach the existing lookup: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failing_step_stops_the_run_and_marks_the_plan_failed() {
+        let manager = plan_manager(bc_ai_tools::permissions::AiPermissionMode::Autonomous).await;
+        let conversation_id = create_conversation(&manager).await;
+        // The write tool dispatches and then fails at the MCP boundary for
+        // want of its high-risk acknowledgement.
+        draft_plan(
+            &manager,
+            conversation_id,
+            vec![
+                ("delete the record", Some(PLAN_WRITE_TOOL)),
+                ("parse the record", Some(PLAN_READ_TOOL)),
+            ],
+        )
+        .await;
+        manager
+            .approve_plan(conversation_id)
+            .await
+            .expect("approve");
+
+        let plan = manager.run_plan(conversation_id).await.expect("run");
+        assert_eq!(plan.steps[0].status, AiPlanStepStatus::Failed);
+        assert_eq!(
+            plan.steps[1].status,
+            AiPlanStepStatus::Pending,
+            "a failure stops the run; it does not continue on a premise that did not hold"
+        );
+        assert_eq!(plan.status, AiPlanStatus::Failed);
+    }
+
+    #[tokio::test]
+    async fn a_whole_plan_of_permitted_steps_runs_to_done() {
+        let manager = plan_manager(bc_ai_tools::permissions::AiPermissionMode::ReadOnly).await;
+        let conversation_id = create_conversation(&manager).await;
+        draft_plan(
+            &manager,
+            conversation_id,
+            vec![
+                ("parse once", Some(PLAN_READ_TOOL)),
+                ("tell the user", None),
+                ("parse again", Some(PLAN_READ_TOOL)),
+            ],
+        )
+        .await;
+        manager
+            .approve_plan(conversation_id)
+            .await
+            .expect("approve");
+
+        let plan = manager.run_plan(conversation_id).await.expect("run");
+        assert_eq!(plan.status, AiPlanStatus::Done);
+        assert_eq!(plan.steps[0].status, AiPlanStepStatus::Done);
+        assert_eq!(plan.steps[1].status, AiPlanStepStatus::Skipped);
+        assert_eq!(plan.steps[2].status, AiPlanStepStatus::Done);
+
+        // Idempotent: a finished plan has nothing left to run.
+        let again = manager.run_plan(conversation_id).await.expect("run again");
+        assert_eq!(again.status, AiPlanStatus::Done);
+        assert_eq!(again.updated_at, plan.updated_at);
+    }
+
+    /// Granting the tool and running again resumes from where it stopped,
+    /// which is the whole reason the run re-resolves permissions.
+    #[tokio::test]
+    async fn granting_the_tool_and_running_again_resumes_the_plan() {
+        let mcp = bc_mcp::McpServerManager::default();
+        let manager = AgentManager::with_mcp_grants(mcp.grant_handle());
+        manager
+            .try_set_permissions(AiPermissions {
+                mode: bc_ai_tools::permissions::AiPermissionMode::Autonomous,
+                tools: std::collections::BTreeMap::new(),
+            })
+            .await
+            .expect("valid permissions");
+        let conversation_id = create_conversation(&manager).await;
+        draft_plan(
+            &manager,
+            conversation_id,
+            vec![("parse the record", Some(PLAN_READ_TOOL))],
+        )
+        .await;
+        manager
+            .approve_plan(conversation_id)
+            .await
+            .expect("approve");
+
+        let plan = manager.run_plan(conversation_id).await.expect("run");
+        assert_eq!(plan.steps[0].status, AiPlanStepStatus::Blocked);
+        assert_eq!(
+            plan.steps[0].refusal.as_ref().expect("a reason").source,
+            bc_ai_tools::permissions::RefusalSource::McpGrants
+        );
+
+        mcp.set_enabled_tools(vec![PLAN_READ_TOOL.to_string()])
+            .await
+            .expect("grants stored");
+        let plan = manager.run_plan(conversation_id).await.expect("run again");
+        assert_eq!(plan.steps[0].status, AiPlanStepStatus::Done);
+        assert_eq!(plan.status, AiPlanStatus::Done);
+    }
+
+    #[tokio::test]
+    async fn plan_commands_refuse_states_they_cannot_act_on() {
+        let manager = plan_manager(bc_ai_tools::permissions::AiPermissionMode::ReadOnly).await;
+        let conversation_id = create_conversation(&manager).await;
+
+        assert!(matches!(
+            manager.approve_plan(conversation_id).await,
+            Err(AgentError::PlanNotFound)
+        ));
+        assert!(matches!(
+            manager.run_plan(conversation_id).await,
+            Err(AgentError::PlanNotFound)
+        ));
+        assert!(matches!(
+            manager.cancel_plan(conversation_id).await,
+            Err(AgentError::PlanNotFound)
+        ));
+        assert!(!manager.delete_plan(conversation_id).await);
+        assert!(manager.plan(conversation_id).await.is_none());
+
+        let plan = draft_plan(
+            &manager,
+            conversation_id,
+            vec![("parse", Some(PLAN_READ_TOOL))],
+        )
+        .await;
+        assert!(
+            matches!(
+                manager
+                    .run_plan_step(conversation_id, plan.steps[0].id)
+                    .await,
+                Err(AgentError::PlanStateConflict { state: "draft", .. })
+            ),
+            "a draft must be approved before anything runs"
+        );
+
+        manager
+            .approve_plan(conversation_id)
+            .await
+            .expect("approve");
+        assert!(
+            matches!(
+                manager.run_plan_step(conversation_id, Uuid::new_v4()).await,
+                Err(AgentError::PlanStepNotFound)
+            ),
+            "the plan-state check answers first; an unknown step is only \
+             reachable once the plan itself could run"
+        );
+        let cancelled = manager.cancel_plan(conversation_id).await.expect("cancel");
+        assert_eq!(cancelled.status, AiPlanStatus::Cancelled);
+        assert!(matches!(
+            manager.run_plan(conversation_id).await,
+            Err(AgentError::PlanStateConflict {
+                state: "cancelled",
+                ..
+            })
+        ));
+
+        assert!(manager.delete_plan(conversation_id).await);
+        assert!(manager.plan(conversation_id).await.is_none());
+    }
+
+    /// A step belongs to a live conversation: the disposal signal is what
+    /// aborts work in flight, so a plan step for a conversation that is gone
+    /// must not run at all.
+    #[tokio::test]
+    async fn a_plan_step_for_a_deleted_conversation_does_not_run() {
+        let manager = plan_manager(bc_ai_tools::permissions::AiPermissionMode::Autonomous).await;
+        let conversation_id = create_conversation(&manager).await;
+        let plan = draft_plan(
+            &manager,
+            conversation_id,
+            vec![("parse", Some(PLAN_READ_TOOL))],
+        )
+        .await;
+        manager
+            .approve_plan(conversation_id)
+            .await
+            .expect("approve");
+
+        assert!(manager.delete_conversation(conversation_id).await);
+        assert!(
+            manager.plan(conversation_id).await.is_none(),
+            "deleting a conversation must take its plan with it"
+        );
+        assert!(matches!(
+            manager
+                .run_plan_step(conversation_id, plan.steps[0].id)
+                .await,
+            Err(AgentError::PlanNotFound) | Err(AgentError::Chat(_))
+        ));
+    }
+
+    /// A configured limit that never reaches the store it governs is a
+    /// setting that validates and does nothing — the defect the sampling
+    /// knobs had. Every one of the eight is pinned on the hop from
+    /// configuration to store.
+    #[tokio::test]
+    async fn the_configured_limits_reach_the_stores_that_enforce_them() {
+        let manager = AgentManager::default();
+        let mut config = manager.agent_config().await;
+        config.max_conversations = 5;
+        config.max_messages_per_conversation = 10;
+        config.max_chat_message_bytes = 2048;
+        config.max_conversation_bytes = 4096;
+        config.max_global_retained_bytes = 65_536;
+        config.max_title_bytes = 64;
+        config.max_plan_steps = 3;
+        config.max_retained_plans = 2;
+        manager
+            .try_set_agent_config(config)
+            .await
+            .expect("lowering every limit is valid");
+
+        let chat = manager.chat.limits().await;
+        assert_eq!(chat.max_conversations, 5);
+        assert_eq!(chat.max_messages_per_conversation, 10);
+        assert_eq!(chat.max_chat_message_bytes, 2048);
+        assert_eq!(chat.max_conversation_bytes, 4096);
+        assert_eq!(chat.max_global_retained_bytes, 65_536);
+        assert_eq!(chat.max_title_bytes, 64);
+        let plans = manager.plans.limits().await;
+        assert_eq!(plans.max_plan_steps, 3);
+        assert_eq!(plans.max_retained_plans, 2);
+
+        // And they are enforced, not merely stored.
+        let conversation_id = create_conversation(&manager).await;
+        assert!(
+            matches!(
+                manager
+                    .chat
+                    .try_set_title(conversation_id, "t".repeat(65))
+                    .await,
+                Err(bc_ai_chat::ChatError::LimitExceeded {
+                    resource: "conversation title",
+                    limit: 64,
+                    ..
+                })
+            ),
+            "the configured title limit must be the one enforced"
+        );
+
+        // An invalid configuration is refused and changes nothing.
+        let mut invalid = manager.agent_config().await;
+        invalid.max_conversations = bc_ai_chat::limits::MAX_CONVERSATIONS + 1;
+        let error = manager
+            .try_set_agent_config(invalid)
+            .await
+            .expect_err("a limit above its ceiling must be refused");
+        assert!(matches!(
+            error,
+            AgentError::InvalidConfig {
+                field: "maxConversations",
+                ..
+            }
+        ));
+        assert_eq!(
+            manager.chat.limits().await.max_conversations,
+            5,
+            "a refused configuration must not reach the store"
+        );
+    }
+
+    /// MUTATION PROOF (limits): the clamp is what stops a configured value
+    /// raising a hard ceiling. Make `ChatLimits::clamped`/`PlanLimits::clamped`
+    /// return `self` unchanged and this fails.
+    #[tokio::test]
+    async fn a_configured_limit_can_never_raise_a_hard_ceiling() {
+        let manager = AgentManager::default();
+        // Straight past `try_set_agent_config`, which validates: this is the
+        // path a stored configuration takes, because `AgentConfig` is built
+        // from `StoredAgentConfig` by a serde conversion with no validation.
+        let stored: AgentConfig = serde_json::from_str(
+            r#"{
+                "maxToolRounds": 5,
+                "maxTokensPerTurn": 4096,
+                "toolsEnabled": true,
+                "stream": true,
+                "maxConversations": 100000,
+                "maxGlobalRetainedBytes": 999999999999,
+                "maxTitleBytes": 100000,
+                "maxPlanSteps": 100000,
+                "maxRetainedPlans": 100000
+            }"#,
+        )
+        .expect("a hand-edited stored config still deserializes");
+        assert_eq!(
+            stored.max_conversations, 100_000,
+            "the field really does carry the out-of-range value, or this proves nothing"
+        );
+
+        manager.chat.set_limits(stored.chat_limits()).await;
+        manager.plans.set_limits(stored.plan_limits()).await;
+
+        let chat = manager.chat.limits().await;
+        assert_eq!(
+            chat.max_conversations,
+            bc_ai_chat::limits::MAX_CONVERSATIONS,
+            "a setting must never raise the conversation ceiling"
+        );
+        assert_eq!(
+            chat.max_global_retained_bytes,
+            bc_ai_chat::limits::MAX_GLOBAL_RETAINED_BYTES,
+            "a setting must never raise the memory bound"
+        );
+        assert_eq!(chat.max_title_bytes, bc_ai_chat::limits::MAX_TITLE_BYTES);
+        let plans = manager.plans.limits().await;
+        assert_eq!(plans.max_plan_steps, crate::plan::MAX_PLAN_STEPS);
+        assert_eq!(plans.max_retained_plans, crate::plan::MAX_RETAINED_PLANS);
+
+        // And the ceiling is actually enforced, not just reported.
+        let conversation_id = create_conversation(&manager).await;
+        assert!(
+            matches!(
+                manager
+                    .chat
+                    .try_set_title(
+                        conversation_id,
+                        "t".repeat(bc_ai_chat::limits::MAX_TITLE_BYTES + 1)
+                    )
+                    .await,
+                Err(bc_ai_chat::ChatError::LimitExceeded {
+                    resource: "conversation title",
+                    ..
+                })
+            ),
+            "a raised title limit must not let an over-ceiling title through"
         );
     }
 

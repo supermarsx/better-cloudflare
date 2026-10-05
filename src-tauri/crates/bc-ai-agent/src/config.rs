@@ -125,6 +125,115 @@ pub struct AgentConfig {
     /// `AI_NOT_CONFIGURED` rather than quietly picking another provider, and
     /// deleting the named profile clears this field.
     pub default_provider_id: Option<String>,
+    /// Retention and plan limits.
+    ///
+    /// Each of the eight is bounded by `1..=CEILING`, where the ceiling is
+    /// the constant of the same name in `bc_ai_chat::limits` or
+    /// `crate::plan`. A user may lower a limit and may never raise one past
+    /// what the code is built to survive — `MAX_GLOBAL_RETAINED_BYTES` in
+    /// particular is what bounds memory, and a setting that could raise it
+    /// would make the bound a suggestion. [`AgentConfig::validate`] rejects
+    /// an out-of-range value by name; the stores clamp as a second line,
+    /// because a stored configuration reaches [`AgentConfig`] through
+    /// `StoredAgentConfig` without passing through `validate` at all.
+    ///
+    /// Every `*Bytes` limit counts UTF-8 bytes, not characters.
+    ///
+    /// **Lowering one below current usage deletes nothing.** See
+    /// `bc_ai_chat::limits::MAX_CONFIGURED_EVICTIONS_PER_WRITE`.
+    pub max_conversations: usize,
+    pub max_messages_per_conversation: usize,
+    pub max_chat_message_bytes: usize,
+    pub max_conversation_bytes: usize,
+    pub max_global_retained_bytes: usize,
+    pub max_title_bytes: usize,
+    pub max_plan_steps: usize,
+    pub max_retained_plans: usize,
+}
+
+/// One configurable limit: the camelCase field name the renderer labels its
+/// input with, how to read it off a configuration, and the hard ceiling that
+/// bounds it.
+type ConfigurableLimit = (&'static str, fn(&AgentConfig) -> usize, usize);
+
+/// Every configurable limit, paired with the hard ceiling that bounds it.
+///
+/// One table, read by both [`AgentConfig::validate`] and the boundary test
+/// below, so a limit added without a ceiling cannot slip through unvalidated
+/// or untested.
+const CONFIGURABLE_LIMITS: [ConfigurableLimit; 8] = [
+    (
+        "maxConversations",
+        |config| config.max_conversations,
+        bc_ai_chat::limits::MAX_CONVERSATIONS,
+    ),
+    (
+        "maxMessagesPerConversation",
+        |config| config.max_messages_per_conversation,
+        bc_ai_chat::limits::MAX_MESSAGES_PER_CONVERSATION,
+    ),
+    (
+        "maxChatMessageBytes",
+        |config| config.max_chat_message_bytes,
+        bc_ai_chat::limits::MAX_CHAT_MESSAGE_BYTES,
+    ),
+    (
+        "maxConversationBytes",
+        |config| config.max_conversation_bytes,
+        bc_ai_chat::limits::MAX_CONVERSATION_BYTES,
+    ),
+    (
+        "maxGlobalRetainedBytes",
+        |config| config.max_global_retained_bytes,
+        bc_ai_chat::limits::MAX_GLOBAL_RETAINED_BYTES,
+    ),
+    (
+        "maxTitleBytes",
+        |config| config.max_title_bytes,
+        bc_ai_chat::limits::MAX_TITLE_BYTES,
+    ),
+    (
+        "maxPlanSteps",
+        |config| config.max_plan_steps,
+        crate::plan::MAX_PLAN_STEPS,
+    ),
+    (
+        "maxRetainedPlans",
+        |config| config.max_retained_plans,
+        crate::plan::MAX_RETAINED_PLANS,
+    ),
+];
+
+fn default_max_conversations() -> usize {
+    bc_ai_chat::limits::MAX_CONVERSATIONS
+}
+
+fn default_max_messages_per_conversation() -> usize {
+    bc_ai_chat::limits::MAX_MESSAGES_PER_CONVERSATION
+}
+
+fn default_max_chat_message_bytes() -> usize {
+    bc_ai_chat::limits::MAX_CHAT_MESSAGE_BYTES
+}
+
+fn default_max_conversation_bytes() -> usize {
+    bc_ai_chat::limits::MAX_CONVERSATION_BYTES
+}
+
+fn default_max_global_retained_bytes() -> usize {
+    bc_ai_chat::limits::MAX_GLOBAL_RETAINED_BYTES
+}
+
+fn default_max_title_bytes() -> usize {
+    bc_ai_chat::limits::MAX_TITLE_BYTES
+}
+
+fn default_max_plan_steps() -> usize {
+    crate::plan::MAX_PLAN_STEPS
+}
+
+fn default_max_retained_plans() -> usize {
+    crate::plan::MAX_RETAINED_PLANS
 }
 
 /// Wire/stored shape of [`AgentConfig`], used for backward-compatible reads.
@@ -173,6 +282,25 @@ struct StoredAgentConfig {
     /// Absent in every configuration stored before provider profiles existed.
     #[serde(default)]
     default_provider_id: Option<String>,
+    /// Absent in every configuration stored before the retention limits
+    /// became configurable, so each defaults to its hard ceiling — an
+    /// upgrade must not change how much history an install keeps.
+    #[serde(default = "default_max_conversations")]
+    max_conversations: usize,
+    #[serde(default = "default_max_messages_per_conversation")]
+    max_messages_per_conversation: usize,
+    #[serde(default = "default_max_chat_message_bytes")]
+    max_chat_message_bytes: usize,
+    #[serde(default = "default_max_conversation_bytes")]
+    max_conversation_bytes: usize,
+    #[serde(default = "default_max_global_retained_bytes")]
+    max_global_retained_bytes: usize,
+    #[serde(default = "default_max_title_bytes")]
+    max_title_bytes: usize,
+    #[serde(default = "default_max_plan_steps")]
+    max_plan_steps: usize,
+    #[serde(default = "default_max_retained_plans")]
+    max_retained_plans: usize,
 }
 
 impl From<StoredAgentConfig> for AgentConfig {
@@ -203,6 +331,14 @@ impl From<StoredAgentConfig> for AgentConfig {
             default_provider_id: stored
                 .default_provider_id
                 .filter(|id| !id.trim().is_empty()),
+            max_conversations: stored.max_conversations,
+            max_messages_per_conversation: stored.max_messages_per_conversation,
+            max_chat_message_bytes: stored.max_chat_message_bytes,
+            max_conversation_bytes: stored.max_conversation_bytes,
+            max_global_retained_bytes: stored.max_global_retained_bytes,
+            max_title_bytes: stored.max_title_bytes,
+            max_plan_steps: stored.max_plan_steps,
+            max_retained_plans: stored.max_retained_plans,
         }
     }
 }
@@ -226,6 +362,14 @@ impl Default for AgentConfig {
             system_prompt_override: None,
             request_timeout_ms: None,
             default_provider_id: None,
+            max_conversations: default_max_conversations(),
+            max_messages_per_conversation: default_max_messages_per_conversation(),
+            max_chat_message_bytes: default_max_chat_message_bytes(),
+            max_conversation_bytes: default_max_conversation_bytes(),
+            max_global_retained_bytes: default_max_global_retained_bytes(),
+            max_title_bytes: default_max_title_bytes(),
+            max_plan_steps: default_max_plan_steps(),
+            max_retained_plans: default_max_retained_plans(),
         }
     }
 }
@@ -370,7 +514,45 @@ impl AgentConfig {
                 }
             })?;
         }
+        // The retention and plan limits. Zero is refused rather than read as
+        // "unlimited", and a value above the ceiling is refused rather than
+        // silently clamped, so the settings form can say which number is
+        // wrong instead of accepting it and doing something else.
+        for (field, read, ceiling) in CONFIGURABLE_LIMITS {
+            let value = read(self);
+            if value == 0 || value > ceiling {
+                return Err(AgentError::InvalidConfig {
+                    field,
+                    message: format!("must be between 1 and {ceiling}"),
+                });
+            }
+        }
         Ok(())
+    }
+
+    /// The chat retention limits this configuration asks for.
+    ///
+    /// Already clamped by `ChatLimits::clamped` at the point of installation,
+    /// so an unvalidated configuration cannot raise a ceiling through here.
+    pub fn chat_limits(&self) -> bc_ai_chat::ChatLimits {
+        bc_ai_chat::ChatLimits {
+            max_conversations: self.max_conversations,
+            max_messages_per_conversation: self.max_messages_per_conversation,
+            max_chat_message_bytes: self.max_chat_message_bytes,
+            max_conversation_bytes: self.max_conversation_bytes,
+            max_global_retained_bytes: self.max_global_retained_bytes,
+            max_title_bytes: self.max_title_bytes,
+        }
+        .clamped()
+    }
+
+    /// The plan limits this configuration asks for, clamped the same way.
+    pub fn plan_limits(&self) -> crate::plan::PlanLimits {
+        crate::plan::PlanLimits {
+            max_plan_steps: self.max_plan_steps,
+            max_retained_plans: self.max_retained_plans,
+        }
+        .clamped()
     }
 }
 
@@ -400,6 +582,7 @@ mod tests {
             system_prompt_override: Some("o".repeat(MAX_SYSTEM_PROMPT_BYTES)),
             request_timeout_ms: Some(MAX_REQUEST_TIMEOUT_MS),
             default_provider_id: Some("groq-prod".into()),
+            ..AgentConfig::default()
         };
         config.validate().expect("exact boundaries");
 
@@ -407,6 +590,16 @@ mod tests {
             max_context_tokens: MIN_CONTEXT_TOKENS,
             request_timeout_ms: Some(MIN_REQUEST_TIMEOUT_MS),
             top_k: Some(MIN_TOP_K),
+            // Every configurable limit at its floor. One is the floor
+            // throughout: zero would mean "retain nothing", not "unlimited".
+            max_conversations: 1,
+            max_messages_per_conversation: 1,
+            max_chat_message_bytes: 1,
+            max_conversation_bytes: 1,
+            max_global_retained_bytes: 1,
+            max_title_bytes: 1,
+            max_plan_steps: 1,
+            max_retained_plans: 1,
             ..config.clone()
         };
         floors.validate().expect("exact floors");
@@ -544,6 +737,202 @@ mod tests {
                 Err(AgentError::InvalidConfig { field, .. }) => assert_eq!(field, expected),
                 other => panic!("{expected} past its boundary must be refused, got {other:?}"),
             }
+        }
+
+        // Every configurable limit, one step past its ceiling and at zero,
+        // named by the camelCase field the renderer labels its input with.
+        // Driven off the same table `validate` reads, so a field added there
+        // without a ceiling cannot slip through untested.
+        for (field, _, ceiling) in CONFIGURABLE_LIMITS {
+            for (case, value) in [("above the ceiling", ceiling + 1), ("zero", 0)] {
+                let mut invalid = config.clone();
+                match field {
+                    "maxConversations" => invalid.max_conversations = value,
+                    "maxMessagesPerConversation" => invalid.max_messages_per_conversation = value,
+                    "maxChatMessageBytes" => invalid.max_chat_message_bytes = value,
+                    "maxConversationBytes" => invalid.max_conversation_bytes = value,
+                    "maxGlobalRetainedBytes" => invalid.max_global_retained_bytes = value,
+                    "maxTitleBytes" => invalid.max_title_bytes = value,
+                    "maxPlanSteps" => invalid.max_plan_steps = value,
+                    "maxRetainedPlans" => invalid.max_retained_plans = value,
+                    other => panic!("{other} has no case here; add one"),
+                }
+                match invalid.validate() {
+                    Err(AgentError::InvalidConfig { field: got, .. }) => {
+                        assert_eq!(got, field, "{field} {case} must be refused by name")
+                    }
+                    other => {
+                        panic!("{field} {case} must be refused, got {other:?}")
+                    }
+                }
+            }
+        }
+    }
+
+    /// A ceiling is a ceiling: the configured value may lower a limit and may
+    /// never raise one. `validate` refuses an over-ceiling value by name, and
+    /// the clamp is the second line for a value that never passed through it.
+    #[test]
+    fn a_configured_limit_can_lower_a_ceiling_but_never_raise_one() {
+        let lowered = AgentConfig {
+            max_conversations: 5,
+            max_messages_per_conversation: 10,
+            max_chat_message_bytes: 2048,
+            max_conversation_bytes: 4096,
+            max_global_retained_bytes: 65_536,
+            max_title_bytes: 64,
+            max_plan_steps: 3,
+            max_retained_plans: 2,
+            ..AgentConfig::default()
+        };
+        lowered.validate().expect("lowering every limit is allowed");
+        let chat = lowered.chat_limits();
+        assert_eq!(chat.max_conversations, 5);
+        assert_eq!(chat.max_messages_per_conversation, 10);
+        assert_eq!(chat.max_chat_message_bytes, 2048);
+        assert_eq!(chat.max_conversation_bytes, 4096);
+        assert_eq!(chat.max_global_retained_bytes, 65_536);
+        assert_eq!(chat.max_title_bytes, 64);
+        let plans = lowered.plan_limits();
+        assert_eq!(plans.max_plan_steps, 3);
+        assert_eq!(plans.max_retained_plans, 2);
+
+        // A configuration that never passed through `validate` — the exact
+        // path a hand-edited stored file takes, because `AgentConfig` is
+        // built from `StoredAgentConfig` by a serde conversion with no
+        // validation in it at all.
+        let raised = AgentConfig {
+            max_conversations: usize::MAX,
+            max_messages_per_conversation: usize::MAX,
+            max_chat_message_bytes: usize::MAX,
+            max_conversation_bytes: usize::MAX,
+            max_global_retained_bytes: usize::MAX,
+            max_title_bytes: usize::MAX,
+            max_plan_steps: usize::MAX,
+            max_retained_plans: usize::MAX,
+            ..AgentConfig::default()
+        };
+        assert!(
+            matches!(
+                raised.validate(),
+                Err(AgentError::InvalidConfig {
+                    field: "maxConversations",
+                    ..
+                })
+            ),
+            "an over-ceiling value must be refused by name"
+        );
+        let chat = raised.chat_limits();
+        assert_eq!(
+            chat.max_conversations,
+            bc_ai_chat::limits::MAX_CONVERSATIONS
+        );
+        assert_eq!(
+            chat.max_messages_per_conversation,
+            bc_ai_chat::limits::MAX_MESSAGES_PER_CONVERSATION
+        );
+        assert_eq!(
+            chat.max_chat_message_bytes,
+            bc_ai_chat::limits::MAX_CHAT_MESSAGE_BYTES
+        );
+        assert_eq!(
+            chat.max_conversation_bytes,
+            bc_ai_chat::limits::MAX_CONVERSATION_BYTES
+        );
+        assert_eq!(
+            chat.max_global_retained_bytes,
+            bc_ai_chat::limits::MAX_GLOBAL_RETAINED_BYTES,
+            "a setting must never be able to raise the memory bound"
+        );
+        assert_eq!(chat.max_title_bytes, bc_ai_chat::limits::MAX_TITLE_BYTES);
+        let plans = raised.plan_limits();
+        assert_eq!(plans.max_plan_steps, crate::plan::MAX_PLAN_STEPS);
+        assert_eq!(plans.max_retained_plans, crate::plan::MAX_RETAINED_PLANS);
+
+        // Zero clamps up to the floor rather than down to "retain nothing".
+        let zeroed = AgentConfig {
+            max_conversations: 0,
+            max_title_bytes: 0,
+            max_plan_steps: 0,
+            ..AgentConfig::default()
+        };
+        assert_eq!(zeroed.chat_limits().max_conversations, 1);
+        assert_eq!(zeroed.chat_limits().max_title_bytes, 1);
+        assert_eq!(zeroed.plan_limits().max_plan_steps, 1);
+    }
+
+    /// A configuration stored before the limits became configurable has none
+    /// of these fields, and must load with every one at its ceiling — an
+    /// upgrade must not change how much history an install keeps.
+    #[test]
+    fn a_stored_config_without_limits_loads_at_the_ceilings() {
+        let stored = r#"{
+            "maxToolRounds": 5,
+            "maxTokensPerTurn": 4096,
+            "toolsEnabled": true,
+            "stream": true
+        }"#;
+        let config: AgentConfig = serde_json::from_str(stored).expect("deserializes");
+        config.validate().expect("defaults are valid");
+        assert_eq!(
+            config.max_conversations,
+            bc_ai_chat::limits::MAX_CONVERSATIONS
+        );
+        assert_eq!(
+            config.max_global_retained_bytes,
+            bc_ai_chat::limits::MAX_GLOBAL_RETAINED_BYTES
+        );
+        assert_eq!(config.max_title_bytes, bc_ai_chat::limits::MAX_TITLE_BYTES);
+        assert_eq!(config.max_plan_steps, crate::plan::MAX_PLAN_STEPS);
+        assert_eq!(config.max_retained_plans, crate::plan::MAX_RETAINED_PLANS);
+        assert_eq!(config.chat_limits(), bc_ai_chat::ChatLimits::default());
+        assert_eq!(config.plan_limits(), crate::plan::PlanLimits::default());
+
+        // And a stored configuration that *does* carry them round-trips.
+        let stored = r#"{
+            "maxToolRounds": 5,
+            "maxTokensPerTurn": 4096,
+            "toolsEnabled": true,
+            "stream": true,
+            "maxConversations": 7,
+            "maxTitleBytes": 80,
+            "maxPlanSteps": 4
+        }"#;
+        let config: AgentConfig = serde_json::from_str(stored).expect("deserializes");
+        assert_eq!(config.max_conversations, 7);
+        assert_eq!(config.max_title_bytes, 80);
+        assert_eq!(config.max_plan_steps, 4);
+        // Untouched fields stay at their ceilings.
+        assert_eq!(
+            config.max_messages_per_conversation,
+            bc_ai_chat::limits::MAX_MESSAGES_PER_CONVERSATION
+        );
+    }
+
+    /// The camelCase spellings the renderer binds its inputs to.
+    #[test]
+    fn the_configurable_limits_are_camel_case_on_the_wire() {
+        let value = serde_json::to_value(AgentConfig::default()).expect("serializes");
+        for (field, _, _) in CONFIGURABLE_LIMITS {
+            assert!(
+                value.get(field).is_some(),
+                "config is missing {field}: {value}"
+            );
+        }
+        for snake in [
+            "max_conversations",
+            "max_messages_per_conversation",
+            "max_chat_message_bytes",
+            "max_conversation_bytes",
+            "max_global_retained_bytes",
+            "max_title_bytes",
+            "max_plan_steps",
+            "max_retained_plans",
+        ] {
+            assert!(
+                value.get(snake).is_none(),
+                "snake_case field `{snake}` leaked: {value}"
+            );
         }
     }
 

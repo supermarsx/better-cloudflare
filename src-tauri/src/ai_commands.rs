@@ -13,6 +13,7 @@ use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use bc_ai_agent::personas::{AiPersona, AiPersonaInput, MAX_PERSONA_ID_BYTES};
+use bc_ai_agent::plan::AiPlan;
 use bc_ai_agent::{AgentConfig, AgentError, AgentEvent, AgentManager};
 use bc_ai_chat::{ChatError, ChatMessage, ConversationMeta};
 use bc_ai_provider::{
@@ -29,7 +30,7 @@ use bc_error::sanitize_error_text;
 /// `main.rs`. A command the renderer is written against but that was never
 /// registered fails only at runtime, so the list is asserted at build time.
 #[cfg(test)]
-pub const COMMAND_NAMES: [&str; 25] = [
+pub const COMMAND_NAMES: [&str; 31] = [
     "ai_list_providers",
     "ai_configure_provider",
     "ai_delete_provider",
@@ -55,6 +56,12 @@ pub const COMMAND_NAMES: [&str; 25] = [
     "ai_update_persona",
     "ai_delete_persona",
     "ai_export_conversation",
+    "ai_get_plan",
+    "ai_approve_plan",
+    "ai_run_plan_step",
+    "ai_run_plan",
+    "ai_cancel_plan",
+    "ai_delete_plan",
 ];
 
 const MAX_MODEL_RESULTS: usize = 1_024;
@@ -330,6 +337,36 @@ fn map_agent_error(error: AgentError, operation: &'static str) -> AiCommandError
             error.details.kind = Some("permission_denied");
             error.details.remediation =
                 Some("Allow the tool in the AI permission settings, then retry.");
+            error
+        }
+        AgentError::InvalidPlan { field, message } => {
+            AiCommandError::validation(field, message, operation)
+        }
+        AgentError::PlanLimit {
+            resource,
+            limit,
+            actual,
+        } => AiCommandError::limit(resource, limit, actual, operation),
+        AgentError::PlanNotFound => AiCommandError::new(
+            "AI_PLAN_NOT_FOUND",
+            "This conversation has no plan.",
+            operation,
+        ),
+        AgentError::PlanStepNotFound => AiCommandError::new(
+            "AI_PLAN_STEP_NOT_FOUND",
+            "The plan step was not found.",
+            operation,
+        ),
+        // The state is what the caller needs: a renderer showing a stale plan
+        // has to know the plan moved on, not just that the call failed.
+        AgentError::PlanStateConflict { state, action } => {
+            let mut error = AiCommandError::new(
+                "AI_PLAN_STATE_CONFLICT",
+                format!("A plan in state '{state}' cannot {action}."),
+                operation,
+            );
+            error.details.kind = Some(state);
+            error.details.remediation = Some("Re-read the plan with ai_get_plan and try again.");
             error
         }
         AgentError::ConversationDisposed(_) => AiCommandError::new(
@@ -664,13 +701,16 @@ pub async fn ai_get_conversation(
         .ok_or_else(|| map_chat_error(ChatError::ConversationNotFound(id), "ai:get_conversation"))
 }
 
-/// Delete a conversation.
+/// Delete a conversation, and the plan that belongs to it.
+///
+/// Goes through the manager rather than `chat` directly: a plan left behind
+/// would outlive the transcript it was written for.
 #[tauri::command]
 pub async fn ai_delete_conversation(
     agent: State<'_, AgentManager>,
     id: Uuid,
 ) -> Result<bool, AiCommandError> {
-    Ok(agent.chat.delete_conversation(id).await)
+    Ok(agent.delete_conversation(id).await)
 }
 
 async fn set_conversation_title_inner(
@@ -678,10 +718,13 @@ async fn set_conversation_title_inner(
     id: Uuid,
     title: String,
 ) -> Result<bool, AiCommandError> {
+    // The *configured* title limit, not the ceiling: this pre-check exists to
+    // report an over-long title as a limit before the lookup, so it has to
+    // agree with the limit `try_set_title` will enforce. UTF-8 bytes.
     bc_ai_provider::limits::validate_string(
         "conversation title",
         &title,
-        bc_ai_chat::limits::MAX_TITLE_BYTES,
+        agent.chat.limits().await.max_title_bytes,
     )
     .map_err(|error| map_provider_error(error, "ai:set_conversation_title"))?;
     agent
@@ -975,6 +1018,146 @@ pub async fn ai_delete_persona(
     id: String,
 ) -> Result<bool, AiCommandError> {
     delete_persona_inner(&agent, id).await
+}
+
+// ─── Plans ─────────────────────────────────────────────────────────────────
+//
+// A plan is proposed by the model (through its own `plan_propose` /
+// `plan_revise` tools), approved by the user here, and executed by the
+// harness through the same `ToolExecutor` gate every other tool call goes
+// through. Nothing in this section is reachable by the model.
+//
+// Every command returns the authoritative plan, so there is nothing to
+// stream: the renderer uses what comes back, and `ai_get_plan` is the re-read
+// after `ai_approve_tool_call`, which returns `()`. No plan events are
+// emitted — the `AgentEvent` channel belongs to a generation turn, and a plan
+// command has no turn to attach to.
+
+async fn get_plan_inner(agent: &AgentManager, conversation_id: Uuid) -> Option<AiPlan> {
+    agent.plan(conversation_id).await
+}
+
+/// The conversation's plan, or `null`. One plan per conversation.
+#[tauri::command]
+pub async fn ai_get_plan(
+    agent: State<'_, AgentManager>,
+    conversation_id: Uuid,
+) -> Result<Option<AiPlan>, AiCommandError> {
+    Ok(get_plan_inner(&agent, conversation_id).await)
+}
+
+async fn approve_plan_inner(
+    agent: &AgentManager,
+    conversation_id: Uuid,
+) -> Result<AiPlan, AiCommandError> {
+    agent
+        .approve_plan(conversation_id)
+        .await
+        .map_err(|error| map_agent_error(error, "ai:approve_plan"))
+}
+
+/// Approve a draft plan so its steps may run. Refuses any other source state.
+///
+/// Approving re-resolves every step's permissions, so the user commits
+/// against the permissions in force now. It does not make the plan run, and
+/// it cannot make a blocked step runnable.
+#[tauri::command]
+pub async fn ai_approve_plan(
+    agent: State<'_, AgentManager>,
+    conversation_id: Uuid,
+) -> Result<AiPlan, AiCommandError> {
+    approve_plan_inner(&agent, conversation_id).await
+}
+
+async fn run_plan_step_inner(
+    agent: &AgentManager,
+    conversation_id: Uuid,
+    step_id: Uuid,
+) -> Result<AiPlan, AiCommandError> {
+    agent
+        .run_plan_step(conversation_id, step_id)
+        .await
+        .map_err(|error| map_agent_error(error, "ai:run_plan_step"))
+}
+
+/// Run one step of an approved plan.
+///
+/// The step's tool is resolved through the executor's gate first, every time:
+/// a tool now refused leaves the step `blocked` with its `refusal.source` and
+/// dispatches nothing, and a step blocked when the plan was approved runs if
+/// the permission has since been granted. A tool that resolves to `ask`
+/// leaves the step `awaitingApproval`; approve it with
+/// `ai_approve_tool_call`, passing the step's `plan-step-<id>` tool-call id,
+/// then re-read with `ai_get_plan`.
+#[tauri::command]
+pub async fn ai_run_plan_step(
+    agent: State<'_, AgentManager>,
+    conversation_id: Uuid,
+    step_id: Uuid,
+) -> Result<AiPlan, AiCommandError> {
+    run_plan_step_inner(&agent, conversation_id, step_id).await
+}
+
+async fn run_plan_inner(
+    agent: &AgentManager,
+    conversation_id: Uuid,
+) -> Result<AiPlan, AiCommandError> {
+    agent
+        .run_plan(conversation_id)
+        .await
+        .map_err(|error| map_agent_error(error, "ai:run_plan"))
+}
+
+/// Run the plan from its first incomplete step.
+///
+/// **Stops at the first step that does not complete** — blocked, awaiting
+/// approval, or failed — rather than carrying on: plan steps are ordered and
+/// usually dependent, so continuing past a failure risks acting on a premise
+/// that did not hold. Partial completion is visible in the returned plan,
+/// step by step; it never has to be inferred from the plan's own status.
+/// Calling it again resumes from where it stopped.
+#[tauri::command]
+pub async fn ai_run_plan(
+    agent: State<'_, AgentManager>,
+    conversation_id: Uuid,
+) -> Result<AiPlan, AiCommandError> {
+    run_plan_inner(&agent, conversation_id).await
+}
+
+async fn cancel_plan_inner(
+    agent: &AgentManager,
+    conversation_id: Uuid,
+) -> Result<AiPlan, AiCommandError> {
+    agent
+        .cancel_plan(conversation_id)
+        .await
+        .map_err(|error| map_agent_error(error, "ai:cancel_plan"))
+}
+
+/// Cancel a plan. Final: a cancelled plan advances no further.
+///
+/// Idempotent on an already-cancelled plan. A step already in flight is not
+/// aborted by this — `ai_cancel_generation` is the control for in-flight
+/// work, and a plan step runs under it.
+#[tauri::command]
+pub async fn ai_cancel_plan(
+    agent: State<'_, AgentManager>,
+    conversation_id: Uuid,
+) -> Result<AiPlan, AiCommandError> {
+    cancel_plan_inner(&agent, conversation_id).await
+}
+
+async fn delete_plan_inner(agent: &AgentManager, conversation_id: Uuid) -> bool {
+    agent.delete_plan(conversation_id).await
+}
+
+/// Discard the conversation's plan. Resolves `false` when there was none.
+#[tauri::command]
+pub async fn ai_delete_plan(
+    agent: State<'_, AgentManager>,
+    conversation_id: Uuid,
+) -> Result<bool, AiCommandError> {
+    Ok(delete_plan_inner(&agent, conversation_id).await)
 }
 
 // ─── Export ────────────────────────────────────────────────────────────────
@@ -1524,6 +1707,273 @@ mod tests {
         assert_eq!(error.code, "AI_TOOL_DENIED");
         assert_eq!(error.details.kind, Some("permission_denied"));
         assert!(error.message.contains("cf_delete_dns_record"));
+    }
+
+    // ─── Plans ─────────────────────────────────────────────────────────────
+
+    /// An agent whose MCP layer grants everything, so the assistant's own
+    /// mode decides. `AgentManager::default()` holds no grants at all, which
+    /// would make every plan step blocked by the MCP layer.
+    async fn plan_agent(mode: AiPermissionMode) -> AgentManager {
+        let agent =
+            AgentManager::with_mcp_grants(bc_mcp::McpGrantHandle::new(bc_mcp::McpGrantSet::all()));
+        set_permissions_inner(&agent, permissions(mode, &[]))
+            .await
+            .expect("valid permissions");
+        agent
+    }
+
+    async fn propose(
+        agent: &AgentManager,
+        conversation_id: Uuid,
+        steps: serde_json::Value,
+    ) -> AiPlan {
+        let proposal = serde_json::from_value(serde_json::json!({
+            "title": "Tidy the zone",
+            "steps": steps,
+        }))
+        .expect("a well-formed proposal");
+        agent
+            .plans
+            .propose(agent.executor.as_ref(), conversation_id, proposal)
+            .await
+            .expect("valid draft")
+    }
+
+    /// The command flow end to end, and the wire shape the renderer is
+    /// written against.
+    #[tokio::test]
+    async fn the_plan_commands_walk_a_plan_from_draft_to_done() {
+        let agent = plan_agent(AiPermissionMode::ReadOnly).await;
+        let conversation_id = create_valid_conversation(&agent).await;
+        assert!(
+            get_plan_inner(&agent, conversation_id).await.is_none(),
+            "a conversation starts with no plan"
+        );
+
+        let draft = propose(
+            &agent,
+            conversation_id,
+            serde_json::json!([
+                { "title": "parse it", "tool": "dns_parse_spf", "arguments": { "content": "v=spf1 -all" } },
+                { "title": "tell the user", "detail": "by hand" },
+            ]),
+        )
+        .await;
+        assert_eq!(draft.status, bc_ai_agent::AiPlanStatus::Draft);
+
+        // A draft runs nothing until it is approved.
+        let error = run_plan_inner(&agent, conversation_id)
+            .await
+            .expect_err("a draft must be approved first");
+        assert_eq!(error.code, "AI_PLAN_STATE_CONFLICT");
+        assert_eq!(error.details.kind, Some("draft"));
+
+        let approved = approve_plan_inner(&agent, conversation_id)
+            .await
+            .expect("approve");
+        assert_eq!(approved.status, bc_ai_agent::AiPlanStatus::Approved);
+        let error = approve_plan_inner(&agent, conversation_id)
+            .await
+            .expect_err("only a draft can be approved");
+        assert_eq!(error.code, "AI_PLAN_STATE_CONFLICT");
+        assert_eq!(error.details.kind, Some("approved"));
+
+        let done = run_plan_inner(&agent, conversation_id).await.expect("run");
+        assert_eq!(done.status, bc_ai_agent::AiPlanStatus::Done);
+        assert_eq!(done.steps[0].status, bc_ai_agent::AiPlanStepStatus::Done);
+        assert_eq!(done.steps[1].status, bc_ai_agent::AiPlanStepStatus::Skipped);
+
+        // The camelCase wire shape, which the renderer switches on.
+        let value = serde_json::to_value(&done).expect("serializes");
+        for key in [
+            "id",
+            "conversationId",
+            "title",
+            "status",
+            "steps",
+            "createdAt",
+            "updatedAt",
+        ] {
+            assert!(value.get(key).is_some(), "plan missing {key}: {value}");
+        }
+        assert!(value.get("conversation_id").is_none(), "{value}");
+        let step = &value["steps"][0];
+        for key in ["id", "index", "title", "detail", "tool", "status"] {
+            assert!(step.get(key).is_some(), "step missing {key}: {step}");
+        }
+        assert_eq!(step["status"], "done");
+        assert_eq!(value["status"], "done");
+
+        assert!(delete_plan_inner(&agent, conversation_id).await);
+        assert!(!delete_plan_inner(&agent, conversation_id).await);
+    }
+
+    /// What the whole plan-time resolution exists for: before approving
+    /// anything, the user is told which steps cannot run and which of the two
+    /// permission lists stops each one.
+    #[tokio::test]
+    async fn a_blocked_step_names_the_permission_layer_that_stops_it() {
+        // The assistant's own policy refuses the write.
+        let agent = plan_agent(AiPermissionMode::ReadOnly).await;
+        let conversation_id = create_valid_conversation(&agent).await;
+        let draft = propose(
+            &agent,
+            conversation_id,
+            serde_json::json!([{ "title": "delete it", "tool": "cf_delete_dns_record" }]),
+        )
+        .await;
+        let value = serde_json::to_value(&draft).expect("serializes");
+        let step = &value["steps"][0];
+        assert_eq!(step["status"], "blocked");
+        assert_eq!(step["refusal"]["source"], "assistantPolicy");
+        assert!(step["refusal"]["reason"]
+            .as_str()
+            .expect("a reason")
+            .contains("read-only"));
+        assert!(
+            step["result"].is_null(),
+            "a blocked step ran nothing: {step}"
+        );
+
+        // The application's MCP grants refuse it instead. `default()` holds no
+        // grant handle, so nothing is granted.
+        let agent = AgentManager::default();
+        set_permissions_inner(&agent, permissions(AiPermissionMode::Autonomous, &[]))
+            .await
+            .expect("valid permissions");
+        let conversation_id = create_valid_conversation(&agent).await;
+        let draft = propose(
+            &agent,
+            conversation_id,
+            serde_json::json!([{ "title": "parse it", "tool": "dns_parse_spf" }]),
+        )
+        .await;
+        let value = serde_json::to_value(&draft).expect("serializes");
+        assert_eq!(value["steps"][0]["status"], "blocked");
+        assert_eq!(value["steps"][0]["refusal"]["source"], "mcpGrants");
+
+        // Approving a plan with a blocked step is allowed — it simply cannot
+        // run that step, and running it leaves it blocked.
+        approve_plan_inner(&agent, conversation_id)
+            .await
+            .expect("approve");
+        let step_id = draft.steps[0].id;
+        let plan = run_plan_step_inner(&agent, conversation_id, step_id)
+            .await
+            .expect("the step resolves");
+        assert_eq!(plan.steps[0].status, bc_ai_agent::AiPlanStepStatus::Blocked);
+        assert!(plan.steps[0].result.is_none());
+        assert_eq!(plan.status, bc_ai_agent::AiPlanStatus::Paused);
+    }
+
+    #[tokio::test]
+    async fn plan_commands_report_a_missing_plan_and_step_distinctly() {
+        let agent = plan_agent(AiPermissionMode::ReadOnly).await;
+        let conversation_id = create_valid_conversation(&agent).await;
+
+        for error in [
+            approve_plan_inner(&agent, conversation_id)
+                .await
+                .expect_err("no plan"),
+            run_plan_inner(&agent, conversation_id)
+                .await
+                .expect_err("no plan"),
+            cancel_plan_inner(&agent, conversation_id)
+                .await
+                .expect_err("no plan"),
+            run_plan_step_inner(&agent, conversation_id, Uuid::new_v4())
+                .await
+                .expect_err("no plan"),
+        ] {
+            assert_eq!(error.code, "AI_PLAN_NOT_FOUND");
+        }
+
+        propose(
+            &agent,
+            conversation_id,
+            serde_json::json!([{ "title": "parse it", "tool": "dns_parse_spf" }]),
+        )
+        .await;
+        approve_plan_inner(&agent, conversation_id)
+            .await
+            .expect("approve");
+        let error = run_plan_step_inner(&agent, conversation_id, Uuid::new_v4())
+            .await
+            .expect_err("no such step");
+        assert_eq!(error.code, "AI_PLAN_STEP_NOT_FOUND");
+    }
+
+    #[tokio::test]
+    async fn cancelling_a_plan_stops_it_advancing() {
+        let agent = plan_agent(AiPermissionMode::ReadOnly).await;
+        let conversation_id = create_valid_conversation(&agent).await;
+        propose(
+            &agent,
+            conversation_id,
+            serde_json::json!([{ "title": "parse it", "tool": "dns_parse_spf" }]),
+        )
+        .await;
+        approve_plan_inner(&agent, conversation_id)
+            .await
+            .expect("approve");
+
+        let cancelled = cancel_plan_inner(&agent, conversation_id)
+            .await
+            .expect("cancel");
+        assert_eq!(cancelled.status, bc_ai_agent::AiPlanStatus::Cancelled);
+        let error = run_plan_inner(&agent, conversation_id)
+            .await
+            .expect_err("a cancelled plan advances no further");
+        assert_eq!(error.code, "AI_PLAN_STATE_CONFLICT");
+        assert_eq!(error.details.kind, Some("cancelled"));
+    }
+
+    /// Untrusted model input is refused as a bounded, structured error rather
+    /// than retained.
+    #[tokio::test]
+    async fn an_oversized_plan_is_refused_as_a_limit_and_not_retained() {
+        let agent = plan_agent(AiPermissionMode::ReadOnly).await;
+        let conversation_id = create_valid_conversation(&agent).await;
+        let proposal = serde_json::from_value(serde_json::json!({
+            "title": "Tidy the zone",
+            "steps": (0..=bc_ai_agent::plan::MAX_PLAN_STEPS)
+                .map(|index| serde_json::json!({ "title": format!("step {index}") }))
+                .collect::<Vec<_>>(),
+        }))
+        .expect("a well-formed proposal shape");
+        let error = map_agent_error(
+            agent
+                .plans
+                .propose(agent.executor.as_ref(), conversation_id, proposal)
+                .await
+                .expect_err("over the step cap"),
+            "ai:run_plan",
+        );
+        assert_eq!(error.code, "AI_LIMIT_EXCEEDED");
+        assert_eq!(error.details.resource, Some("plan steps"));
+        assert_eq!(error.details.limit, Some(bc_ai_agent::plan::MAX_PLAN_STEPS));
+        assert!(get_plan_inner(&agent, conversation_id).await.is_none());
+    }
+
+    /// Deleting the conversation takes its plan with it.
+    #[tokio::test]
+    async fn deleting_a_conversation_deletes_its_plan() {
+        let agent = plan_agent(AiPermissionMode::ReadOnly).await;
+        let conversation_id = create_valid_conversation(&agent).await;
+        propose(
+            &agent,
+            conversation_id,
+            serde_json::json!([{ "title": "parse it", "tool": "dns_parse_spf" }]),
+        )
+        .await;
+        assert!(get_plan_inner(&agent, conversation_id).await.is_some());
+
+        assert!(agent.delete_conversation(conversation_id).await);
+        assert!(
+            get_plan_inner(&agent, conversation_id).await.is_none(),
+            "a plan must not outlive the transcript it was written for"
+        );
     }
 
     fn profile_input(value: serde_json::Value) -> AiProviderProfileInput {

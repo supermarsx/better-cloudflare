@@ -9,7 +9,7 @@ use tokio::sync::RwLock;
 use uuid::Uuid;
 
 use crate::limits::{
-    conversation_retained_bytes, validate_conversation_metadata, MAX_CONVERSATIONS,
+    conversation_retained_bytes, validate_conversation_metadata, ChatLimits, MAX_CONVERSATIONS,
     MAX_GLOBAL_RETAINED_BYTES, MAX_MESSAGES_PER_CONVERSATION,
 };
 use crate::types::{Conversation, ConversationMeta};
@@ -42,6 +42,14 @@ pub trait ConversationStore: Send + Sync {
 }
 
 /// In-memory conversation store for ephemeral sessions.
+///
+/// Deliberately governed by the **hard ceilings** rather than the user's
+/// configured [`ChatLimits`]: this store is a cache of conversations owned
+/// elsewhere, and `save` rebuilds its copy from the newest messages. Trimming
+/// that copy to a lowered setting would be exactly the retroactive deletion
+/// `ChatManager` is careful to avoid, and applying the one-per-write rule
+/// inside a loop that pushes every message would trim thirty messages in a
+/// single save. `ChatManager` is where the configured limits live.
 pub struct InMemoryStore {
     data: RwLock<HashMap<Uuid, Conversation>>,
 }
@@ -57,7 +65,8 @@ impl Default for InMemoryStore {
 #[async_trait]
 impl ConversationStore for InMemoryStore {
     async fn save(&self, conversation: &Conversation) -> Result<(), String> {
-        validate_conversation_metadata(conversation).map_err(|error| error.to_string())?;
+        validate_conversation_metadata(conversation, &ChatLimits::default())
+            .map_err(|error| error.to_string())?;
         let mut retained = Conversation {
             id: conversation.id,
             title: conversation.title.clone(),

@@ -10,6 +10,7 @@ pub mod error;
 pub mod events;
 pub mod manager;
 pub mod personas;
+pub mod plan;
 pub mod presets;
 
 pub use config::AgentConfig;
@@ -17,3 +18,4 @@ pub use error::AgentError;
 pub use events::AgentEvent;
 pub use manager::AgentManager;
 pub use personas::{AiPersona, AiPersonaInput, PersonaStore};
+pub use plan::{AiPlan, AiPlanStatus, AiPlanStep, AiPlanStepRefusal, AiPlanStepStatus, PlanStore};

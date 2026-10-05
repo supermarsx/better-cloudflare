@@ -1,4 +1,14 @@
 //! Bounded conversation-retention policy shared by managers and stores.
+//!
+//! Every `MAX_*` constant below is a **hard ceiling**, not a default waiting
+//! to be replaced. A user may lower any of them through [`ChatLimits`], and
+//! may never raise one: [`ChatLimits::clamped`] folds a configured value into
+//! `1..=CEILING`, and the setters are the only way to install one, so a
+//! setting cannot turn a memory bound into a suggestion.
+//!
+//! Every byte limit counts **UTF-8 bytes**, not characters — the same unit
+//! the provider crate's limits use, because these numbers ultimately bound
+//! what is held in memory and what goes on the wire.
 
 use bc_ai_provider::limits::{
     serialized_len_limited, validate_message, validate_string, MAX_MESSAGE_BYTES, MAX_MODEL_BYTES,
@@ -17,6 +27,83 @@ pub const MAX_CONVERSATION_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_GLOBAL_RETAINED_BYTES: usize = 32 * 1024 * 1024;
 pub const MAX_TITLE_BYTES: usize = 512;
 pub const MAX_STATUS_ERROR_BYTES: usize = 64 * 1024;
+
+/// How many retained items one write may evict to honour a *configured*
+/// limit that sits below its hard ceiling.
+///
+/// The ceilings themselves are enforced with no such bound — they exist to
+/// bound memory, so nothing may be retained above them. A configured limit is
+/// a user preference, and a preference must not reach back and delete
+/// history: lowering "max conversations" from 128 to 5 with 40 stored stops
+/// the store growing immediately and then walks it down at most one
+/// conversation per write, which is the same thing the ceiling would have
+/// done on that write anyway. Typing a smaller number must never cost
+/// somebody 35 transcripts.
+pub const MAX_CONFIGURED_EVICTIONS_PER_WRITE: usize = 1;
+
+/// User-configurable retention limits, each one bounded by the constant of
+/// the same name above.
+///
+/// [`Default`] is every hard ceiling, so an install that configures nothing
+/// behaves exactly as it did before these were configurable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChatLimits {
+    /// Conversations retained at once.
+    pub max_conversations: usize,
+    /// Messages retained per conversation.
+    pub max_messages_per_conversation: usize,
+    /// UTF-8 bytes retained for one message. A message over this is
+    /// **refused**, not trimmed: silently truncating what the user typed
+    /// would be worse than telling them it is too long.
+    pub max_chat_message_bytes: usize,
+    /// UTF-8 bytes retained for one conversation.
+    pub max_conversation_bytes: usize,
+    /// UTF-8 bytes retained across every conversation.
+    pub max_global_retained_bytes: usize,
+    /// UTF-8 bytes in a conversation title.
+    pub max_title_bytes: usize,
+}
+
+impl Default for ChatLimits {
+    fn default() -> Self {
+        Self {
+            max_conversations: MAX_CONVERSATIONS,
+            max_messages_per_conversation: MAX_MESSAGES_PER_CONVERSATION,
+            max_chat_message_bytes: MAX_CHAT_MESSAGE_BYTES,
+            max_conversation_bytes: MAX_CONVERSATION_BYTES,
+            max_global_retained_bytes: MAX_GLOBAL_RETAINED_BYTES,
+            max_title_bytes: MAX_TITLE_BYTES,
+        }
+    }
+}
+
+impl ChatLimits {
+    /// Fold every field into `1..=CEILING`.
+    ///
+    /// Zero is not "unlimited", it is "retain nothing", which would make the
+    /// store useless; and a value above the ceiling is the one case that must
+    /// never be honoured, because the ceilings are what the code is built to
+    /// survive. Clamping rather than rejecting is deliberate here: this is the
+    /// last line, reached by stored configurations that were written before a
+    /// ceiling moved and by any path that skipped validation.
+    /// `AgentConfig::validate` rejects the same values by name first, so a
+    /// user editing the settings form gets an error rather than a surprise.
+    #[must_use]
+    pub fn clamped(self) -> Self {
+        Self {
+            max_conversations: self.max_conversations.clamp(1, MAX_CONVERSATIONS),
+            max_messages_per_conversation: self
+                .max_messages_per_conversation
+                .clamp(1, MAX_MESSAGES_PER_CONVERSATION),
+            max_chat_message_bytes: self.max_chat_message_bytes.clamp(1, MAX_CHAT_MESSAGE_BYTES),
+            max_conversation_bytes: self.max_conversation_bytes.clamp(1, MAX_CONVERSATION_BYTES),
+            max_global_retained_bytes: self
+                .max_global_retained_bytes
+                .clamp(1, MAX_GLOBAL_RETAINED_BYTES),
+            max_title_bytes: self.max_title_bytes.clamp(1, MAX_TITLE_BYTES),
+        }
+    }
+}
 
 fn provider_error(error: bc_ai_provider::AiProviderError) -> ChatError {
     match error {
@@ -53,7 +140,10 @@ fn validate_tool_call(tool_call: &ToolCall) -> Result<usize, ChatError> {
         .saturating_add(arguments))
 }
 
-pub(crate) fn validate_chat_message(message: &ChatMessage) -> Result<(), ChatError> {
+pub(crate) fn validate_chat_message(
+    message: &ChatMessage,
+    limits: &ChatLimits,
+) -> Result<(), ChatError> {
     validate_message(&message.message).map_err(provider_error)?;
     if let MessageStatus::Error { message } = &message.status {
         validate_string("message status error", message, MAX_STATUS_ERROR_BYTES)
@@ -69,11 +159,14 @@ pub(crate) fn validate_chat_message(message: &ChatMessage) -> Result<(), ChatErr
     for tool_call in &message.pending_tool_calls {
         validate_tool_call(tool_call)?;
     }
+    // The configured value is the one reported, so the error names the number
+    // the user actually set rather than the ceiling they never see.
+    let max_message_bytes = limits.clamped().max_chat_message_bytes;
     let retained_bytes = message_retained_bytes(message);
-    if retained_bytes > MAX_CHAT_MESSAGE_BYTES {
+    if retained_bytes > max_message_bytes {
         return Err(ChatError::LimitExceeded {
             resource: "retained chat message",
-            limit: MAX_CHAT_MESSAGE_BYTES,
+            limit: max_message_bytes,
             actual: retained_bytes,
         });
     }
@@ -122,7 +215,10 @@ pub(crate) fn conversation_retained_bytes(conversation: &Conversation) -> usize 
         .saturating_add(message_bytes)
 }
 
-pub(crate) fn validate_conversation_metadata(conversation: &Conversation) -> Result<(), ChatError> {
+pub(crate) fn validate_conversation_metadata(
+    conversation: &Conversation,
+    limits: &ChatLimits,
+) -> Result<(), ChatError> {
     if conversation.model.is_empty() {
         return Err(ChatError::InvalidField {
             field: "model",
@@ -142,8 +238,12 @@ pub(crate) fn validate_conversation_metadata(conversation: &Conversation) -> Res
     })?;
     validate_string("conversation model", &conversation.model, MAX_MODEL_BYTES)
         .map_err(provider_error)?;
-    validate_string("conversation title", &conversation.title, MAX_TITLE_BYTES)
-        .map_err(provider_error)?;
+    validate_string(
+        "conversation title",
+        &conversation.title,
+        limits.clamped().max_title_bytes,
+    )
+    .map_err(provider_error)?;
     if let Some(system_prompt) = &conversation.system_prompt {
         validate_string(
             "conversation system prompt",
@@ -155,20 +255,64 @@ pub(crate) fn validate_conversation_metadata(conversation: &Conversation) -> Res
     Ok(())
 }
 
-pub(crate) fn validate_conversation(conversation: &Conversation) -> Result<(), ChatError> {
-    validate_conversation_metadata(conversation)?;
+pub(crate) fn validate_conversation(
+    conversation: &Conversation,
+    limits: &ChatLimits,
+) -> Result<(), ChatError> {
+    validate_conversation_metadata(conversation, limits)?;
     for message in &conversation.messages {
-        validate_chat_message(message)?;
+        validate_chat_message(message, limits)?;
     }
     Ok(())
 }
 
-pub(crate) fn enforce_conversation_limits(conversation: &mut Conversation) -> Vec<uuid::Uuid> {
+/// Trim one conversation back inside its retention limits, returning the ids
+/// of the messages that were dropped.
+///
+/// Two passes, and the difference between them *is* the retention policy for
+/// a lowered setting:
+///
+/// 1. The hard ceilings are enforced without bound, exactly as before these
+///    limits became configurable. Memory stays bounded by the numbers the
+///    code is built to survive.
+/// 2. A configured limit below its ceiling is then enforced by a pass capped
+///    at [`MAX_CONFIGURED_EVICTIONS_PER_WRITE`]. So a lowered setting stops
+///    the conversation growing at once, and walks it down no faster than one
+///    message per write — it never reaches back and deletes a history the
+///    user already had.
+pub(crate) fn enforce_conversation_limits(
+    conversation: &mut Conversation,
+    limits: &ChatLimits,
+) -> Vec<uuid::Uuid> {
+    let limits = limits.clamped();
+    let mut evicted = evict_messages_until(
+        conversation,
+        MAX_MESSAGES_PER_CONVERSATION,
+        MAX_CONVERSATION_BYTES,
+        usize::MAX,
+    );
+    evicted.extend(evict_messages_until(
+        conversation,
+        limits.max_messages_per_conversation,
+        limits.max_conversation_bytes,
+        MAX_CONFIGURED_EVICTIONS_PER_WRITE,
+    ));
+    evicted
+}
+
+/// Drop the oldest messages until the conversation is inside both limits, or
+/// `budget` messages have gone, whichever comes first.
+fn evict_messages_until(
+    conversation: &mut Conversation,
+    max_messages: usize,
+    max_bytes: usize,
+    budget: usize,
+) -> Vec<uuid::Uuid> {
     let mut evicted = Vec::new();
-    while conversation.messages.len() > MAX_MESSAGES_PER_CONVERSATION
-        || conversation_retained_bytes(conversation) > MAX_CONVERSATION_BYTES
+    while conversation.messages.len() > max_messages
+        || conversation_retained_bytes(conversation) > max_bytes
     {
-        if conversation.messages.is_empty() {
+        if conversation.messages.is_empty() || evicted.len() >= budget {
             break;
         }
         evicted.push(conversation.messages.remove(0).id);
