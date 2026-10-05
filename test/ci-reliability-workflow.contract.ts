@@ -289,6 +289,7 @@ function assertChangedSourceGateCoverage(
 ): void {
   let hasTypeScript = false;
   let hasCss = false;
+  let hasJson = false;
   for (const path of changedSources) {
     assert.ok(
       path.startsWith("src/"),
@@ -300,6 +301,13 @@ function assertChangedSourceGateCoverage(
         !legacySourceLintDebt.includes(path),
         `Changed TypeScript source is excluded from lint: ${path}`,
       );
+    } else if (path.endsWith(".json")) {
+      // `src/locales/*.json` are the JSON files under `src/`. Nothing
+      // typechecks them -- `src/i18n.ts` pulls them in with a dynamic
+      // `import()`, so a malformed bundle surfaces at runtime, not at build
+      // time. Prettier parses every one of them on each push, so
+      // `format:check` is the gate that actually covers this extension.
+      hasJson = true;
     } else if (path.endsWith(".css")) {
       hasCss = true;
     } else {
@@ -313,6 +321,13 @@ function assertChangedSourceGateCoverage(
       fixture.typecheck,
       "npm run typecheck",
       "Typecheck",
+    );
+  }
+  if (hasJson) {
+    requireUnconditionalCommand(
+      fixture.format,
+      "npm run format:check",
+      "Format",
     );
   }
   if (hasCss) {
@@ -442,6 +457,7 @@ test("changed source types have unconditional CI coverage", () => {
   const syntheticCssSource = ["src/example.css"];
   const syntheticDeletedTsSource = ["src/deleted/path.ts"];
   const syntheticDeletedCssSource = ["src/deleted/path.css"];
+  const syntheticJsonSource = ["src/locales/en-US.json"];
   const syntheticUnknownSource = ["src/unknown.mjs"];
 
   assertChangedSourceGateCoverage(fixture, fixture.sources);
@@ -460,6 +476,10 @@ test("changed source types have unconditional CI coverage", () => {
   assertChangedSourceGateCoverage(
     { ...fixture, sources: syntheticDeletedCssSource },
     syntheticDeletedCssSource,
+  );
+  assertChangedSourceGateCoverage(
+    { ...fixture, sources: syntheticJsonSource },
+    syntheticJsonSource,
   );
   const conditional = (command: string): ParsedRunStep => ({
     command,
@@ -494,6 +514,12 @@ test("changed source types have unconditional CI coverage", () => {
       syntheticCssSource,
       { tests: fixture.tests.filter((path) => path !== cssContractTest) },
       /CSS contract test is missing/,
+    ],
+    [syntheticJsonSource, { format: undefined }, /Format step is missing/],
+    [
+      syntheticJsonSource,
+      { format: conditional("npm run format:check") },
+      /must be unconditional/,
     ],
     [
       syntheticUnknownSource,
