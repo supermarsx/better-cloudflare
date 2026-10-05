@@ -588,7 +588,7 @@ function ZoneCompareInner({
         <div
           ref={tableRef}
           data-testid="zone-compare-table"
-          className="overflow-auto rounded-md border"
+          className="scrollbar-themed overflow-auto [scrollbar-gutter:auto] rounded-md border"
           style={
             tableMaxHeight === undefined
               ? undefined

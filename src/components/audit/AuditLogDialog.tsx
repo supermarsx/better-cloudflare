@@ -116,7 +116,7 @@ export function AuditLogDialog({ open, onOpenChange }: AuditLogDialogProps) {
             </div>
           )}
           {!loading && !error && entries.length > 0 && (
-            <div className="max-h-[420px] overflow-auto space-y-2">
+            <div className="max-h-[420px] scrollbar-themed overflow-auto space-y-2">
               {entries.map((entry, index) => (
                 <div
                   className="rounded-md border p-3 text-sm"

@@ -9090,12 +9090,12 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                       </div>
                       {rdapResult ? (
                         showRawRdap ? (
-                          <pre className="max-h-80 overflow-auto rounded-lg border border-border/60 bg-muted/20 p-3 text-[11px]">
+                          <pre className="max-h-80 scrollbar-themed overflow-auto rounded-lg border border-border/60 bg-muted/20 p-3 text-[11px]">
                             {JSON.stringify(rdapResult, null, 2)}
                           </pre>
                         ) : (
                           <div className="space-y-3">
-                            <div className="overflow-auto rounded-lg border border-border/60 bg-muted/10">
+                            <div className="scrollbar-themed overflow-auto [scrollbar-gutter:auto] rounded-lg border border-border/60 bg-muted/10">
                               <table className="w-full text-xs">
                                 <tbody>
                                   <tr className="border-b border-border/40">
@@ -9158,7 +9158,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                               </table>
                             </div>
 
-                            <div className="overflow-auto rounded-lg border border-border/60 bg-muted/10">
+                            <div className="scrollbar-themed overflow-auto [scrollbar-gutter:auto] rounded-lg border border-border/60 bg-muted/10">
                               <table className="w-full text-xs">
                                 <thead>
                                   <tr className="border-b border-border/40 text-muted-foreground">
@@ -9211,7 +9211,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                               </table>
                             </div>
 
-                            <div className="overflow-auto rounded-lg border border-border/60 bg-muted/10">
+                            <div className="scrollbar-themed overflow-auto [scrollbar-gutter:auto] rounded-lg border border-border/60 bg-muted/10">
                               <table className="w-full text-xs">
                                 <tbody>
                                   <tr className="border-b border-border/40">
@@ -9952,7 +9952,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                     {!auditLoading &&
                       !auditError &&
                       limitedAuditEntries.length > 0 && (
-                        <div className="overflow-auto rounded-lg border border-border/60">
+                        <div className="scrollbar-themed overflow-auto [scrollbar-gutter:auto] rounded-lg border border-border/60">
                           <div
                             className="grid gap-3 border-b border-border/60 bg-muted/50 px-4 py-2 text-[11px] uppercase tracking-widest text-muted-foreground"
                             style={{
@@ -11880,7 +11880,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                   })}
                                 </Button>
                               </DropdownMenuTrigger>
-                              <DropdownMenuContent className="max-h-72 w-60 overflow-auto">
+                              <DropdownMenuContent className="max-h-72 w-60 scrollbar-themed overflow-auto">
                                 {TOPOLOGY_TCP_SERVICE_OPTIONS.map((opt) => {
                                   const value = String(opt.port);
                                   const checked =
@@ -12111,7 +12111,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                   })}
                                 </Button>
                               </DropdownMenuTrigger>
-                              <DropdownMenuContent className="max-h-72 w-60 overflow-auto">
+                              <DropdownMenuContent className="max-h-72 w-60 scrollbar-themed overflow-auto">
                                 {TOPOLOGY_COPY_ACTION_OPTIONS.map((opt) => {
                                   const checked = topologyCopyActions.includes(
                                     opt.value,
@@ -12166,7 +12166,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                   })}
                                 </Button>
                               </DropdownMenuTrigger>
-                              <DropdownMenuContent className="max-h-72 w-60 overflow-auto">
+                              <DropdownMenuContent className="max-h-72 w-60 scrollbar-themed overflow-auto">
                                 {TOPOLOGY_EXPORT_ACTION_OPTIONS.map((opt) => {
                                   const checked =
                                     topologyExportActions.includes(opt.value);
@@ -12902,7 +12902,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             </DialogDescription>
           </DialogHeader>
           <div
-            className="max-h-64 space-y-1 overflow-y-auto rounded border p-2"
+            className="max-h-64 space-y-1 scrollbar-themed overflow-y-auto rounded border p-2"
             data-testid="copy-buffer-list"
           >
             {copyBuffer?.records.map((record) => (

@@ -544,7 +544,7 @@ function AnalyticsPanelInner({
                 )}
               </CardHeader>
               <CardContent>
-                <div className="max-h-64 overflow-auto">
+                <div className="max-h-64 scrollbar-themed overflow-auto">
                   <table className="w-full text-xs">
                     <thead>
                       <tr className="border-b text-left text-muted-foreground">

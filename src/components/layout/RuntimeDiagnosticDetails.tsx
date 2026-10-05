@@ -31,7 +31,7 @@ export function RuntimeDiagnosticDetails({
 
   const content = (
     <>
-      <pre className="min-h-0 max-w-full flex-1 overflow-auto whitespace-pre-wrap break-words rounded bg-background/60 p-3 text-[11px] text-muted-foreground [overflow-wrap:anywhere]">
+      <pre className="min-h-0 max-w-full flex-1 scrollbar-themed overflow-auto whitespace-pre-wrap break-words rounded bg-background/60 p-3 text-[11px] text-muted-foreground [overflow-wrap:anywhere]">
         {formatRuntimeDiagnostic(diagnostic)}
       </pre>
       <button

@@ -4909,7 +4909,7 @@ export function ZoneTopologyTab({
               </div>
               <div
                 aria-label="Topology node results"
-                className="max-h-72 space-y-1 overflow-auto rounded-md border border-border/50 p-2"
+                className="max-h-72 space-y-1 scrollbar-themed overflow-auto rounded-md border border-border/50 p-2"
               >
                 {visibleModelResults.length === 0 ? (
                   <div className="px-2 py-3 text-xs text-muted-foreground">
@@ -5003,7 +5003,7 @@ export function ZoneTopologyTab({
               of {topologyModel.nodes.length}. Selecting any search result
               reveals and focuses its node here.
             </div>
-            <div className="h-[min(560px,55dvh)] overflow-auto rounded-md border border-border/50 bg-background/40">
+            <div className="h-[min(560px,55dvh)] scrollbar-themed overflow-auto rounded-md border border-border/50 bg-background/40">
               <div className="relative h-[660px] min-w-[944px]">
                 <svg
                   aria-hidden="true"
@@ -5375,7 +5375,7 @@ export function ZoneTopologyTab({
             <summary className="cursor-pointer select-none font-semibold">
               Nodes ({summary.nodeSummaries.length})
             </summary>
-            <div className="mt-2 space-y-2 max-h-72 overflow-auto pr-1">
+            <div className="mt-2 space-y-2 max-h-72 scrollbar-themed overflow-auto pr-1">
               {summary.nodeSummaries.length > visibleNodeSummaries.length && (
                 <div role="status" className="text-muted-foreground">
                   Rendering {visibleNodeSummaries.length} of{" "}

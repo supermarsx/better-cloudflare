@@ -115,7 +115,7 @@ export function EncryptionSettingsDialog({
             Configure encryption parameters for security and performance
           </DialogDescription>
         </DialogHeader>
-        <div className="min-h-0 flex-1 space-y-4 overflow-y-auto pr-1">
+        <div className="min-h-0 flex-1 space-y-4 scrollbar-themed overflow-y-auto pr-1">
           <div className="space-y-2">
             <Label htmlFor="iterations">PBKDF2 Iterations</Label>
             <Input

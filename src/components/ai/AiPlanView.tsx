@@ -605,7 +605,7 @@ export function AiPlanView({
               {step.result ? (
                 <p
                   data-testid="ai-plan-step-result"
-                  className="ml-5 max-h-24 overflow-y-auto rounded border border-border/50 bg-background/40 px-2 py-1 font-mono text-[11px] break-all whitespace-pre-wrap"
+                  className="ml-5 max-h-24 scrollbar-themed overflow-y-auto rounded border border-border/50 bg-background/40 px-2 py-1 font-mono text-[11px] break-all whitespace-pre-wrap"
                 >
                   {step.result}
                 </p>

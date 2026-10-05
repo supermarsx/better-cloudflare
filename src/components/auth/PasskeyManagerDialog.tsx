@@ -238,7 +238,7 @@ export function PasskeyManagerDialog({
           <div>
             <Label className="text-base">Legacy credentials</Label>
             <div
-              className="mt-3 max-h-[50vh] space-y-3 overflow-y-auto pr-1"
+              className="mt-3 max-h-[50vh] space-y-3 scrollbar-themed overflow-y-auto pr-1"
               aria-busy={isLoading}
             >
               {isLoading ? (

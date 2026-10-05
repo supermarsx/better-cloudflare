@@ -1791,7 +1791,7 @@ export function McpToolPermissions({
           >
             <div
               ref={dialogRef}
-              className="max-h-[min(100%,44rem)] w-full max-w-xl space-y-3 overflow-y-auto rounded-lg border border-destructive/50 bg-background px-4 py-3 shadow-2xl"
+              className="max-h-[min(100%,44rem)] w-full max-w-xl space-y-3 scrollbar-themed overflow-y-auto rounded-lg border border-destructive/50 bg-background px-4 py-3 shadow-2xl"
               role="alertdialog"
               aria-modal="true"
               aria-labelledby="mcp-permission-confirmation-heading"

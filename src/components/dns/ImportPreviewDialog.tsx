@@ -166,7 +166,7 @@ export function ImportPreviewDialog({
               </div>
             )}
           </div>
-          <div className="max-h-64 overflow-y-auto border p-2 rounded">
+          <div className="max-h-64 scrollbar-themed overflow-y-auto border p-2 rounded">
             {visibleItems.map((it, visibleIndex) => {
               const idx = visibleStart + visibleIndex;
               return (
