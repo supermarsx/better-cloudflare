@@ -128,12 +128,6 @@ pub fn own_record_ids_from_audit(
 ) -> HashSet<String> {
     entries
         .iter()
-        .filter(|entry| {
-            matches!(
-                entry.get("operation").and_then(Value::as_str),
-                Some("dns:create" | "dns:update" | "dns:delete")
-            )
-        })
         .filter(|entry| match since {
             None => true,
             Some(since) => entry
@@ -143,10 +137,45 @@ pub fn own_record_ids_from_audit(
                 .map(|ts| ts > since)
                 .unwrap_or(false),
         })
-        .filter_map(|entry| entry.get("resource").and_then(Value::as_str))
+        .filter_map(own_changed_record_id)
         .filter(|id| !id.is_empty())
         .map(str::to_string)
         .collect()
+}
+
+/// The record a single audit entry says this application changed, if it says
+/// one at all.
+///
+/// Three writers reach the DNS API and only one of them logs a `dns:*`
+/// operation. The app's own commands do; the MCP server's tools and the
+/// assistant's go straight to the Cloudflare client, recording a tool call
+/// instead. Reading only `dns:*` meant a record the user's own assistant had
+/// just edited came back on the next poll as a change made outside the
+/// application -- a false alarm about the user's own action, and one that
+/// would train them to ignore the real thing.
+///
+/// Only a call that *succeeded* counts. A refused or failed call changed
+/// nothing, and treating it as our own would suppress the notification for a
+/// genuine outside change to that same record. Only a mutating tier counts
+/// for the same reason: a successful read says the record was looked at, not
+/// touched.
+fn own_changed_record_id(entry: &Value) -> Option<&str> {
+    let operation = entry.get("operation").and_then(Value::as_str)?;
+    match operation {
+        // The app's own commands name the record in `resource`.
+        "dns:create" | "dns:update" | "dns:delete" => entry.get("resource").and_then(Value::as_str),
+        // A tool call names the tool in `resource`, so the record is a detail.
+        "mcp:tool_call" | "assistant:tool_call" => {
+            if entry.get("outcome").and_then(Value::as_str) != Some("succeeded") {
+                return None;
+            }
+            match entry.get("effect").and_then(Value::as_str) {
+                Some("write" | "destructive") => entry.get("record_id").and_then(Value::as_str),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
 }
 
 pub struct TauriHost<R: Runtime> {
@@ -2296,6 +2325,77 @@ mod tests {
         assert_eq!(ids, HashSet::from(["new".to_string()]));
         let all = own_record_ids_from_audit(&entries, None);
         assert_eq!(all.len(), 3);
+    }
+
+    /// A record the user's own assistant or MCP client changed is the
+    /// application's own change, not an outside one.
+    ///
+    /// Those two writers reach the Cloudflare client directly and log a tool
+    /// call rather than a `dns:*` operation, so reading only `dns:*` reported
+    /// the user's own action back to them as a change made outside the app.
+    #[test]
+    fn a_tool_calls_own_change_is_not_an_outside_change() {
+        let entries = vec![
+            json!({
+                "operation": "assistant:tool_call",
+                "resource": "cf_update_dns_record",
+                "actor": "assistant",
+                "outcome": "succeeded",
+                "effect": "write",
+                "record_id": "by-assistant",
+                "timestamp": "2026-08-26T10:00:01.000Z",
+            }),
+            json!({
+                "operation": "mcp:tool_call",
+                "resource": "cf_delete_dns_record",
+                "actor": "mcp_client",
+                "outcome": "succeeded",
+                "effect": "destructive",
+                "record_id": "by-mcp",
+                "timestamp": "2026-08-26T10:00:01.000Z",
+            }),
+        ];
+        let ids = own_record_ids_from_audit(&entries, None);
+        assert_eq!(
+            ids,
+            HashSet::from(["by-assistant".to_string(), "by-mcp".to_string()])
+        );
+    }
+
+    /// A call that changed nothing must not be claimed as our own change.
+    ///
+    /// Claiming it would suppress the notification for a genuine outside
+    /// change to the very same record, which is worse than the false alarm
+    /// this whole path exists to avoid.
+    #[test]
+    fn a_tool_call_that_changed_nothing_claims_no_record() {
+        let entries = vec![
+            json!({
+                "operation": "assistant:tool_call", "resource": "cf_update_dns_record",
+                "outcome": "denied", "effect": "write", "record_id": "refused",
+                "timestamp": "2026-08-26T10:00:01.000Z",
+            }),
+            json!({
+                "operation": "assistant:tool_call", "resource": "cf_update_dns_record",
+                "outcome": "failed", "effect": "write", "record_id": "errored",
+                "timestamp": "2026-08-26T10:00:01.000Z",
+            }),
+            json!({
+                "operation": "mcp:tool_call", "resource": "cf_get_dns_record",
+                "outcome": "succeeded", "effect": "read", "record_id": "only-read",
+                "timestamp": "2026-08-26T10:00:01.000Z",
+            }),
+            json!({
+                "operation": "mcp:tool_call", "resource": "cf_analyze_zone",
+                "outcome": "succeeded", "effect": "analysis", "record_id": "analysed",
+                "timestamp": "2026-08-26T10:00:01.000Z",
+            }),
+            json!({
+                "operation": "mcp:server_start", "resource": "127.0.0.1:8787",
+                "outcome": "succeeded", "timestamp": "2026-08-26T10:00:01.000Z",
+            }),
+        ];
+        assert!(own_record_ids_from_audit(&entries, None).is_empty());
     }
 
     #[test]
