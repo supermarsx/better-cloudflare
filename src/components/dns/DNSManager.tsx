@@ -80,11 +80,22 @@ import { ImportExportDialog } from "./ImportExportDialog";
 import { RecordRow } from "./RecordRow";
 import { SpecialIpAuditFindings } from "./SpecialIpAuditFindings";
 import { NotificationsPanel } from "./NotificationsPanel";
+import { SettingsSearch } from "./SettingsSearch";
+import {
+  SETTINGS_SUBTABS,
+  findSettingsEntry,
+  settingsAnchorSelector,
+  type SettingsSearchEntry,
+  type SettingsSubtab,
+} from "./settings-search";
 import {
   AiAssistantPanel,
   type AiSettingsSection,
 } from "@/components/ai/AiAssistantPanel";
-import { ConnectedAiSettingsPanel } from "@/components/ai/AiSettingsPanel";
+import {
+  AI_SETTINGS_SECTIONS,
+  ConnectedAiSettingsPanel,
+} from "@/components/ai/AiSettingsPanel";
 import {
   AiAssistantRelocatedNotice,
   AiAssistantSurface,
@@ -436,14 +447,6 @@ type TabKind =
   | "assistant";
 type SortKey = "type" | "name" | "content" | "ttl" | "proxied";
 type SortDir = "asc" | "desc" | null;
-type SettingsSubtab =
-  | "general"
-  | "columns"
-  | "topology"
-  | "audit"
-  | "mcp"
-  | "assistant"
-  | "profiles";
 type ExportFolderPreset =
   "system" | "documents" | "downloads" | "desktop" | "custom";
 type TopologyResolverMode = "dns" | "doh";
@@ -1574,6 +1577,23 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   ] = useState(storageManager.getAuditExportSkipDestinationConfirm());
   const [settingsSubtab, setSettingsSubtab] =
     useState<SettingsSubtab>("general");
+  /**
+   * "Find a setting": the query, and the entry a result was chosen for.
+   *
+   * The query lives here rather than inside the search box because choosing a
+   * result has to clear it: the result list floats over the panel, so leaving
+   * it open would cover the very row the jump just revealed.
+   */
+  const [settingsSearchQuery, setSettingsSearchQuery] = useState("");
+  const [revealedSettingId, setRevealedSettingId] = useState<string | null>(
+    null,
+  );
+  /**
+   * Said out loud when a jump cannot land: the chosen setting's row is only
+   * rendered under some condition that does not currently hold. Silence would
+   * look like a broken control.
+   */
+  const [settingsJumpNotice, setSettingsJumpNotice] = useState("");
   /**
    * Which section the Assistant settings panel shows.
    *
@@ -3197,6 +3217,89 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     },
     [openActionTab],
   );
+
+  /**
+   * Go to the setting a search result names.
+   *
+   * Only state changes here: which subtab is open, and which setting is being
+   * revealed. Finding the row is the effect below's job, because the row does
+   * not exist in the DOM until the subtab it belongs to has rendered.
+   */
+  const jumpToSetting = useCallback((entry: SettingsSearchEntry) => {
+    setSettingsJumpNotice("");
+    setSettingsSearchQuery("");
+    if (entry.anchor.kind === "assistantSection") {
+      // The registry stores the section as a plain string; narrow it against
+      // the panel's own list rather than asserting the type.
+      const target = entry.anchor.section;
+      const section = AI_SETTINGS_SECTIONS.find((s) => s.id === target);
+      if (section) setAssistantSettingsSection(section.id);
+    }
+    setSettingsSubtab(entry.subtab);
+    setRevealedSettingId(entry.id);
+  }, []);
+
+  /**
+   * Land on the revealed setting: scroll its row into view, put the caret on
+   * the first control in it, and flash the row so the eye can see which one
+   * answered the search.
+   *
+   * A row can legitimately be missing — about a third of them render only
+   * under a condition, such as the custom-path field that exists only once a
+   * preset is set to Custom. That is not a failure to report but a fact to
+   * state, so the entry's own `requires` text is announced instead.
+   *
+   * A jump is one-shot either way: the pending reveal is dropped the moment
+   * the subtab stops matching, so leaving the subtab cancels it rather than
+   * arming a flash for whenever the user next comes back.
+   */
+  useEffect(() => {
+    if (!revealedSettingId) return;
+    if (typeof document === "undefined") return;
+    const entry = findSettingsEntry(revealedSettingId);
+    if (!entry || entry.subtab !== settingsSubtab) {
+      setRevealedSettingId(null);
+      return;
+    }
+
+    const selector = settingsAnchorSelector(entry);
+    const target = selector
+      ? document.querySelector<HTMLElement>(selector)
+      : null;
+    if (selector && !target) {
+      setSettingsJumpNotice(
+        entry.requires
+          ? t("{{label}} appears when {{condition}}.", {
+              label: t(entry.label, entry.label),
+              condition: t(entry.requires, entry.requires),
+              defaultValue: `${entry.label} appears when ${entry.requires}.`,
+            })
+          : t("{{label}} is not available here.", {
+              label: t(entry.label, entry.label),
+              defaultValue: `${entry.label} is not available here.`,
+            }),
+      );
+      setRevealedSettingId(null);
+      return;
+    }
+
+    target?.scrollIntoView?.({ block: "center", behavior: "smooth" });
+    const control = target?.querySelector<HTMLElement>(
+      'input:not([type="hidden"]), button, select, textarea, [role="combobox"], [tabindex]:not([tabindex="-1"])',
+    );
+    control?.focus?.({ preventScroll: true });
+    // The flash is set here rather than rendered, for the same reason the
+    // scroll and the focus are: it is where the eye should go, not state the
+    // row depends on. Keeping it out of the markup also keeps the 40 rows
+    // free of a per-row copy of this one condition.
+    target?.setAttribute("data-revealed", "true");
+
+    const timer = window.setTimeout(() => setRevealedSettingId(null), 1800);
+    return () => {
+      window.clearTimeout(timer);
+      target?.removeAttribute("data-revealed");
+    };
+  }, [revealedSettingId, settingsSubtab, t]);
 
   /**
    * How the assistant follows a link it offers.
@@ -10685,6 +10788,24 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                     </CardTitle>
                   </CardHeader>
                   <CardContent className="space-y-4">
+                    <SettingsSearch
+                      query={settingsSearchQuery}
+                      onQueryChange={setSettingsSearchQuery}
+                      desktop={isDesktop()}
+                      onPick={jumpToSetting}
+                    />
+                    {settingsJumpNotice ? (
+                      <p
+                        role="status"
+                        data-testid="settings-jump-notice"
+                        className="rounded-lg border border-border/60 bg-card/80 px-3 py-2 text-xs text-muted-foreground"
+                      >
+                        {settingsJumpNotice}
+                      </p>
+                    ) : null}
+                    {/* The nav renders from `SETTINGS_SUBTABS` so that the
+                        search breadcrumb and these buttons cannot end up
+                        calling the same subtab different things. */}
                     <div
                       role="toolbar"
                       aria-label={t(
@@ -10693,61 +10814,31 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                       )}
                       className="glass-surface glass-sheen glass-fade ui-segment-group scrollbar-themed"
                     >
-                      <button
-                        onClick={() => setSettingsSubtab("general")}
-                        data-active={settingsSubtab === "general"}
-                        className="ui-segment"
-                      >
-                        {t("General", "General")}
-                      </button>
-                      <button
-                        onClick={() => setSettingsSubtab("columns")}
-                        data-active={settingsSubtab === "columns"}
-                        className="ui-segment"
-                      >
-                        {t("Columns", "Columns")}
-                      </button>
-                      <button
-                        onClick={() => setSettingsSubtab("topology")}
-                        data-active={settingsSubtab === "topology"}
-                        className="ui-segment"
-                      >
-                        {t("Topology", "Topology")}
-                      </button>
-                      <button
-                        onClick={() => setSettingsSubtab("audit")}
-                        data-active={settingsSubtab === "audit"}
-                        className="ui-segment"
-                      >
-                        {t("Audit", "Audit")}
-                      </button>
-                      <button
-                        onClick={() => setSettingsSubtab("mcp")}
-                        data-active={settingsSubtab === "mcp"}
-                        className="ui-segment"
-                      >
-                        {t("MCP", "MCP")}
-                      </button>
-                      {isDesktop() ? (
+                      {SETTINGS_SUBTABS.filter(
+                        (subtab) => !subtab.desktopOnly || isDesktop(),
+                      ).map((subtab) => (
                         <button
-                          onClick={() => setSettingsSubtab("assistant")}
-                          data-active={settingsSubtab === "assistant"}
+                          key={subtab.id}
+                          onClick={() => {
+                            // Whatever a jump could not reach, the user has
+                            // now navigated away from; the note about it would
+                            // only be stale advice about another subtab.
+                            setSettingsJumpNotice("");
+                            setSettingsSubtab(subtab.id);
+                          }}
+                          data-active={settingsSubtab === subtab.id}
                           className="ui-segment"
                         >
-                          {t("Assistant", "Assistant")}
+                          {t(subtab.label, subtab.label)}
                         </button>
-                      ) : null}
-                      <button
-                        onClick={() => setSettingsSubtab("profiles")}
-                        data-active={settingsSubtab === "profiles"}
-                        className="ui-segment"
-                      >
-                        {t("Profiles", "Profiles")}
-                      </button>
+                      ))}
                     </div>
                     {settingsSubtab === "general" && (
                       <div className="divide-y divide-white/10 rounded-xl border border-border/60 bg-card/60 text-sm">
-                        <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                        <div
+                          className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center"
+                          data-setting-id="rewrite-copied-record-domains"
+                        >
                           <div className="font-medium">
                             {t(
                               "Rewrite copied record domains",
@@ -10784,7 +10875,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             </div>
                           </div>
                         </div>
-                        <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                        <div
+                          className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center"
+                          data-setting-id="preview-pasted-records"
+                        >
                           <div className="font-medium">
                             {t(
                               "Preview pasted records",
@@ -10821,7 +10915,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             </div>
                           </div>
                         </div>
-                        <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                        <div
+                          className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center"
+                          data-setting-id="auto-refresh"
+                        >
                           <div className="font-medium">
                             {t("Auto refresh", "Auto refresh")}
                           </div>
@@ -10878,7 +10975,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             </div>
                           </div>
                         </div>
-                        <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                        <div
+                          className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center"
+                          data-setting-id="default-per-page"
+                        >
                           <div className="font-medium">
                             {t("Default per-page", "Default per-page")}
                           </div>
@@ -10920,7 +11020,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             </div>
                           </div>
                         </div>
-                        <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                        <div
+                          className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center"
+                          data-setting-id="loader-timeout"
+                        >
                           <div className="font-medium">
                             {t("Loader timeout", "Loader timeout")}
                           </div>
@@ -10978,7 +11081,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             </div>
                           </div>
                         </div>
-                        <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                        <div
+                          className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center"
+                          data-setting-id="unsupported-record-types"
+                        >
                           <div className="font-medium">
                             {t(
                               "Unsupported record types",
@@ -11011,7 +11117,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             </div>
                           </div>
                         </div>
-                        <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                        <div
+                          className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center"
+                          data-setting-id="reopen-last-tabs"
+                        >
                           <div className="font-medium">
                             {t("Reopen last tabs", "Reopen last tabs")}
                           </div>
@@ -11041,7 +11150,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             </div>
                           </div>
                         </div>
-                        <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                        <div
+                          className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center"
+                          data-setting-id="middle-click-closes-tabs"
+                        >
                           <div className="font-medium">
                             {t(
                               "Middle-click closes tabs",
@@ -11074,7 +11186,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             </div>
                           </div>
                         </div>
-                        <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr]">
+                        <div
+                          className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr]"
+                          data-setting-id="assistant-placement"
+                        >
                           <div className="font-medium">
                             {t("Assistant placement", "Assistant placement")}
                           </div>
@@ -11113,7 +11228,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             ))}
                           </fieldset>
                         </div>
-                        <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                        <div
+                          className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center"
+                          data-setting-id="confirm-logout"
+                        >
                           <div className="font-medium">
                             {t("Confirm logout", "Confirm logout")}
                           </div>
@@ -11144,7 +11262,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                           </div>
                         </div>
                         {isDesktop() && (
-                          <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                          <div
+                            className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center"
+                            data-setting-id="confirm-window-close"
+                          >
                             <div className="font-medium">
                               {t(
                                 "Confirm window close",
@@ -11178,7 +11299,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             </div>
                           </div>
                         )}
-                        <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                        <div
+                          className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center"
+                          data-setting-id="auto-logout-idle"
+                        >
                           <div className="font-medium">
                             {t("Auto logout (idle)", "Auto logout (idle)")}
                           </div>
@@ -11393,7 +11517,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                     )}
                     {settingsSubtab === "topology" && (
                       <div className="divide-y divide-white/10 rounded-xl border border-border/60 bg-card/60 text-sm">
-                        <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                        <div
+                          className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center"
+                          data-setting-id="topology-resolution-hops"
+                        >
                           <div className="font-medium">
                             {t(
                               "Topology resolution hops",
@@ -11448,7 +11575,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             </div>
                           </div>
                         </div>
-                        <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                        <div
+                          className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center"
+                          data-setting-id="topology-request-mode"
+                        >
                           <div className="font-medium">
                             {t(
                               "Topology request mode",
@@ -11498,7 +11628,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             </div>
                           </div>
                         </div>
-                        <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                        <div
+                          className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center"
+                          data-setting-id="topology-dns-server"
+                        >
                           <div className="font-medium">
                             {t("DNS server", "DNS server")}
                           </div>
@@ -11595,7 +11728,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                           </div>
                         </div>
                         {topologyDnsServer === "custom" && (
-                          <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                          <div
+                            className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center"
+                            data-setting-id="topology-custom-dns-server"
+                          >
                             <div className="font-medium">
                               {t("Custom DNS server", "Custom DNS server")}
                             </div>
@@ -11632,7 +11768,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                           </div>
                         )}
                         {topologyResolverMode === "doh" && (
-                          <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                          <div
+                            className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center"
+                            data-setting-id="topology-custom-doh-endpoint"
+                          >
                             <div className="font-medium">
                               {t("Custom DoH endpoint", "Custom DoH endpoint")}
                             </div>
@@ -11668,7 +11807,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             </div>
                           </div>
                         )}
-                        <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                        <div
+                          className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center"
+                          data-setting-id="topology-lookup-timeout"
+                        >
                           <div className="font-medium">
                             {t("Lookup timeout", "Lookup timeout")}
                           </div>
@@ -11739,7 +11881,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             </div>
                           </div>
                         </div>
-                        <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                        <div
+                          className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center"
+                          data-setting-id="topology-disable-ptr-lookups"
+                        >
                           <div className="font-medium">
                             {t(
                               "Disable end-node PTR lookups",
@@ -11772,7 +11917,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             </div>
                           </div>
                         </div>
-                        <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                        <div
+                          className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center"
+                          data-setting-id="topology-skip-resolution-chain"
+                        >
                           <div className="font-medium">
                             {t(
                               "Don't scan resolution chain",
@@ -11805,7 +11953,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             </div>
                           </div>
                         </div>
-                        <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                        <div
+                          className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center"
+                          data-setting-id="topology-disable-geo"
+                        >
                           <div className="font-medium">
                             {t(
                               "Disable GEO detection",
@@ -11839,7 +11990,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                           </div>
                         </div>
                         {!topologyDisableGeoLookups && (
-                          <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                          <div
+                            className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center"
+                            data-setting-id="topology-geo-provider"
+                          >
                             <div className="font-medium">
                               {t("GEO lookup service", "GEO lookup service")}
                             </div>
@@ -11911,7 +12065,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             </div>
                           </div>
                         )}
-                        <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                        <div
+                          className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center"
+                          data-setting-id="topology-disable-service-discovery"
+                        >
                           <div className="font-medium">
                             {t(
                               "Disable service discovery",
@@ -11944,7 +12101,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             </div>
                           </div>
                         </div>
-                        <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                        <div
+                          className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center"
+                          data-setting-id="topology-tcp-services"
+                        >
                           <div className="font-medium">
                             {t(
                               "TCP services to probe",
@@ -12004,7 +12164,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             </div>
                           </div>
                         </div>
-                        <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                        <div
+                          className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center"
+                          data-setting-id="topology-disable-annotations"
+                        >
                           <div className="font-medium">
                             {t("Disable annotations", "Disable annotations")}
                           </div>
@@ -12034,7 +12197,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             </div>
                           </div>
                         </div>
-                        <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                        <div
+                          className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center"
+                          data-setting-id="topology-disable-full-window"
+                        >
                           <div className="font-medium">
                             {t("Disable full window", "Disable full window")}
                           </div>
@@ -12065,7 +12231,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                           </div>
                         </div>
                         {isDesktop() && (
-                          <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                          <div
+                            className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center"
+                            data-setting-id="topology-export-confirm-path"
+                          >
                             <div className="font-medium">
                               {t(
                                 "Confirm path to export",
@@ -12100,7 +12269,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                           </div>
                         )}
                         {isDesktop() && (
-                          <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                          <div
+                            className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center"
+                            data-setting-id="topology-export-path"
+                          >
                             <div className="font-medium">
                               {t(
                                 "Topology export path",
@@ -12162,7 +12334,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         )}
                         {isDesktop() &&
                           topologyExportFolderPreset === "custom" && (
-                            <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                            <div
+                              className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center"
+                              data-setting-id="topology-export-custom-path"
+                            >
                               <div className="font-medium">
                                 {t("Custom export path", "Custom export path")}
                               </div>
@@ -12178,7 +12353,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                               />
                             </div>
                           )}
-                        <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                        <div
+                          className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center"
+                          data-setting-id="topology-copy-actions"
+                        >
                           <div className="font-medium">
                             {t("Copy actions", "Copy actions")}
                           </div>
@@ -12233,7 +12411,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             </div>
                           </div>
                         </div>
-                        <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                        <div
+                          className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center"
+                          data-setting-id="topology-export-actions"
+                        >
                           <div className="font-medium">
                             {t("Export actions", "Export actions")}
                           </div>
@@ -12291,7 +12472,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                     )}
                     {settingsSubtab === "audit" && (
                       <div className="divide-y divide-white/10 rounded-xl border border-border/60 bg-card/60 text-sm">
-                        <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                        <div
+                          className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center"
+                          data-setting-id="audit-categories"
+                        >
                           <div className="font-medium">
                             {t("Audit categories", "Audit categories")}
                           </div>
@@ -12341,7 +12525,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                           </div>
                         </div>
                         {isDesktop() && (
-                          <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                          <div
+                            className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center"
+                            data-setting-id="audit-export-folder-preset"
+                          >
                             <div className="font-medium">
                               {t(
                                 "Export folder preset",
@@ -12402,7 +12589,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                           </div>
                         )}
                         {isDesktop() && (
-                          <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                          <div
+                            className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center"
+                            data-setting-id="audit-export-skip-destination-confirm"
+                          >
                             <div className="font-medium">
                               {t(
                                 "Don't confirm destination",
@@ -12438,7 +12628,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         )}
                         {isDesktop() &&
                           auditExportFolderPreset === "custom" && (
-                            <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                            <div
+                              className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center"
+                              data-setting-id="audit-export-custom-path"
+                            >
                               <div className="font-medium">
                                 {t("Custom export path", "Custom export path")}
                               </div>
@@ -12455,7 +12648,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             </div>
                           )}
                         {isDesktop() && (
-                          <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                          <div
+                            className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center"
+                            data-setting-id="audit-confirm-clear-logs"
+                          >
                             <div className="font-medium">
                               {t(
                                 "Confirm clear audit logs",
@@ -12502,7 +12698,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                           </div>
                         ) : (
                           <>
-                            <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                            <div
+                              className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center"
+                              data-setting-id="mcp-server-status"
+                            >
                               <div className="font-medium">
                                 {t("Server status", "Server status")}
                               </div>
@@ -12526,7 +12725,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                 </Button>
                               </div>
                             </div>
-                            <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                            <div
+                              className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center"
+                              data-setting-id="mcp-server-enabled"
+                            >
                               <div className="font-medium">
                                 {t("Enable MCP server", "Enable MCP server")}
                               </div>
@@ -12546,7 +12748,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                 </div>
                               </div>
                             </div>
-                            <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center">
+                            <div
+                              className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center"
+                              data-setting-id="mcp-bind-host"
+                            >
                               <div className="font-medium">
                                 {t("Bind host", "Bind host")}
                               </div>
@@ -12598,7 +12803,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                 </Button>
                               </div>
                             </div>
-                            <div className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-start">
+                            <div
+                              className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-start"
+                              data-setting-id="mcp-tool-access"
+                            >
                               <div className="font-medium">
                                 {t("Tool access", "Tool access")}
                               </div>

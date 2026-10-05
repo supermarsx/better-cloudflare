@@ -994,6 +994,24 @@
     }
   }
 
+  /* "Find a setting" lands here. Same flash as a revealed record row, fading
+     to nothing rather than to the table's hover tint, because a settings row
+     has no resting background of its own. */
+  [data-setting-id][data-revealed="true"] {
+    animation: uiSettingReveal 1.6s ease-out both;
+    box-shadow: inset 2px 0 0 hsl(var(--primary));
+  }
+
+  @keyframes uiSettingReveal {
+    0%,
+    60% {
+      background: hsl(var(--primary) / 0.28);
+    }
+    100% {
+      background: transparent;
+    }
+  }
+
   .titlebar {
     background:
       linear-gradient(
@@ -1190,7 +1208,8 @@
     }
 
     /* A static tint still marks the revealed row without the flash. */
-    .ui-table-row[data-revealed="true"] {
+    .ui-table-row[data-revealed="true"],
+    [data-setting-id][data-revealed="true"] {
       animation: none !important;
       background: hsl(var(--accent) / 0.45);
     }
