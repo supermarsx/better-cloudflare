@@ -1,13 +1,41 @@
 //! DNS utility tool handlers.
 //!
-//! Covers validation, propagation, topology, CSV/BIND import/export,
-//! and structured record parsing/composing (SRV, TLSA, SSHFP, NAPTR).
+//! Covers validation, propagation, topology, registry (RDAP) lookup,
+//! CSV/BIND import/export, and structured record parsing/composing
+//! (SRV, TLSA, SSHFP, NAPTR).
+
+use std::sync::OnceLock;
 
 use serde_json::{json, Value};
 
 use bc_cloudflare_api::DNSRecord;
 
 use crate::protocol::*;
+
+/// One RDAP client for the process.
+///
+/// It owns a connection pool, the 10 s request timeout and the HTTPS-only,
+/// depth-bounded redirect policy that `bc-notify` defines; rebuilding it per
+/// call would throw the pool away and risk a second, divergent definition of
+/// those bounds.
+fn rdap_client() -> &'static bc_notify::RdapClient {
+    static CLIENT: OnceLock<bc_notify::RdapClient> = OnceLock::new();
+    CLIENT.get_or_init(bc_notify::RdapClient::default)
+}
+
+/// Turn an RDAP failure into something a model can act on rather than retry.
+fn describe_rdap_error(error: bc_notify::RdapError) -> String {
+    match error {
+        bc_notify::RdapError::InvalidDomain => "Invalid domain: expected a bare registrable \
+             hostname such as 'example.com' — no scheme, path, port, query, or credentials, and \
+             internationalised names must be in punycode."
+            .to_string(),
+        error if error.is_not_found() => "No registry record: this domain or its TLD has no RDAP \
+             data. Some ccTLDs publish none, and internal or unregistered names never will."
+            .to_string(),
+        error => error.to_string(),
+    }
+}
 
 /// Execute a DNS utility tool.
 pub(super) async fn execute(name: &str, args: &Value) -> Result<Value, String> {
@@ -38,6 +66,19 @@ pub(super) async fn execute(name: &str, args: &Value) -> Result<Value, String> {
                     .await
                     .map_err(|e| e.to_string())?;
             serde_json::to_value(result).map_err(|e| e.to_string())
+        }
+
+        "dns_check_registration" => {
+            // The domain is model-supplied and ends up in a URL; validation,
+            // percent-encoding, the timeout and the response bound all live in
+            // `bc_notify::rdap`, which is the only thing that builds the
+            // request. Nothing here reassembles a URL of its own.
+            let domain = get_required_string(args, "domain")?;
+            let registration = rdap_client()
+                .lookup_registration(&domain)
+                .await
+                .map_err(describe_rdap_error)?;
+            serde_json::to_value(registration).map_err(|e| e.to_string())
         }
 
         "dns_resolve_topology" => {

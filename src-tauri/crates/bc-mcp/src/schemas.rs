@@ -496,6 +496,18 @@ pub fn tool_input_schema(name: &str) -> Value {
             "required": ["domain", "record_type"]
         }),
 
+        "dns_check_registration" => json!({
+            "type": "object",
+            "properties": {
+                "domain": {
+                    "type": "string",
+                    "description": "Registrable domain to look up at the registry, e.g. 'example.com'. A bare hostname only: no scheme, path, port, query, or credentials, and internationalised names must already be in punycode (xn--…). A subdomain usually has no registry record of its own — ask for the registrable domain.",
+                    "maxLength": 253
+                }
+            },
+            "required": ["domain"]
+        }),
+
         "dns_resolve_topology" => json!({
             "type": "object",
             "properties": {

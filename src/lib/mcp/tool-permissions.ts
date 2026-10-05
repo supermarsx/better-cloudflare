@@ -508,6 +508,16 @@ export const MCP_TOOL_FALLBACKS: readonly McpToolFallback[] = [
       "Check a domain for DNS, email, security, and hygiene issues without changing it.",
     risk: "read",
   },
+  // Last, because the contract test deep-equals this order against the Rust
+  // catalogue and this is the newest entry there.
+  {
+    id: "dns_check_registration",
+    categoryId: "dns-diagnostics",
+    label: "Check domain registration",
+    description:
+      "Look up a domain's registrar, creation and expiry dates, EPP status codes, and nameservers at its registry over RDAP. Registry data, not DNS: it resolves no records and returns no registrant contact details.",
+    risk: "read",
+  },
 ] as const;
 
 export const STABLE_MCP_TOOL_IDS: readonly string[] = MCP_TOOL_FALLBACKS.map(

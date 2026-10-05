@@ -599,6 +599,7 @@ dependencies = [
  "bc-cloudflare-api",
  "bc-dns-tools",
  "bc-domain-audit",
+ "bc-notify",
  "bc-spf",
  "bc-topology",
  "futures-util",

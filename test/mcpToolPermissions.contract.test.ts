@@ -74,10 +74,10 @@ afterEach(() => {
   clearMocks();
 });
 
-test("frontend MCP metadata exactly covers the live 53-tool Rust registry", () => {
+test("frontend MCP metadata exactly covers the live 54-tool Rust registry", () => {
   const rustToolIds = rustRegistryToolIds();
 
-  assert.equal(rustToolIds.length, 53);
+  assert.equal(rustToolIds.length, 54);
   assert.equal(new Set(rustToolIds).size, rustToolIds.length);
   assert.deepEqual(STABLE_MCP_TOOL_IDS, rustToolIds);
   assert.deepEqual(

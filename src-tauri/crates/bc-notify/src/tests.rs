@@ -809,6 +809,403 @@ async fn rdap_rejects_invalid_domain_before_any_request() {
     assert!(matches!(result, Err(crate::rdap::RdapError::InvalidDomain)));
 }
 
+/// The domain argument is model-supplied, and it is interpolated into
+/// `https://rdap.org/domain/<arg>`. Anything that could end the path segment
+/// and start something else has to be refused before a URL exists.
+#[test]
+fn rdap_url_building_refuses_inputs_that_would_escape_the_path_segment() {
+    for hostile in [
+        "example.com/../../ip/8.8.8.8",
+        "example.com/v1/nameserver/ns1.example",
+        "example.com?redirect=evil.example",
+        "example.com#fragment",
+        "user:password@evil.example",
+        "evil.example:8443",
+        "https://evil.example/domain/example.com",
+        "//evil.example/",
+        "example.com%2f..%2fip%2f8.8.8.8",
+        "exa\nmple.com",
+        "example.com\u{0000}",
+        "exa mple.com",
+        "..",
+        "../etc",
+        "",
+    ] {
+        assert!(
+            matches!(
+                crate::rdap::rdap_domain_url(crate::rdap::RDAP_BASE_URL, hostile),
+                Err(crate::rdap::RdapError::InvalidDomain)
+            ),
+            "{hostile:?} was accepted as a hostname"
+        );
+    }
+
+    assert_eq!(
+        crate::rdap::rdap_domain_url(crate::rdap::RDAP_BASE_URL, "  EXAMPLE.com.  ").unwrap(),
+        "https://rdap.org/domain/example.com",
+        "trimming, the root dot and ASCII case are normalisation, not escape"
+    );
+}
+
+/// Validation is the first barrier; percent-encoding is the second. This pins
+/// the encoder on its own, because by design nothing that needs encoding can
+/// reach it through the public entry point.
+#[test]
+fn rdap_url_building_percent_encodes_as_a_second_barrier() {
+    assert_eq!(
+        crate::rdap::percent_encode_path_segment("a/b?c#d e%f:g@h"),
+        "a%2Fb%3Fc%23d%20e%25f%3Ag%40h"
+    );
+    assert_eq!(
+        crate::rdap::percent_encode_path_segment("example-domain.com"),
+        "example-domain.com",
+        "unreserved bytes pass through, so a legitimate lookup is unchanged"
+    );
+}
+
+#[test]
+fn rdap_redirects_are_https_only_and_depth_bounded() {
+    use crate::rdap::{redirect_decision, RedirectDecision, RDAP_MAX_REDIRECTS};
+
+    assert_eq!(redirect_decision(1, "https"), RedirectDecision::Follow);
+    assert_eq!(
+        redirect_decision(RDAP_MAX_REDIRECTS, "https"),
+        RedirectDecision::Follow
+    );
+    assert_eq!(
+        redirect_decision(RDAP_MAX_REDIRECTS + 1, "https"),
+        RedirectDecision::TooDeep
+    );
+    for scheme in ["http", "HTTP", "file", "ftp", "data"] {
+        assert_eq!(
+            redirect_decision(1, scheme),
+            RedirectDecision::StopNonHttps,
+            "{scheme} redirect was followed"
+        );
+    }
+}
+
+/// A realistic registry answer, projected. The response carries registrant
+/// contact data and terms-of-service prose; none of it may survive into the
+/// value a caller (and then a language model) sees.
+fn registry_document() -> Value {
+    json!({
+        "objectClassName": "domain",
+        "handle": "2336799_DOMAIN_COM-VRSN",
+        "ldhName": "EXAMPLE.COM",
+        "unicodeName": "example.com",
+        "port43": "whois.verisign-grs.com",
+        "status": ["client delete prohibited", "clientTransferProhibited", "   "],
+        "events": [
+            { "eventAction": "registration", "eventDate": "1995-08-14T04:00:00Z" },
+            { "eventAction": "expiration", "eventDate": "2026-08-13T04:00:00Z" },
+            { "eventAction": "last changed", "eventDate": "2025-08-14T07:01:31Z" },
+            { "eventAction": "last update of RDAP database", "eventDate": "2026-09-04T00:00:00Z" }
+        ],
+        "secureDNS": { "delegationSigned": true },
+        "nameservers": [
+            { "objectClassName": "nameserver", "ldhName": "A.IANA-SERVERS.NET." },
+            { "objectClassName": "nameserver", "ldhName": "B.IANA-SERVERS.NET" },
+            { "objectClassName": "nameserver", "ldhName": "not a hostname" }
+        ],
+        "entities": [
+            {
+                "objectClassName": "entity",
+                "roles": ["registrant", "administrative"],
+                "vcardArray": ["vcard", [
+                    ["version", {}, "text", "4.0"],
+                    ["fn", {}, "text", "Jane Doe"],
+                    ["email", {}, "text", "jane@example.com"],
+                    ["tel", {}, "uri", "tel:+1.5555550101"],
+                    ["adr", {}, "text", ["", "", "1 Private Road", "Springfield", "", "", "US"]]
+                ]]
+            },
+            {
+                "objectClassName": "entity",
+                "roles": ["registrar"],
+                "publicIds": [{ "type": "IANA Registrar ID", "identifier": "292" }],
+                "vcardArray": ["vcard", [
+                    ["version", {}, "text", "4.0"],
+                    ["fn", {}, "text", "RESERVED-Internet Assigned Numbers Authority"]
+                ]],
+                "entities": [{
+                    "objectClassName": "entity",
+                    "roles": ["abuse"],
+                    "vcardArray": ["vcard", [
+                        ["version", {}, "text", "4.0"],
+                        ["fn", {}, "text", "Abuse Desk"],
+                        ["email", {}, "text", "abuse@registrar.example"],
+                        ["tel", { "type": ["voice"] }, "uri", "tel:+1.5555551212"]
+                    ]]
+                }]
+            }
+        ],
+        "notices": [{
+            "title": "Terms of Use",
+            "description": ["Service subject to Terms of Use."]
+        }]
+    })
+}
+
+#[test]
+fn rdap_projects_the_registry_fields_and_drops_contact_data() {
+    let parsed = crate::rdap::parse_rdap_registration("example.com", &registry_document());
+
+    assert_eq!(parsed.domain, "example.com");
+    assert_eq!(parsed.registry_domain, None, "ldhName repeats the query");
+    assert_eq!(parsed.unicode_name.as_deref(), Some("example.com"));
+    assert_eq!(parsed.handle.as_deref(), Some("2336799_DOMAIN_COM-VRSN"));
+    assert_eq!(
+        parsed.registrar.as_deref(),
+        Some("RESERVED-Internet Assigned Numbers Authority")
+    );
+    assert_eq!(parsed.registrar_iana_id.as_deref(), Some("292"));
+    assert_eq!(
+        parsed.statuses,
+        vec!["client delete prohibited", "clientTransferProhibited"],
+        "blank status entries are dropped"
+    );
+    assert_eq!(parsed.registered_at, Some(ts("1995-08-14T04:00:00Z")));
+    assert_eq!(parsed.expires_at, Some(ts("2026-08-13T04:00:00Z")));
+    assert_eq!(
+        parsed.updated_at,
+        Some(ts("2025-08-14T07:01:31Z")),
+        "the domain's own change date beats the database refresh"
+    );
+    assert_eq!(
+        parsed.nameservers,
+        vec!["a.iana-servers.net", "b.iana-servers.net"],
+        "nameservers are normalised and anything that is not a hostname is dropped"
+    );
+    assert_eq!(parsed.dnssec_signed, Some(true));
+    assert_eq!(
+        parsed.abuse_email.as_deref(),
+        Some("abuse@registrar.example")
+    );
+    assert_eq!(parsed.abuse_phone.as_deref(), Some("+1.5555551212"));
+    assert_eq!(
+        parsed.whois_server.as_deref(),
+        Some("whois.verisign-grs.com")
+    );
+
+    let serialized = serde_json::to_string(&parsed).unwrap();
+    for leaked in [
+        "Jane Doe",
+        "jane@example.com",
+        "Private Road",
+        "Springfield",
+        "5555550101",
+        "Terms of Use",
+    ] {
+        assert!(
+            !serialized.contains(leaked),
+            "{leaked:?} reached the projected answer: {serialized}"
+        );
+    }
+
+    let mut aliased = registry_document();
+    aliased["ldhName"] = json!("WWW.EXAMPLE.COM");
+    assert_eq!(
+        crate::rdap::parse_rdap_registration("example.com", &aliased)
+            .registry_domain
+            .as_deref(),
+        Some("www.example.com"),
+        "a registry naming a different domain is reported, not silently adopted"
+    );
+}
+
+#[test]
+fn rdap_reads_no_registrar_fields_from_a_contacts_only_document() {
+    let contacts_only = json!({
+        "objectClassName": "domain",
+        "ldhName": "example.com",
+        "entities": [{
+            "objectClassName": "entity",
+            "roles": ["registrant", "technical", "billing"],
+            "publicIds": [{ "type": "IANA Registrar ID", "identifier": "999" }],
+            "vcardArray": ["vcard", [["fn", {}, "text", "Jane Doe"]]],
+            "entities": [{
+                "roles": ["abuse"],
+                "vcardArray": ["vcard", [["email", {}, "text", "jane@example.com"]]]
+            }]
+        }],
+        "events": [{ "eventAction": "last update of RDAP database", "eventDate": "2026-09-04" }]
+    });
+    let parsed = crate::rdap::parse_rdap_registration("example.com", &contacts_only);
+
+    assert_eq!(parsed.registrar, None);
+    assert_eq!(parsed.registrar_iana_id, None);
+    assert_eq!(parsed.abuse_email, None);
+    assert_eq!(parsed.abuse_phone, None);
+    assert_eq!(
+        parsed.updated_at,
+        Some(ts("2026-09-04T00:00:00Z")),
+        "the database refresh date is used only when there is no 'last changed'"
+    );
+    assert_eq!(parsed.expires_at, None);
+    assert!(parsed.statuses.is_empty());
+    assert!(parsed.nameservers.is_empty());
+}
+
+#[test]
+fn rdap_bounds_the_fields_a_hostile_registry_can_contribute() {
+    let flood = json!({
+        "ldhName": "example.com",
+        "handle": format!("\u{1b}[31m{}", "h".repeat(crate::rdap::RDAP_MAX_FIELD_BYTES * 4)),
+        "status": (0..crate::rdap::RDAP_MAX_STATUSES * 4)
+            .map(|index| format!("status-{index}"))
+            .collect::<Vec<_>>(),
+        "nameservers": (0..crate::rdap::RDAP_MAX_NAMESERVERS * 4)
+            .map(|index| json!({ "ldhName": format!("ns{index}.example.com") }))
+            .collect::<Vec<_>>()
+    });
+    let parsed = crate::rdap::parse_rdap_registration("example.com", &flood);
+
+    assert_eq!(
+        parsed.handle.as_deref().map(str::len),
+        Some(crate::rdap::RDAP_MAX_FIELD_BYTES)
+    );
+    assert!(
+        !parsed.handle.unwrap().contains('\u{1b}'),
+        "control bytes are stripped before a field is published"
+    );
+    assert_eq!(parsed.statuses.len(), crate::rdap::RDAP_MAX_STATUSES);
+    assert_eq!(parsed.nameservers.len(), crate::rdap::RDAP_MAX_NAMESERVERS);
+}
+
+/// One-shot HTTP/1.1 stub: answers the first request with `response`, then
+/// closes. Just enough protocol to satisfy reqwest — the bounds under test
+/// live in `rdap.rs`, not here.
+async fn serve_once(response: Vec<u8>) -> String {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        let Ok((mut socket, _)) = listener.accept().await else {
+            return;
+        };
+        let mut request = Vec::new();
+        let mut buffer = [0u8; 1024];
+        while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+            match socket.read(&mut buffer).await {
+                Ok(0) | Err(_) => break,
+                Ok(read) => request.extend_from_slice(&buffer[..read]),
+            }
+        }
+        let _ = socket.write_all(&response).await;
+        let _ = socket.flush().await;
+        let _ = socket.shutdown().await;
+    });
+    format!("http://127.0.0.1:{port}/domain/")
+}
+
+fn http_response(headers: &str, body: &[u8]) -> Vec<u8> {
+    let mut response = headers.as_bytes().to_vec();
+    response.extend_from_slice(body);
+    response
+}
+
+#[tokio::test]
+async fn rdap_returns_the_registration_over_http() {
+    let body = serde_json::to_vec(&registry_document()).unwrap();
+    let base = serve_once(http_response(
+        &format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/rdap+json\r\nContent-Length: {}\r\n\r\n",
+            body.len()
+        ),
+        &body,
+    ))
+    .await;
+
+    let registration = crate::rdap::fetch_rdap_registration_from(
+        &crate::rdap::default_client(),
+        &base,
+        "EXAMPLE.com.",
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(registration.domain, "example.com");
+    assert_eq!(registration.expires_at, Some(ts("2026-08-13T04:00:00Z")));
+    assert_eq!(
+        registration.registrar.as_deref(),
+        Some("RESERVED-Internet Assigned Numbers Authority")
+    );
+}
+
+/// A registry that declares no length still may not stream an unbounded
+/// document into memory — or into a model's context.
+#[tokio::test]
+async fn rdap_refuses_an_oversized_response_with_no_declared_length() {
+    let padding = "h".repeat(crate::rdap::RDAP_MAX_BODY_BYTES);
+    let body = format!(
+        "{{\"objectClassName\":\"domain\",\"ldhName\":\"example.com\",\"handle\":\"{padding}\"}}"
+    );
+    assert!(body.len() > crate::rdap::RDAP_MAX_BODY_BYTES);
+    let base = serve_once(http_response(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/rdap+json\r\nConnection: close\r\n\r\n",
+        body.as_bytes(),
+    ))
+    .await;
+
+    let result = crate::rdap::fetch_rdap_registration_from(
+        &crate::rdap::default_client(),
+        &base,
+        "example.com",
+    )
+    .await;
+    assert!(
+        matches!(result, Err(crate::rdap::RdapError::TooLarge)),
+        "an unbounded body was accepted: {result:?}"
+    );
+}
+
+#[tokio::test]
+async fn rdap_refuses_a_response_that_declares_an_oversized_length() {
+    let declared = crate::rdap::RDAP_MAX_BODY_BYTES + 1;
+    let base = serve_once(http_response(
+        &format!("HTTP/1.1 200 OK\r\nContent-Length: {declared}\r\n\r\n"),
+        &vec![b'h'; declared],
+    ))
+    .await;
+
+    let result = crate::rdap::fetch_rdap_registration_from(
+        &crate::rdap::default_client(),
+        &base,
+        "example.com",
+    )
+    .await;
+    assert!(
+        matches!(result, Err(crate::rdap::RdapError::TooLarge)),
+        "a declared oversized length was accepted: {result:?}"
+    );
+}
+
+/// `rdap.org` is a redirector, so where it points matters. A redirect that
+/// leaves HTTPS is not followed: the 3xx comes back as a status error instead
+/// of a request to the downgraded URL (which here would be a connect failure
+/// against the discard port, a different error entirely).
+#[tokio::test]
+async fn rdap_does_not_follow_a_redirect_off_https() {
+    let base = serve_once(http_response(
+        "HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:9/domain/example.com\r\nContent-Length: 0\r\n\r\n",
+        b"",
+    ))
+    .await;
+
+    let result = crate::rdap::fetch_rdap_registration_from(
+        &crate::rdap::default_client(),
+        &base,
+        "example.com",
+    )
+    .await;
+    assert!(
+        matches!(result, Err(crate::rdap::RdapError::Status(302))),
+        "a downgraded redirect was followed: {result:?}"
+    );
+}
+
 // ── expiry pass (registrar source, no network) ───────────────────────────────
 
 #[tokio::test]

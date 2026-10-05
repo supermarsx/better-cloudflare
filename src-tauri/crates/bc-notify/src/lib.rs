@@ -36,7 +36,9 @@ pub use ledger::OwnChangeLedger;
 pub use model::{
     format_ts, parse_ts, Notification, NotificationKind, NotificationQuery, Scope, Severity,
 };
-pub use rdap::{fetch_rdap_expiry, is_valid_hostname, RdapError};
+pub use rdap::{
+    fetch_rdap_expiry, fetch_rdap_registration, is_valid_hostname, RdapError, RdapRegistration,
+};
 pub use settings::{NotificationSettings, QuietBehaviour};
 pub use store::{DomainExpiryState, NotifyState, NotifyStore, StoreError, ZoneState};
 
@@ -520,6 +522,22 @@ impl Default for RdapClient {
             base_url: rdap::RDAP_BASE_URL.to_string(),
             min_interval: rdap::RDAP_MIN_INTERVAL,
         }
+    }
+}
+
+impl RdapClient {
+    /// Look up the registry record for `domain` through this client's base URL.
+    ///
+    /// The same bounded transport the expiry pass uses, exposed for callers
+    /// that want the rest of the registry's answer — notably the MCP
+    /// `dns_check_registration` tool, which holds one of these for the process
+    /// so it reuses the connection pool and the configured redirect policy
+    /// rather than building a client of its own per call.
+    pub async fn lookup_registration(
+        &self,
+        domain: &str,
+    ) -> Result<RdapRegistration, rdap::RdapError> {
+        rdap::fetch_rdap_registration_from(&self.http, &self.base_url, domain).await
     }
 }
 

@@ -75,9 +75,9 @@ fn default_tool_set_is_empty_and_least_privilege() {
 // ── Tool count ─────────────────────────────────────────────────────────────
 
 #[test]
-fn preserves_exactly_53_tool_contracts() {
+fn preserves_exactly_54_tool_contracts() {
     let defs = available_tool_definitions();
-    assert_eq!(defs.len(), 53, "The MCP tool contract count changed");
+    assert_eq!(defs.len(), 54, "The MCP tool contract count changed");
 }
 
 #[test]
@@ -792,6 +792,7 @@ fn key_dns_tools_exist() {
     let required = [
         "dns_validate_record",
         "dns_check_propagation",
+        "dns_check_registration",
         "dns_parse_csv",
         "dns_export_csv",
         "dns_parse_srv",
@@ -815,6 +816,102 @@ fn key_spf_tools_exist() {
 fn audit_tool_exists() {
     let names = bc_mcp::tools::all_tool_names();
     assert!(names.contains(&"audit_run_domain".to_string()));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Registry (RDAP) lookup
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn registry_lookup_is_registered_as_a_read_only_network_tool() {
+    let tool = available_tool_definitions()
+        .into_iter()
+        .find(|tool| tool.name == "dns_check_registration")
+        .expect("the registry lookup is in the catalogue");
+
+    assert_eq!(tool.permission_id, "bc.mcp.v1.dns.check_registration");
+    assert_eq!(tool.category, "dns");
+    assert_eq!(tool.effect, "analysis");
+    assert_eq!(tool.risk, "low");
+    assert!(tool.network_access, "RDAP is an outbound HTTPS lookup");
+    assert!(
+        !tool.credential_access,
+        "RDAP is public: the tool must never be handed a Cloudflare credential"
+    );
+
+    let permission = bc_mcp::permissions::permission_for_invocation("dns_check_registration")
+        .expect("registered exactly once");
+    assert!(
+        !bc_mcp::permissions::requires_high_risk_confirmation(permission),
+        "a read-only lookup must not demand a high-risk acknowledgement"
+    );
+
+    let schema = &tool.input_schema;
+    assert_eq!(schema["required"], serde_json::json!(["domain"]));
+    assert_eq!(schema["properties"]["domain"]["type"], "string");
+    assert_eq!(schema["properties"]["domain"]["maxLength"], 253);
+}
+
+#[tokio::test]
+async fn registry_lookup_is_denied_without_its_own_grant() {
+    let unrelated = sanitize_enabled_tools(&["dns_check_propagation".to_string()]);
+    let error = bc_mcp::tools::execute_tool_with_grants(
+        &unrelated,
+        "dns_check_registration",
+        &serde_json::json!({ "domain": "example.com" }),
+    )
+    .await
+    .unwrap_err();
+    assert!(error.contains("not enabled"), "{error}");
+}
+
+/// The domain reaches this tool from a model that may have just read a hostile
+/// DNS record, and it is interpolated into an RDAP URL. A path-escaping value
+/// has to be refused as malformed input — note the refusal is the validator's,
+/// not a registry's, so no request left the process.
+#[tokio::test]
+async fn registry_lookup_refuses_a_url_escaping_domain_before_any_request() {
+    let grants = sanitize_enabled_tools(&["dns_check_registration".to_string()]);
+    for hostile in [
+        "example.com/../../ip/8.8.8.8",
+        "example.com?to=evil.example",
+        "https://evil.example/domain/example.com",
+        "user:password@evil.example",
+        "evil.example:8443",
+        "example.com%2f..%2f",
+    ] {
+        let error = bc_mcp::tools::execute_tool_with_grants(
+            &grants,
+            "dns_check_registration",
+            &serde_json::json!({ "domain": hostile }),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            error.starts_with("Invalid domain:"),
+            "{hostile:?} was not refused as malformed: {error}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn registry_lookup_requires_a_domain_argument() {
+    let grants = sanitize_enabled_tools(&["dns_check_registration".to_string()]);
+    for args in [
+        serde_json::json!({}),
+        serde_json::json!({ "domain": "" }),
+        serde_json::json!({ "domain": "   " }),
+        serde_json::json!({ "domain": 42 }),
+    ] {
+        let error =
+            bc_mcp::tools::execute_tool_with_grants(&grants, "dns_check_registration", &args)
+                .await
+                .unwrap_err();
+        assert!(
+            error.contains("Missing required argument 'domain'"),
+            "{error}"
+        );
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

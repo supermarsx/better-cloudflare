@@ -678,6 +678,16 @@ pub const PERMISSION_REGISTRY: &[PermissionDefinition] = &[
         false,
         LOCAL
     ),
+    permission!(
+        "bc.mcp.v1.dns.check_registration",
+        "dns_check_registration",
+        Dns,
+        Analysis,
+        Low,
+        true,
+        false,
+        NETWORK_DIAGNOSTIC
+    ),
 ];
 
 /// The default permission set is deliberately empty. Even nominally read-only

@@ -18,5 +18,6 @@ tower = { version = "0.5", features = ["util"] }
 bc-cloudflare-api = { path = "../bc-cloudflare-api" }
 bc-dns-tools = { path = "../bc-dns-tools" }
 bc-domain-audit = { path = "../bc-domain-audit" }
+bc-notify = { path = "../bc-notify" }
 bc-spf = { path = "../bc-spf" }
 bc-topology = { path = "../bc-topology" }

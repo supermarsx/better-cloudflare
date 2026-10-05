@@ -106,6 +106,8 @@ const TOOL_CATALOGUE: &[(&str, &str, &str, &str)] = &[
     ("dns_parse_spf", "Parse SPF content", "Parse an SPF TXT content string into structured mechanisms. Alias for spf_parse.", "dns"),
     // ── Domain Audit ────────────────────────────────────────────────────
     ("audit_run_domain", "Run domain audit", "Run a comprehensive security/email/hygiene audit on a domain's DNS records. Checks SPF, DKIM, DMARC, DNSSEC, CAA, bogon IPs, TTL best practices, and more.", "audit"),
+    // ── Registry (RDAP) ─────────────────────────────────────────────────
+    ("dns_check_registration", "Check domain registration", "Look up a domain's registration at its registry over RDAP. Answers who the registrar is, when the registration was created, last changed and expires, which EPP status codes and nameservers the registry holds, whether the delegation is DNSSEC-signed, and the registrar's abuse contact. This is registry data, not DNS: it does not resolve records. Registrant/admin/technical contact details are never returned. Takes a bare hostname (punycode for internationalised names); internal or non-registrable names have no registry answer.", "dns"),
 ];
 
 /// Return all tool definitions with proper schemas.
