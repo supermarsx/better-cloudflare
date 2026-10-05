@@ -22,6 +22,7 @@ Every zone opens as its own workspace tab. Inside a tab, fourteen views cover re
 
 ## Contents
 
+- [Feature set](#feature-set)
 - [What it does](#what-it-does)
 - [Getting started](#getting-started)
 - [Security](#security)
@@ -30,6 +31,30 @@ Every zone opens as its own workspace tab. Inside a tab, fourteen views cover re
 - [Documentation](#documentation)
 - [Contributing](#contributing)
 - [License](#license)
+
+## Feature set
+
+What is in the application today. Anything not listed here is not built;
+[What does not work](#what-does-not-work) names the gaps worth knowing about.
+
+| Area                  | Capabilities                                                                                                                                                                                                                                                                                                                                                                                            |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Records**           | 24 builders covering 25 record types with per-field validation · inline table editing with per-table column visibility · right-click row actions · local tags with colours · bulk TTL, proxy, delete and export across a selection                                                                                                                                                                      |
+| **Moving records**    | Cross-zone copy that rewrites hostnames in CNAME, MX, NS, PTR, DNAME, ALIAS, ANAME content, SRV/AFSDB/SVCB/NAPTR/RP/URI targets, SPF mechanisms and DMARC `rua=`/`ruf=` · preview of every changed value before writing · verbatim copy on request                                                                                                                                                      |
+| **Import and export** | JSON, CSV and BIND in and out, each with a dry-run preview · exportable audit log of actions taken in the app                                                                                                                                                                                                                                                                                           |
+| **Zones**             | One workspace tab per zone, reorderable by drag or keyboard · fourteen views per zone · zone comparison that copies missing records in one click                                                                                                                                                                                                                                                        |
+| **Analysis**          | CNAME-chain topology as a sanitized Mermaid graph with PTR, geolocation and service probing · domain health audit across Email, Security and Hygiene with per-finding overrides · SPF expansion, simulation and graphing · propagation checks against up to 23 public resolvers plus your own                                                                                                           |
+| **Registry**          | Renewal dates, lock state and auto-renew across Cloudflare, Porkbun, Namecheap, GoDaddy, Google Cloud Domains and Name.com · RDAP lookup of registrar, dates, EPP status codes and nameservers                                                                                                                                                                                                          |
+| **Monitoring**        | Background monitor for domain-expiry milestones and records changed outside the app, with before/after values · inbox with read, archive and dismiss · configurable intervals, kinds, milestones, per-zone rules, quiet hours and retention                                                                                                                                                             |
+| **AI assistant**      | Any OpenAI-compatible endpoint, plus Anthropic and Ollama, as named provider profiles · 54 tools under per-tool allow/ask/deny permissions and three modes, enforced in the backend · built-in and custom personas · temperature, top-p, top-k, stop sequences, seed, penalties, context budget and timeouts · appears as a workspace tab, a docked sidebar or a floating bubble · conversation history |
+| **Local MCP server**  | JSON-RPC over protocol `2024-11-05` on `127.0.0.1:8787`, off until enabled · bearer-token authenticated · per-tool permissions, so a client reaches only what you grant                                                                                                                                                                                                                                 |
+| **Security**          | API keys under AES-256-GCM in a versioned envelope, keyed by PBKDF2-HMAC-SHA256 at 100k-1M tunable iterations · secrets in the OS keyring, never in process memory · passkey login and registration through `webauthn-rs`, run natively against the OS on Windows · Touch ID, Windows Hello and fprintd for quick unlock                                                                                |
+| **Connection**        | Session state and live Cloudflare API round-trip time in the status bar                                                                                                                                                                                                                                                                                                                                 |
+
+Provider credentials for the assistant never reach the renderer: every model
+request is made by the Rust backend, and the frontend is told only whether a
+key is set. A contract test fails the build if a provider host appears
+anywhere under `src/`.
 
 ## What it does
 
@@ -159,9 +184,9 @@ Browser-context code paths still exist in `src/lib/storage`, because they back t
 ### What does not work
 
 - Passkey login and registration work, verified end to end through `webauthn-rs`. The previous implementation validated none of the clientDataJSON type or origin, the RP ID hash, the UP/UV flags, the signature, or the authenticator counter, so it was removed rather than shipped insecure; the current one does not re-implement those checks either — it drives the library that performs them. Credentials enrolled before that change hold no public key and cannot sign in; they can be listed, deleted, and replaced by re-registering.
-- Biometrics are macOS Touch ID only. Windows Hello and Linux are not implemented; the non-macOS path returns `PlatformNotSupported` for every operation.
+- Linux biometrics are compile-verified only. The fprintd and Secret Service paths build for `x86_64-unknown-linux-gnu` and have never been executed on real hardware. macOS Touch ID and Windows Hello are implemented and tested; note that the two platforms do not offer the same guarantee — macOS binds the stored secret to biometric verification, while on Windows the credential is protected by the user's logon credentials and the Hello prompt gates access at the application level.
 - The auto-updater is disabled (`"updater": { "active": false }`), and no code signing or macOS notarization is configured. The bundles are not signed, not notarized and do not update themselves.
-- There is no AI assistant in the UI. Four Rust crates, Tauri commands and a `useAiChat` hook exist as backend groundwork, but no component imports the hook, so nothing is user-reachable.
+- The assistant is desktop-only: every `ai_*` command is Tauri-only, so the `npm run dev` browser build offers no assistant at all. Tool calls additionally require the MCP tool grants to cover them, so an assistant with tool use enabled and no grants will chat but run nothing.
 
 More detail is in the [security model](https://supermarsx.github.io/better-cloudflare/security.html).
 
