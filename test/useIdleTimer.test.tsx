@@ -138,6 +138,11 @@ test("unmount clears the timer and removes activity listeners", () => {
   unmount();
   assert.equal(timers.size, 0);
 
-  window.dispatchEvent(new Event("pointerdown"));
+  // `new window.Event(...)`, not `new Event(...)`: Node has had a global
+  // `Event` since v18 and the jsdom harness leaves it in place, so jsdom
+  // rejects the foreign-realm object and dispatches to nobody -- while
+  // `dispatchEvent` still returns `true`. With the bare form this assertion
+  // held whether or not the listener had actually been removed.
+  window.dispatchEvent(new window.Event("pointerdown"));
   assert.equal(timers.size, 0);
 });
