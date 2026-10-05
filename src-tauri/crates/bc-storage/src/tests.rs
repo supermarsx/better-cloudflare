@@ -1700,6 +1700,98 @@ async fn existing_models_and_bounded_audit_behavior_still_roundtrip() {
     assert!(entries[0]["idx"].as_u64() == Some(5));
 }
 
+/// The three writers share one log and one shape. The untyped path keeps
+/// working and its entries are labelled as the person's, which is what they
+/// have always been.
+#[tokio::test]
+async fn every_writer_shares_one_log_and_its_entries_name_their_actor() {
+    let storage = Storage::new(false);
+
+    storage
+        .add_audit_entry(json!({ "operation": "dns:create", "resource": "record-1" }))
+        .await
+        .expect("untyped append");
+    AuditTrail::record(
+        &storage,
+        AuditEntry::new(
+            AuditActor::McpClient,
+            "mcp:tool_call",
+            AuditOutcome::Succeeded,
+        )
+        .resource("cf_update_dns_record"),
+    );
+    // A cloned handle is the same log, which is what lets the MCP server and
+    // the agent record into the store the commands write to.
+    storage.audit_trail().record(
+        AuditEntry::new(
+            AuditActor::Assistant,
+            "assistant:tool_call",
+            AuditOutcome::Denied,
+        )
+        .resource("cf_delete_dns_record")
+        .detail("denied_by", "mcp_grants"),
+    );
+
+    let entries = storage.get_audit_entries().await.expect("read audit log");
+    assert_eq!(entries.len(), 3, "one log, in the order things happened");
+    assert_eq!(entries[0]["operation"], json!("dns:create"));
+    assert_eq!(
+        entries[0]["actor"],
+        json!("user"),
+        "an entry from the application's own commands is the person's"
+    );
+    assert!(entries[0]["timestamp"].as_str().is_some());
+    assert_eq!(entries[1]["actor"], json!("mcp_client"));
+    assert_eq!(entries[1]["outcome"], json!("succeeded"));
+    assert_eq!(entries[2]["actor"], json!("assistant"));
+    assert_eq!(entries[2]["denied_by"], json!("mcp_grants"));
+}
+
+/// The promise the actor reservations exist to keep, through the store rather
+/// than over a vector: a busy agent cannot push the user's own record changes
+/// out of the log.
+///
+/// Slow by necessity — the cap is a thousand entries and every append rewrites
+/// the stored list, so there is no cheaper way to reach the trip point through
+/// the public API. `audit::tests` covers the eviction rule itself; this covers
+/// the rule actually being applied on the path a tool call takes.
+#[tokio::test]
+async fn an_agent_flooding_the_log_cannot_evict_the_users_own_changes() {
+    let storage = Storage::new(false);
+    for index in 0..50 {
+        storage
+            .add_audit_entry(
+                json!({ "operation": "dns:create", "resource": format!("record-{index}") }),
+            )
+            .await
+            .expect("human append");
+    }
+    for _ in 0..MAX_AUDIT_ENTRIES + 25 {
+        storage.audit_trail().record(AuditEntry::new(
+            AuditActor::Assistant,
+            "assistant:tool_call",
+            AuditOutcome::Succeeded,
+        ));
+    }
+
+    let entries = storage.get_audit_entries().await.expect("read audit log");
+    assert_eq!(entries.len(), MAX_AUDIT_ENTRIES);
+    let human: Vec<&Value> = entries
+        .iter()
+        .filter(|entry| AuditActor::of(entry) == AuditActor::User)
+        .collect();
+    assert_eq!(
+        human.len(),
+        50,
+        "every human entry survives: fifty is well inside the human reservation"
+    );
+    assert_eq!(
+        human[0]["resource"],
+        json!("record-0"),
+        "and they are the original entries, not a recent window of them"
+    );
+}
+
 #[test]
 fn legacy_preferences_json_without_propagation_keys_still_loads() {
     let legacy =

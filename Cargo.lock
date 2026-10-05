@@ -468,6 +468,7 @@ dependencies = [
  "bc-ai-tools",
  "bc-mcp",
  "bc-notify",
+ "bc-storage",
  "chrono",
  "serde",
  "serde_json",
@@ -602,6 +603,7 @@ dependencies = [
  "bc-domain-audit",
  "bc-notify",
  "bc-spf",
+ "bc-storage",
  "bc-topology",
  "futures-util",
  "hyper",
@@ -687,6 +689,7 @@ version = "0.1.0"
 dependencies = [
  "bc-crypto",
  "bc-notify",
+ "chrono",
  "keyring",
  "serde",
  "serde_json",

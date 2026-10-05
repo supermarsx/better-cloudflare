@@ -7,6 +7,7 @@ mod dns_mutation_validation;
 mod resource_limits;
 mod transport;
 
+pub mod audit;
 pub mod permissions;
 pub mod prompts;
 pub mod protocol;
@@ -16,6 +17,7 @@ pub mod tools;
 
 use std::sync::Arc;
 
+use bc_storage::{AuditActor, AuditEntry, AuditOutcome, AuditTrail};
 use rand::RngExt;
 use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
@@ -266,29 +268,76 @@ impl McpServerManager {
         Ok(())
     }
 
-    pub async fn stop(&self) -> Result<McpServerStatus, String> {
+    /// Stop the server, recording that the door was closed.
+    ///
+    /// The trail is an argument rather than something the manager was wired
+    /// with, so there is no state in which the control plane runs unrecorded.
+    pub async fn stop(&self, audit: &dyn AuditTrail) -> Result<McpServerStatus, String> {
+        let running = self.runtime.read().await.as_ref().map(|runtime| {
+            (
+                host_port(&runtime.host, runtime.port),
+                runtime.task_handle.is_finished(),
+            )
+        });
         self.stop_internal().await?;
+        if let Some((address, _)) = running {
+            audit.record(
+                AuditEntry::new(
+                    AuditActor::User,
+                    audit::MCP_SERVER_STOP_OPERATION,
+                    AuditOutcome::Succeeded,
+                )
+                .resource(&address),
+            );
+        }
         Ok(self.get_status().await)
     }
 
+    /// Replace the tools MCP clients and the assistant may reach.
+    ///
+    /// Recorded as a user action: this is the setting that decides what every
+    /// later tool call is allowed to do, so a trail that showed the calls but
+    /// not this would answer "what was done" without answering "how was it
+    /// allowed". Counts, not names — fifty-four tool names would not fit one
+    /// entry, and the count of tools that can *change* something is what a
+    /// reader is actually checking.
     pub async fn set_enabled_tools(
         &self,
         enabled_tools: Vec<String>,
+        audit: &dyn AuditTrail,
     ) -> Result<McpServerStatus, String> {
+        let previous = self.grants.snapshot().await.len();
         // One write reaches the running transport and the stored configuration
         // alike, because they read the same cell.
         self.grants
             .replace(sanitize_enabled_tools(&enabled_tools))
             .await;
+        let grants = self.grants.snapshot().await;
+        audit.record(
+            AuditEntry::new(
+                AuditActor::User,
+                audit::MCP_GRANTS_CHANGED_OPERATION,
+                AuditOutcome::Succeeded,
+            )
+            .detail("granted_tool_count", grants.len() as u64)
+            .detail("previous_tool_count", previous as u64)
+            .detail("mutating_tool_count", mutating_grant_count(&grants) as u64),
+        );
         Ok(self.get_status().await)
     }
 
+    /// Start the server, recording that the door was opened and how wide.
+    ///
+    /// Only a successful start is recorded: a start that failed to bind did
+    /// nothing, and a trail of what was done has nothing to say about it. The
+    /// bearer token is never recorded, here or anywhere.
     pub async fn start(
         &self,
         host: Option<String>,
         port: Option<u16>,
         enabled_tools: Option<Vec<String>>,
         auth_token: Option<String>,
+        audit: Arc<dyn AuditTrail>,
     ) -> Result<McpServerStatus, String> {
         self.stop_internal().await?;
 
@@ -324,6 +373,7 @@ impl McpServerManager {
             actual_port,
             shutdown.clone(),
             policy,
+            Arc::clone(&audit),
         );
         let app = transport::router(state);
         let task_shutdown = shutdown.clone();
@@ -340,6 +390,7 @@ impl McpServerManager {
         *self.config_host.write().await = host.clone();
         *self.config_port.write().await = actual_port;
         *self.config_auth_token.write().await = effective_token;
+        let address = host_port(&host, actual_port);
         *self.runtime.write().await = Some(RunningMcpServer {
             host,
             port: actual_port,
@@ -347,13 +398,44 @@ impl McpServerManager {
             shutdown,
             task_handle,
         });
+        let grants = self.grants.snapshot().await;
+        audit.record(
+            AuditEntry::new(
+                AuditActor::User,
+                audit::MCP_SERVER_START_OPERATION,
+                AuditOutcome::Succeeded,
+            )
+            .resource(&address)
+            .detail("granted_tool_count", grants.len() as u64)
+            .detail("mutating_tool_count", mutating_grant_count(&grants) as u64),
+        );
         Ok(self.get_status().await)
     }
 }
 
+/// Granted tools that can change something, by the registry's effect tier.
+fn mutating_grant_count(grants: &PermissionGrantSet) -> usize {
+    permissions::permission_registry()
+        .iter()
+        .filter(|permission| grants.allows(permission))
+        .filter(|permission| {
+            matches!(
+                permission.effect,
+                permissions::PermissionEffect::Write | permissions::PermissionEffect::Destructive
+            )
+        })
+        .count()
+}
+
 #[cfg(test)]
 mod tests {
+    use bc_storage::RecordingAuditTrail;
+
     use super::*;
+
+    fn trail() -> Arc<RecordingAuditTrail> {
+        Arc::new(RecordingAuditTrail::default())
+    }
 
     fn reserve_local_port() -> u16 {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -409,8 +491,9 @@ mod tests {
             "nothing is granted until the user enables something"
         );
 
+        let audit = trail();
         manager
-            .set_enabled_tools(vec!["dns_validate_record".to_string()])
+            .set_enabled_tools(vec!["dns_validate_record".to_string()], audit.as_ref())
             .await
             .unwrap();
         assert!(handle
@@ -420,7 +503,13 @@ mod tests {
 
         let port = reserve_local_port();
         manager
-            .start(None, Some(port), None, Some("test-token".to_string()))
+            .start(
+                None,
+                Some(port),
+                None,
+                Some("test-token".to_string()),
+                audit.clone(),
+            )
             .await
             .unwrap();
         assert!(handle
@@ -428,7 +517,7 @@ mod tests {
             .await
             .allows_id("bc.mcp.v1.dns.validate_record"));
 
-        manager.stop().await.unwrap();
+        manager.stop(audit.as_ref()).await.unwrap();
         assert!(
             handle
                 .snapshot()
@@ -441,6 +530,7 @@ mod tests {
     #[tokio::test]
     async fn explicit_empty_grants_survive_start_stop_and_restart() {
         let manager = McpServerManager::default();
+        let audit = trail();
         let port = reserve_local_port();
         let started = manager
             .start(
@@ -448,22 +538,23 @@ mod tests {
                 Some(port),
                 Some(Vec::new()),
                 Some("test-token".to_string()),
+                audit.clone(),
             )
             .await
             .unwrap();
         assert!(started.enabled_tools.is_empty());
 
         manager
-            .set_enabled_tools(vec!["dns_validate_record".to_string()])
+            .set_enabled_tools(vec!["dns_validate_record".to_string()], audit.as_ref())
             .await
             .unwrap();
         assert!(manager
-            .set_enabled_tools(Vec::new())
+            .set_enabled_tools(Vec::new(), audit.as_ref())
             .await
             .unwrap()
             .enabled_tools
             .is_empty());
-        manager.stop().await.unwrap();
+        manager.stop(audit.as_ref()).await.unwrap();
 
         let restarted = manager
             .start(
@@ -471,10 +562,97 @@ mod tests {
                 Some(port),
                 None,
                 Some("replacement-token".to_string()),
+                audit.clone(),
             )
             .await
             .unwrap();
         assert!(restarted.enabled_tools.is_empty());
-        manager.stop().await.unwrap();
+        manager.stop(audit.as_ref()).await.unwrap();
+    }
+
+    /// The control plane is the half of the trail that explains the other
+    /// half: these are the events that decide what every later tool call is
+    /// allowed to do.
+    #[tokio::test]
+    async fn the_server_lifecycle_and_permission_edits_are_recorded() {
+        let manager = McpServerManager::default();
+        let audit = trail();
+        let port = reserve_local_port();
+
+        manager
+            .set_enabled_tools(
+                vec![
+                    "dns_validate_record".to_string(),
+                    "cf_delete_dns_record".to_string(),
+                ],
+                audit.as_ref(),
+            )
+            .await
+            .unwrap();
+        manager
+            .start(
+                None,
+                Some(port),
+                None,
+                Some("test-token".to_string()),
+                audit.clone(),
+            )
+            .await
+            .unwrap();
+        manager.stop(audit.as_ref()).await.unwrap();
+
+        assert_eq!(
+            audit.operations(),
+            vec![
+                "mcp:grants_changed".to_string(),
+                "mcp:server_start".to_string(),
+                "mcp:server_stop".to_string(),
+            ]
+        );
+        let entries = audit.entries();
+        assert_eq!(entries[0]["actor"], serde_json::json!("user"));
+        assert_eq!(entries[0]["granted_tool_count"], serde_json::json!(2));
+        assert_eq!(
+            entries[0]["mutating_tool_count"],
+            serde_json::json!(1),
+            "one of the two granted tools can change something"
+        );
+        assert_eq!(
+            entries[1]["resource"],
+            serde_json::json!(format!("127.0.0.1:{port}")),
+            "the start entry names the address that was opened"
+        );
+        for entry in &entries {
+            assert!(
+                !entry.to_string().contains("test-token"),
+                "the bearer token must never reach the trail: {entry}"
+            );
+        }
+    }
+
+    /// A start that never bound did nothing, so it is not in a record of what
+    /// was done — and it must not leave a stop entry either.
+    #[tokio::test]
+    async fn a_failed_start_records_nothing() {
+        let manager = McpServerManager::default();
+        let audit = trail();
+        let blocker = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let taken = blocker.local_addr().unwrap().port();
+
+        assert!(manager
+            .start(
+                None,
+                Some(taken),
+                None,
+                Some("test-token".to_string()),
+                audit.clone(),
+            )
+            .await
+            .is_err());
+        assert!(audit.is_empty(), "recorded: {:?}", audit.operations());
+
+        // And stopping a server that was never running records nothing.
+        manager.stop(audit.as_ref()).await.unwrap();
+        assert!(audit.is_empty(), "recorded: {:?}", audit.operations());
     }
 }

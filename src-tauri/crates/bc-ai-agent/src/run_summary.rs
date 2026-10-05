@@ -48,10 +48,11 @@
 //! One record per conversation, in memory only, like plans and conversations.
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::sync::{Arc, OnceLock};
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{json, Value};
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
@@ -60,11 +61,15 @@ use bc_ai_provider::ToolDefinition;
 use bc_ai_tools::executor::ExecutionResult;
 use bc_ai_tools::permissions::RefusalSource;
 use bc_ai_tools::safety::mutates;
+use bc_mcp::audit::{
+    tool_call_entry, DenialReason, FailureKind, ToolCallVerdict, ASSISTANT_TOOL_CALL_OPERATION,
+};
+use bc_storage::{AuditActor, AuditEntry, AuditOutcome, AuditTrail};
 
 use crate::error::AgentError;
 use crate::plan::{
-    bounded_excerpt, AiPlan, AiPlanStatus, AiPlanStepStatus, MAX_PLAN_STEPS, MAX_PLAN_TITLE_BYTES,
-    MAX_RETAINED_PLANS, MAX_RETAINED_PLAN_BYTES,
+    bounded_excerpt, AiPlan, AiPlanStatus, AiPlanStep, AiPlanStepStatus, MAX_PLAN_STEPS,
+    MAX_PLAN_TITLE_BYTES, MAX_RETAINED_PLANS, MAX_RETAINED_PLAN_BYTES,
 };
 
 // ─── Bounds ────────────────────────────────────────────────────────────────
@@ -135,6 +140,9 @@ const _: () = assert!(
 
 /// The model-facing tool that attaches prose to a run summary.
 pub const RUN_NARRATE_TOOL: &str = "run_narrate";
+
+/// Audit-trail operation for the user approving a plan.
+pub const ASSISTANT_PLAN_APPROVED_OPERATION: &str = "assistant:plan_approved";
 
 /// What the model is told every time it narrates, so it cannot come to
 /// believe the narrative is the record.
@@ -394,6 +402,62 @@ fn observe(tool: &str, result: &ExecutionResult) -> (AiRunToolOutcome, bool, Opt
         // so nothing was dispatched. Unlike the plan path, the variant says
         // so outright.
         ExecutionResult::Rejected(_) => (AiRunToolOutcome::Failed, false, None),
+    }
+}
+
+/// How a free-turn dispatch is filed in the audit trail.
+///
+/// Reads the executor's own variant, like [`observe`] above, and for the same
+/// reason. `None` for a call waiting on the user: a trail is a record of what
+/// was done, and an unapproved call has not been done.
+fn trail_verdict(result: &ExecutionResult) -> Option<ToolCallVerdict> {
+    match result {
+        ExecutionResult::Success(_) => Some(ToolCallVerdict::Succeeded),
+        ExecutionResult::Error(_) => Some(ToolCallVerdict::Failed(FailureKind::ToolError)),
+        ExecutionResult::Denied { source, .. } => {
+            Some(ToolCallVerdict::Denied(denial_reason(*source)))
+        }
+        ExecutionResult::NeedsApproval { .. } => None,
+        // A local bound refused the call before either permission layer, so
+        // nothing was dispatched. The trail files it as a refusal, which the
+        // executor's variant says outright.
+        ExecutionResult::Rejected(_) => {
+            Some(ToolCallVerdict::Denied(DenialReason::LocalSafetyBounds))
+        }
+    }
+}
+
+const fn denial_reason(source: RefusalSource) -> DenialReason {
+    match source {
+        RefusalSource::AssistantPolicy => DenialReason::AssistantPolicy,
+        RefusalSource::McpGrants => DenialReason::McpGrants,
+    }
+}
+
+/// How a settled plan step is filed in the audit trail.
+///
+/// `None` for a step that did nothing: still pending, waiting for approval, or
+/// skipped because it names no tool and is the user's to carry out.
+fn step_trail_verdict(step: &AiPlanStep) -> Option<ToolCallVerdict> {
+    match step.status {
+        AiPlanStepStatus::Done => Some(ToolCallVerdict::Succeeded),
+        // `failed` covers a handler error, a cancellation and a deadline, and
+        // the step's status cannot tell them apart. What it can say is that
+        // the call left the application, so a write may have landed.
+        AiPlanStepStatus::Failed | AiPlanStepStatus::Running => {
+            Some(ToolCallVerdict::Failed(FailureKind::Unreported))
+        }
+        // A blocked step always carries the refusal that blocked it, set by
+        // the one function that writes the status. Without one there is no
+        // layer to name, and naming the wrong one is worse than saying
+        // nothing.
+        AiPlanStepStatus::Blocked => step
+            .refusal
+            .as_ref()
+            .map(|refusal| ToolCallVerdict::Denied(denial_reason(refusal.source))),
+        AiPlanStepStatus::Pending
+        | AiPlanStepStatus::AwaitingApproval
+        | AiPlanStepStatus::Skipped => None,
     }
 }
 
@@ -745,9 +809,60 @@ impl RunRecord {
 #[derive(Default)]
 pub struct RunLedger {
     records: RwLock<HashMap<Uuid, RunRecord>>,
+    /// The application's audit trail, if the application has attached one.
+    ///
+    /// The ledger and the trail answer two different questions and both are
+    /// needed. The ledger is in memory, conversation-scoped and bounded, and
+    /// answers "what did you do in *this chat*" while the chat is open. The
+    /// trail is on disk, process-wide and ordered against the user's own
+    /// edits, and answers "what has been done to my zones, and by what" after
+    /// the chat is gone. So every settled call is written to both.
+    ///
+    /// A [`OnceLock`]: there is one audit log per process, the first attach
+    /// wins, and reads are lock-free on the dispatch path. An unattached
+    /// ledger records nothing rather than failing — the trail must never be a
+    /// new way for a tool call to break.
+    audit: OnceLock<Arc<dyn AuditTrail>>,
 }
 
 impl RunLedger {
+    /// Point this ledger at the application's audit trail.
+    ///
+    /// Idempotent, and the first call wins. Called from the commands that can
+    /// dispatch a tool, because the manager is constructed before the
+    /// application's storage exists.
+    pub fn attach_trail(&self, trail: Arc<dyn AuditTrail>) {
+        let _ = self.audit.set(trail);
+    }
+
+    fn record_to_trail(&self, entry: AuditEntry) {
+        if let Some(trail) = self.audit.get() {
+            trail.record(entry);
+        }
+    }
+
+    /// Write one settled tool call to the trail, under the conversation it
+    /// came from and, for a plan step, the step that ran it.
+    fn record_tool_call(
+        &self,
+        conversation_id: Uuid,
+        tool: &str,
+        verdict: ToolCallVerdict,
+        arguments: &Value,
+        step_index: Option<usize>,
+    ) {
+        let entry = tool_call_entry(
+            AuditActor::Assistant,
+            ASSISTANT_TOOL_CALL_OPERATION,
+            tool,
+            verdict,
+            arguments,
+        )
+        .detail("conversation_id", conversation_id.to_string())
+        .optional_detail("step_index", step_index.map(|index| index as u64));
+        self.record_to_trail(entry);
+    }
+
     /// The harness's account of this conversation's tool use, if it has run
     /// anything.
     pub async fn summary(&self, conversation_id: Uuid) -> Option<AiRunSummary> {
@@ -776,6 +891,29 @@ impl RunLedger {
             .or_insert_with(RunRecord::opened)
             .attach_plan(plan);
         evict_oldest(&mut records, plan.conversation_id);
+        drop(records);
+
+        // Approving a plan is the user authorising a batch of steps to run,
+        // which is the assistant equivalent of enabling an MCP tool: one
+        // decision that explains every step entry that follows. Recorded as a
+        // user action, with counts rather than the model-written title — a
+        // security record is not a place to put model prose.
+        let mutating_steps = plan
+            .steps
+            .iter()
+            .filter(|step| step.tool.as_deref().is_some_and(mutates))
+            .count();
+        self.record_to_trail(
+            AuditEntry::new(
+                AuditActor::User,
+                ASSISTANT_PLAN_APPROVED_OPERATION,
+                AuditOutcome::Succeeded,
+            )
+            .resource(&plan.id.to_string())
+            .detail("conversation_id", plan.conversation_id.to_string())
+            .detail("step_count", plan.steps.len() as u64)
+            .detail("mutating_step_count", mutating_steps as u64),
+        );
     }
 
     /// Record how one plan step settled.
@@ -793,6 +931,24 @@ impl RunLedger {
         }
         record.record_step(plan, step_index);
         evict_oldest(&mut records, plan.conversation_id);
+        drop(records);
+
+        // The step's own arguments are where the zone and record it touched
+        // come from, so the trail entry for a plan step is as specific as one
+        // for a free-turn call.
+        let Some(step) = plan.steps.iter().find(|step| step.index == step_index) else {
+            return;
+        };
+        let (Some(tool), Some(verdict)) = (step.tool.as_deref(), step_trail_verdict(step)) else {
+            return;
+        };
+        self.record_tool_call(
+            plan.conversation_id,
+            tool,
+            verdict,
+            step.arguments.as_ref().unwrap_or(&Value::Null),
+            Some(step_index),
+        );
     }
 
     /// Forget the plan half of a conversation's record, keeping what it ran
@@ -841,28 +997,54 @@ impl RunLedger {
         attempt
     }
 
-    /// Replace a provisional free-turn entry with the executor's verdict.
+    /// Replace a provisional free-turn entry with the executor's verdict, and
+    /// write the settled call to the audit trail.
+    ///
+    /// `arguments` are the call's own, and are read only for the handful of
+    /// identifying fields `bc_mcp::audit` allowlists — never stored, never
+    /// copied into the trail wholesale.
     pub async fn close_turn_call(
         &self,
         conversation_id: Uuid,
         attempt: u64,
         tool: &str,
+        arguments: &Value,
         result: &ExecutionResult,
     ) {
         let mut records = self.records.write().await;
         if let Some(record) = records.get_mut(&conversation_id) {
             record.close_attempt(attempt, tool, result);
         }
+        drop(records);
+        if let Some(verdict) = trail_verdict(result) {
+            self.record_tool_call(conversation_id, tool, verdict, arguments, None);
+        }
     }
 
     /// Close a free-turn entry for a call that was cancelled, timed out, or
     /// whose conversation closed under it. See
     /// [`RunRecord::abandon_attempt`].
-    pub async fn abandon_turn_call(&self, conversation_id: Uuid, attempt: u64, tool: &str) {
+    pub async fn abandon_turn_call(
+        &self,
+        conversation_id: Uuid,
+        attempt: u64,
+        tool: &str,
+        arguments: &Value,
+    ) {
         let mut records = self.records.write().await;
         if let Some(record) = records.get_mut(&conversation_id) {
             record.abandon_attempt(attempt, tool);
         }
+        drop(records);
+        // The call left the application and stopped being observable, which
+        // is not the same as not having happened.
+        self.record_tool_call(
+            conversation_id,
+            tool,
+            ToolCallVerdict::Failed(FailureKind::Cancelled),
+            arguments,
+            None,
+        );
     }
 
     /// Attach the model's prose, and return the summary it now reads as.
@@ -1025,6 +1207,207 @@ mod tests {
                 is_error: true,
             },
         }
+    }
+
+    /// A ledger with the trail it records into.
+    fn audited_ledger() -> (RunLedger, Arc<bc_storage::RecordingAuditTrail>) {
+        let trail = Arc::new(bc_storage::RecordingAuditTrail::default());
+        let ledger = RunLedger::default();
+        ledger.attach_trail(trail.clone());
+        (ledger, trail)
+    }
+
+    /// Arguments as credential-laden as a real Cloudflare tool call.
+    fn delete_arguments() -> Value {
+        json!({
+            "api_key": "cf-token-must-never-be-recorded",
+            "email": "person@example.com",
+            "zone_id": "zone-1",
+            "record_id": "record-1",
+        })
+    }
+
+    // ── Audit trail ─────────────────────────────────────────────────────
+
+    /// The ledger answers "what did you do in this chat" while the chat is
+    /// open. The trail has to answer "what has been done to my zones" after
+    /// the chat is gone, so every settled call goes to both.
+    #[tokio::test]
+    async fn a_settled_free_turn_call_reaches_the_trail_with_its_conversation() {
+        let (ledger, trail) = audited_ledger();
+        let conversation = Uuid::new_v4();
+
+        let attempt = ledger
+            .open_turn_call(conversation, "cf_delete_dns_record")
+            .await;
+        assert!(
+            trail.is_empty(),
+            "opening an attempt is not an action; only a settled call is"
+        );
+        ledger
+            .close_turn_call(
+                conversation,
+                attempt,
+                "cf_delete_dns_record",
+                &delete_arguments(),
+                &success(),
+            )
+            .await;
+
+        let entries = trail.entries();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0]["operation"], json!("assistant:tool_call"));
+        assert_eq!(entries[0]["actor"], json!("assistant"));
+        assert_eq!(entries[0]["outcome"], json!("succeeded"));
+        assert_eq!(entries[0]["resource"], json!("cf_delete_dns_record"));
+        assert_eq!(entries[0]["effect"], json!("destructive"));
+        assert_eq!(entries[0]["zone_id"], json!("zone-1"));
+        assert_eq!(entries[0]["record_id"], json!("record-1"));
+        assert_eq!(
+            entries[0]["conversation_id"],
+            json!(conversation.to_string()),
+            "an entry has to be traceable back to the chat that made it"
+        );
+        assert!(
+            entries[0]["step_index"].is_null(),
+            "a free-turn call has no step index, and must not invent one"
+        );
+        assert!(
+            !entries[0]
+                .to_string()
+                .contains("cf-token-must-never-be-recorded")
+                && !entries[0].to_string().contains("person@example.com"),
+            "the provider credential must never reach the trail: {}",
+            entries[0]
+        );
+    }
+
+    /// Both permission layers refuse, in two different places, and the user
+    /// needs to know which switch to look at.
+    #[tokio::test]
+    async fn each_refusal_reaches_the_trail_naming_the_layer_that_refused() {
+        let (ledger, trail) = audited_ledger();
+        let conversation = Uuid::new_v4();
+
+        for result in [
+            denied(),
+            ExecutionResult::Denied {
+                source: RefusalSource::McpGrants,
+                result: ToolResult {
+                    tool_call_id: "call-2".into(),
+                    content: "not granted".into(),
+                    is_error: true,
+                },
+            },
+            ExecutionResult::Rejected(bc_ai_tools::ToolExecutionError::InvalidInput {
+                field: "arguments",
+                message: "too large",
+            }),
+        ] {
+            let attempt = ledger
+                .open_turn_call(conversation, "cf_delete_dns_record")
+                .await;
+            ledger
+                .close_turn_call(
+                    conversation,
+                    attempt,
+                    "cf_delete_dns_record",
+                    &delete_arguments(),
+                    &result,
+                )
+                .await;
+        }
+
+        let reasons = trail
+            .entries()
+            .iter()
+            .map(|entry| entry["denied_by"].clone())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            reasons,
+            vec![
+                json!("assistant_policy"),
+                json!("mcp_grants"),
+                json!("local_safety_bounds"),
+            ]
+        );
+        for entry in trail.entries() {
+            assert_eq!(entry["outcome"], json!("denied"));
+        }
+    }
+
+    /// A call waiting on the user has not been done, so it is not yet part of
+    /// a record of what was done.
+    #[tokio::test]
+    async fn a_call_waiting_for_approval_is_not_in_the_trail_until_it_settles() {
+        let (ledger, trail) = audited_ledger();
+        let conversation = Uuid::new_v4();
+        let attempt = ledger
+            .open_turn_call(conversation, "cf_delete_dns_record")
+            .await;
+        ledger
+            .close_turn_call(
+                conversation,
+                attempt,
+                "cf_delete_dns_record",
+                &delete_arguments(),
+                &ExecutionResult::NeedsApproval {
+                    tool_call: bc_ai_provider::ToolCall {
+                        id: "call-1".into(),
+                        name: "cf_delete_dns_record".into(),
+                        arguments: delete_arguments(),
+                    },
+                    reason: "destructive".into(),
+                },
+            )
+            .await;
+        assert!(trail.is_empty(), "recorded: {:?}", trail.operations());
+    }
+
+    /// A call that stopped being observable may still have landed, and the
+    /// trail has to say so rather than going quiet.
+    #[tokio::test]
+    async fn an_abandoned_call_is_recorded_as_a_dispatch_that_may_have_landed() {
+        let (ledger, trail) = audited_ledger();
+        let conversation = Uuid::new_v4();
+        let attempt = ledger
+            .open_turn_call(conversation, "cf_create_dns_record")
+            .await;
+        ledger
+            .abandon_turn_call(
+                conversation,
+                attempt,
+                "cf_create_dns_record",
+                &delete_arguments(),
+            )
+            .await;
+
+        let entries = trail.entries();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0]["outcome"], json!("failed"));
+        assert_eq!(entries[0]["failure"], json!("cancelled"));
+    }
+
+    /// A ledger the application never attached a trail to still works. The
+    /// trail must never be a new way for a tool call to break.
+    #[tokio::test]
+    async fn an_unattached_ledger_still_keeps_its_own_record() {
+        let ledger = RunLedger::default();
+        let conversation = Uuid::new_v4();
+        let attempt = ledger
+            .open_turn_call(conversation, "cf_delete_dns_record")
+            .await;
+        ledger
+            .close_turn_call(
+                conversation,
+                attempt,
+                "cf_delete_dns_record",
+                &delete_arguments(),
+                &success(),
+            )
+            .await;
+        let summary = ledger.summary(conversation).await.expect("a summary");
+        assert_eq!(summary.mutating_tools_run, vec!["cf_delete_dns_record"]);
     }
 
     #[test]
@@ -1219,14 +1602,26 @@ mod tests {
             .open_turn_call(conversation, "cf_delete_dns_record")
             .await;
         ledger
-            .close_turn_call(conversation, attempt, "cf_delete_dns_record", &success())
+            .close_turn_call(
+                conversation,
+                attempt,
+                "cf_delete_dns_record",
+                &json!({}),
+                &success(),
+            )
             .await;
 
         // Push the delete out of the bounded window with reads.
         for _ in 0..MAX_RECORDED_TURN_CALLS + 4 {
             let attempt = ledger.open_turn_call(conversation, "dns_parse_spf").await;
             ledger
-                .close_turn_call(conversation, attempt, "dns_parse_spf", &success())
+                .close_turn_call(
+                    conversation,
+                    attempt,
+                    "dns_parse_spf",
+                    &json!({}),
+                    &success(),
+                )
                 .await;
         }
 
@@ -1271,7 +1666,13 @@ mod tests {
 
         // The gate turns out to have refused it, so the attempt is withdrawn.
         ledger
-            .close_turn_call(conversation, attempt, "cf_delete_dns_record", &denied())
+            .close_turn_call(
+                conversation,
+                attempt,
+                "cf_delete_dns_record",
+                &json!({}),
+                &denied(),
+            )
             .await;
         let settled = ledger.summary(conversation).await.expect("a summary");
         assert!(
@@ -1293,7 +1694,13 @@ mod tests {
             .open_turn_call(conversation, "cf_create_dns_record")
             .await;
         ledger
-            .close_turn_call(conversation, attempt, "cf_create_dns_record", &success())
+            .close_turn_call(
+                conversation,
+                attempt,
+                "cf_create_dns_record",
+                &json!({}),
+                &success(),
+            )
             .await;
 
         let summary = ledger.summary(conversation).await.expect("a summary");
@@ -1329,7 +1736,13 @@ mod tests {
 
         let attempt = ledger.open_turn_call(conversation, "dns_parse_spf").await;
         ledger
-            .close_turn_call(conversation, attempt, "dns_parse_spf", &success())
+            .close_turn_call(
+                conversation,
+                attempt,
+                "dns_parse_spf",
+                &json!({}),
+                &success(),
+            )
             .await;
         let narrated = ledger
             .narrate(conversation, "Parsed the SPF record.")
@@ -1349,7 +1762,13 @@ mod tests {
             let conversation = Uuid::new_v4();
             let attempt = ledger.open_turn_call(conversation, "dns_parse_spf").await;
             ledger
-                .close_turn_call(conversation, attempt, "dns_parse_spf", &success())
+                .close_turn_call(
+                    conversation,
+                    attempt,
+                    "dns_parse_spf",
+                    &json!({}),
+                    &success(),
+                )
                 .await;
         }
         assert!(ledger.count().await <= MAX_RETAINED_RUN_SUMMARIES);

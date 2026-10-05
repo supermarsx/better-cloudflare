@@ -99,6 +99,17 @@ impl Default for AgentManager {
 }
 
 impl AgentManager {
+    /// Point the run ledger at the application's audit trail, so every tool
+    /// call the assistant settles is written into the same record as the
+    /// user's own edits and the MCP server's.
+    ///
+    /// Idempotent, and the first call wins. The manager is built before the
+    /// application's storage is managed, so this is called from the commands
+    /// that can dispatch a tool rather than from the constructor.
+    pub fn attach_audit_trail(&self, trail: std::sync::Arc<dyn bc_storage::AuditTrail>) {
+        self.runs.attach_trail(trail);
+    }
+
     /// Build an agent governed by the application's live MCP grants.
     ///
     /// The handle is read-only: the agent observes what the user enabled in the
@@ -605,7 +616,13 @@ impl AgentManager {
         match &result {
             Ok(execution) => {
                 self.runs
-                    .close_turn_call(conversation_id, attempt, &pending.name, execution)
+                    .close_turn_call(
+                        conversation_id,
+                        attempt,
+                        &pending.name,
+                        &pending.arguments,
+                        execution,
+                    )
                     .await
             }
             // Cancelled, timed out, or the conversation closed. The call did
@@ -614,7 +631,7 @@ impl AgentManager {
             // because a write stopped being observable.
             Err(_) => {
                 self.runs
-                    .abandon_turn_call(conversation_id, attempt, &pending.name)
+                    .abandon_turn_call(conversation_id, attempt, &pending.name, &pending.arguments)
                     .await
             }
         }
@@ -1481,9 +1498,12 @@ mod tests {
             manager.registry.available_descriptors().len()
         );
 
-        mcp.set_enabled_tools(vec!["dns_parse_spf".to_string()])
-            .await
-            .expect("grants stored");
+        mcp.set_enabled_tools(
+            vec!["dns_parse_spf".to_string()],
+            &bc_storage::RecordingAuditTrail::default(),
+        )
+        .await
+        .expect("grants stored");
 
         let after = manager.tool_availability().await;
         assert!(after.dispatch_available);
@@ -2213,9 +2233,12 @@ mod tests {
             bc_ai_tools::permissions::RefusalSource::McpGrants
         );
 
-        mcp.set_enabled_tools(vec![PLAN_READ_TOOL.to_string()])
-            .await
-            .expect("grants stored");
+        mcp.set_enabled_tools(
+            vec![PLAN_READ_TOOL.to_string()],
+            &bc_storage::RecordingAuditTrail::default(),
+        )
+        .await
+        .expect("grants stored");
         let plan = manager.run_plan(conversation_id).await.expect("run again");
         assert_eq!(plan.steps[0].status, AiPlanStepStatus::Done);
         assert_eq!(plan.status, AiPlanStatus::Done);

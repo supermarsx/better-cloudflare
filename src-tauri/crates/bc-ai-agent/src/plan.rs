@@ -1802,9 +1802,12 @@ mod tests {
 
         // The user grants the tool after approving — exactly the window the
         // re-resolution exists for.
-        mcp.set_enabled_tools(vec![READ_TOOL.to_string()])
-            .await
-            .expect("grants stored");
+        mcp.set_enabled_tools(
+            vec![READ_TOOL.to_string()],
+            &bc_storage::RecordingAuditTrail::default(),
+        )
+        .await
+        .expect("grants stored");
 
         let dispatch = plans
             .begin_step(&executor, conversation_id, step_id, StepApproval::Required)
@@ -2771,6 +2774,145 @@ mod tests {
             .expect("approve")
     }
 
+    /// A plan step is the other way the assistant can change a zone, and the
+    /// trail has to describe it as specifically as a free-turn call: the step
+    /// it came from, and the zone and record its own arguments named.
+    #[tokio::test]
+    async fn plan_approval_and_every_settled_step_reach_the_audit_trail() {
+        let trail = Arc::new(bc_storage::RecordingAuditTrail::default());
+        let ledger = Arc::new(RunLedger::default());
+        ledger.attach_trail(trail.clone());
+        let plans = PlanStore::with_ledger(ledger);
+        let conversation_id = Uuid::new_v4();
+
+        // Only the read tool is granted, so the write step is refused by the
+        // application layer rather than dispatched anywhere.
+        let executor = executor(
+            AiPermissionMode::Autonomous,
+            McpGrantHandle::new(McpGrantSet::from_requested(&[READ_TOOL.to_string()])),
+        )
+        .await;
+        let write_step = AiPlanStepInput {
+            title: "drop the stale record".into(),
+            detail: "because the user asked".into(),
+            tool: Some(WRITE_TOOL.to_string()),
+            arguments: Some(json!({
+                "api_key": "cf-token-must-never-be-recorded",
+                "zone_id": "zone-1",
+                "record_id": "record-1",
+            })),
+        };
+        plans
+            .propose(
+                &executor,
+                conversation_id,
+                proposal(vec![step("parse", Some(READ_TOOL)), write_step]),
+            )
+            .await
+            .expect("draft");
+        let plan = plans
+            .approve(&executor, conversation_id)
+            .await
+            .expect("approve");
+
+        // Approval is the user authorising the batch, and is recorded as such.
+        let approval = &trail.entries()[0];
+        assert_eq!(approval["operation"], json!("assistant:plan_approved"));
+        assert_eq!(
+            approval["actor"],
+            json!("user"),
+            "the user approved the plan; the assistant only proposed it"
+        );
+        assert_eq!(approval["step_count"], json!(2));
+        assert_eq!(approval["mutating_step_count"], json!(1));
+        assert!(
+            !approval.to_string().contains("Tidy the zone"),
+            "the plan's title is model prose and does not belong in a security record: {approval}"
+        );
+
+        for step in &plan.steps {
+            run_step(&executor, &plans, conversation_id, step.id).await;
+        }
+
+        let entries = trail.entries();
+        assert_eq!(
+            trail.operations(),
+            vec![
+                "assistant:plan_approved".to_string(),
+                "assistant:tool_call".to_string(),
+                "assistant:tool_call".to_string(),
+            ]
+        );
+        assert_eq!(entries[1]["resource"], json!(READ_TOOL));
+        assert_eq!(entries[1]["outcome"], json!("succeeded"));
+        assert_eq!(entries[1]["step_index"], json!(0));
+
+        assert_eq!(entries[2]["resource"], json!(WRITE_TOOL));
+        assert_eq!(entries[2]["outcome"], json!("denied"));
+        assert_eq!(entries[2]["denied_by"], json!("mcp_grants"));
+        assert_eq!(entries[2]["step_index"], json!(1));
+        assert_eq!(
+            entries[2]["zone_id"],
+            json!("zone-1"),
+            "a refused step still records what it tried to touch"
+        );
+        assert_eq!(entries[2]["record_id"], json!("record-1"));
+        for entry in &entries {
+            assert!(
+                !entry
+                    .to_string()
+                    .contains("cf-token-must-never-be-recorded"),
+                "a step's arguments must not carry a credential into the trail: {entry}"
+            );
+        }
+    }
+
+    /// A step that names no tool is the user's to carry out, and a step still
+    /// waiting on approval has not run. Neither is a line in a record of what
+    /// was done — and keeping them out is also what stops a long plan from
+    /// filling the trail with steps that did nothing.
+    #[tokio::test]
+    async fn steps_that_ran_nothing_are_not_in_the_trail() {
+        let trail = Arc::new(bc_storage::RecordingAuditTrail::default());
+        let ledger = Arc::new(RunLedger::default());
+        ledger.attach_trail(trail.clone());
+        let plans = PlanStore::with_ledger(ledger);
+        let conversation_id = Uuid::new_v4();
+
+        // `Ask` mode asks before a write, so the write step settles as
+        // `awaitingApproval` rather than running.
+        let executor = executor(
+            AiPermissionMode::Ask,
+            McpGrantHandle::new(McpGrantSet::all()),
+        )
+        .await;
+        plans
+            .propose(
+                &executor,
+                conversation_id,
+                proposal(vec![
+                    step("tell them", None),
+                    step("delete it", Some(WRITE_TOOL)),
+                ]),
+            )
+            .await
+            .expect("draft");
+        let plan = plans
+            .approve(&executor, conversation_id)
+            .await
+            .expect("approve");
+        for step in &plan.steps {
+            run_step(&executor, &plans, conversation_id, step.id).await;
+        }
+
+        assert_eq!(
+            trail.operations(),
+            vec!["assistant:plan_approved".to_string()],
+            "only the approval is an action: {:?}",
+            trail.entries()
+        );
+    }
+
     #[tokio::test]
     async fn a_run_summary_is_derived_from_what_the_harness_dispatched() {
         let executor = open_executor().await;
@@ -3044,6 +3186,7 @@ mod tests {
                 conversation_id,
                 attempt,
                 WRITE_TOOL,
+                &json!({}),
                 &bc_ai_tools::executor::ExecutionResult::Success(ToolResult {
                     tool_call_id: "call-1".into(),
                     content: "{}".into(),

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Dialog,
   DialogContent,
@@ -15,7 +15,60 @@ type AuditEntry = {
   timestamp?: string;
   operation?: string;
   resource?: string;
+  actor?: string;
+  outcome?: string;
   [key: string]: unknown;
+};
+
+/**
+ * What performed an action, matching `bc_storage::audit::AuditActor`.
+ *
+ * The backend writes these; the renderer only reads them, so the list is a
+ * closed set and anything outside it is treated as the one value the backend
+ * also falls back to.
+ */
+type Actor = "user" | "mcp_client" | "assistant";
+type Outcome = "succeeded" | "denied" | "failed";
+
+const ACTOR_LABELS: Record<Actor, string> = {
+  user: "You",
+  mcp_client: "MCP client",
+  assistant: "Assistant",
+};
+
+const OUTCOME_LABELS: Record<Outcome, string> = {
+  succeeded: "Succeeded",
+  denied: "Denied",
+  failed: "Failed",
+};
+
+const ACTORS: Actor[] = ["user", "mcp_client", "assistant"];
+const OUTCOMES: Outcome[] = ["succeeded", "denied", "failed"];
+
+/**
+ * The actor an entry names, defaulting to `user`.
+ *
+ * Mirrors `AuditActor::of` deliberately: entries written before the trail
+ * carried an actor have no field to read, and every writer that existed then
+ * was a person acting in the app. An unrecognised value reads the same way
+ * rather than being hidden from every filter.
+ */
+function actorOf(entry: AuditEntry): Actor {
+  const actor = entry.actor;
+  return actor === "mcp_client" || actor === "assistant" ? actor : "user";
+}
+
+function outcomeOf(entry: AuditEntry): Outcome | undefined {
+  const outcome = entry.outcome;
+  return outcome === "succeeded" || outcome === "denied" || outcome === "failed"
+    ? outcome
+    : undefined;
+}
+
+const OUTCOME_CLASSES: Record<Outcome, string> = {
+  succeeded: "text-muted-foreground",
+  denied: "text-destructive",
+  failed: "text-destructive",
 };
 
 interface AuditLogDialogProps {
@@ -27,6 +80,8 @@ export function AuditLogDialog({ open, onOpenChange }: AuditLogDialogProps) {
   const [entries, setEntries] = useState<AuditEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [actorFilter, setActorFilter] = useState<Actor | null>(null);
+  const [outcomeFilter, setOutcomeFilter] = useState<Outcome | null>(null);
   const mountedRef = useRef(false);
   const loadGenerationRef = useRef(0);
 
@@ -98,13 +153,52 @@ export function AuditLogDialog({ open, onOpenChange }: AuditLogDialogProps) {
     };
   }, [open]);
 
+  // Counts come from the whole log, not from the visible slice, so a filter
+  // button still says how much it would show after another filter narrowed
+  // the list.
+  const actorCounts = useMemo(() => {
+    const counts: Record<Actor, number> = {
+      user: 0,
+      mcp_client: 0,
+      assistant: 0,
+    };
+    for (const entry of entries) counts[actorOf(entry)] += 1;
+    return counts;
+  }, [entries]);
+
+  const outcomeCounts = useMemo(() => {
+    const counts: Record<Outcome, number> = {
+      succeeded: 0,
+      denied: 0,
+      failed: 0,
+    };
+    for (const entry of entries) {
+      const outcome = outcomeOf(entry);
+      if (outcome) counts[outcome] += 1;
+    }
+    return counts;
+  }, [entries]);
+
+  const visible = useMemo(
+    () =>
+      entries.filter(
+        (entry) =>
+          (actorFilter === null || actorOf(entry) === actorFilter) &&
+          (outcomeFilter === null || outcomeOf(entry) === outcomeFilter),
+      ),
+    [entries, actorFilter, outcomeFilter],
+  );
+
+  const filtered = actorFilter !== null || outcomeFilter !== null;
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-2xl">
         <DialogHeader>
           <DialogTitle>Audit Log</DialogTitle>
           <DialogDescription>
-            Recent sensitive actions captured by the desktop backend.
+            What has been done through this app — your own changes, tool calls
+            from MCP clients, and the assistant&apos;s, in one record.
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-3">
@@ -116,33 +210,119 @@ export function AuditLogDialog({ open, onOpenChange }: AuditLogDialogProps) {
             </div>
           )}
           {!loading && !error && entries.length > 0 && (
-            <div className="max-h-[420px] scrollbar-themed overflow-auto space-y-2">
-              {entries.map((entry, index) => (
-                <div
-                  className="rounded-md border p-3 text-sm"
-                  key={`${entry.timestamp ?? "entry"}-${index}`}
+            <>
+              <div
+                aria-label="Filter by actor"
+                className="flex flex-wrap gap-2"
+                role="group"
+              >
+                <Button
+                  aria-pressed={actorFilter === null}
+                  onClick={() => setActorFilter(null)}
+                  size="sm"
+                  variant={actorFilter === null ? "secondary" : "ghost"}
                 >
-                  <div className="font-medium">
-                    {entry.operation ?? "operation"}
-                  </div>
-                  <div className="text-muted-foreground">
-                    {entry.timestamp ?? "unknown time"}
-                  </div>
-                  {entry.resource && (
-                    <div className="font-mono text-xs mt-1">
-                      {String(entry.resource)}
+                  {`Everything (${entries.length})`}
+                </Button>
+                {ACTORS.map((actor) => (
+                  <Button
+                    aria-pressed={actorFilter === actor}
+                    key={actor}
+                    onClick={() =>
+                      setActorFilter(actorFilter === actor ? null : actor)
+                    }
+                    size="sm"
+                    variant={actorFilter === actor ? "secondary" : "ghost"}
+                  >
+                    {`${ACTOR_LABELS[actor]} (${actorCounts[actor]})`}
+                  </Button>
+                ))}
+              </div>
+              <div
+                aria-label="Filter by outcome"
+                className="flex flex-wrap gap-2"
+                role="group"
+              >
+                <Button
+                  aria-pressed={outcomeFilter === null}
+                  onClick={() => setOutcomeFilter(null)}
+                  size="sm"
+                  variant={outcomeFilter === null ? "secondary" : "ghost"}
+                >
+                  Any outcome
+                </Button>
+                {OUTCOMES.map((outcome) => (
+                  <Button
+                    aria-pressed={outcomeFilter === outcome}
+                    key={outcome}
+                    onClick={() =>
+                      setOutcomeFilter(
+                        outcomeFilter === outcome ? null : outcome,
+                      )
+                    }
+                    size="sm"
+                    variant={outcomeFilter === outcome ? "secondary" : "ghost"}
+                  >
+                    {`${OUTCOME_LABELS[outcome]} (${outcomeCounts[outcome]})`}
+                  </Button>
+                ))}
+              </div>
+              <div className="text-xs text-muted-foreground">
+                {filtered
+                  ? `Showing ${visible.length} of ${entries.length} entries. Export writes the whole log.`
+                  : `${entries.length} entries.`}
+              </div>
+            </>
+          )}
+          {!loading && !error && entries.length > 0 && visible.length === 0 && (
+            <div className="text-sm text-muted-foreground">
+              No entries match this filter.
+            </div>
+          )}
+          {!loading && !error && visible.length > 0 && (
+            <div className="max-h-[420px] scrollbar-themed overflow-auto space-y-2">
+              {visible.map((entry, index) => {
+                const actor = actorOf(entry);
+                const outcome = outcomeOf(entry);
+                return (
+                  <div
+                    className="rounded-md border p-3 text-sm"
+                    key={`${entry.timestamp ?? "entry"}-${index}`}
+                  >
+                    <div className="flex items-baseline justify-between gap-2">
+                      <div className="font-medium">
+                        {entry.operation ?? "operation"}
+                      </div>
+                      <div className="text-xs text-muted-foreground shrink-0">
+                        {ACTOR_LABELS[actor]}
+                      </div>
                     </div>
-                  )}
-                  <details className="mt-2">
-                    <summary className="cursor-pointer text-xs text-muted-foreground">
-                      Details
-                    </summary>
-                    <pre className="text-xs whitespace-pre-wrap mt-2">
-                      {JSON.stringify(entry, null, 2)}
-                    </pre>
-                  </details>
-                </div>
-              ))}
+                    <div className="text-muted-foreground">
+                      {entry.timestamp ?? "unknown time"}
+                      {outcome && (
+                        <span
+                          className={`ml-2 text-xs ${OUTCOME_CLASSES[outcome]}`}
+                        >
+                          {OUTCOME_LABELS[outcome]}
+                        </span>
+                      )}
+                    </div>
+                    {entry.resource && (
+                      <div className="font-mono text-xs mt-1">
+                        {String(entry.resource)}
+                      </div>
+                    )}
+                    <details className="mt-2">
+                      <summary className="cursor-pointer text-xs text-muted-foreground">
+                        Details
+                      </summary>
+                      <pre className="text-xs whitespace-pre-wrap mt-2">
+                        {JSON.stringify(entry, null, 2)}
+                      </pre>
+                    </details>
+                  </div>
+                );
+              })}
             </div>
           )}
           <div className="flex items-center justify-between">

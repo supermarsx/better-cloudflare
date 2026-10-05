@@ -26,6 +26,25 @@ use bc_ai_tools::permissions::{
 use bc_ai_tools::ToolExecutionError;
 use bc_error::sanitize_error_text;
 
+use crate::storage::Storage;
+
+/// Point the agent's run ledger at the application audit trail.
+///
+/// Called at the top of every command that can settle a tool call, because
+/// the manager is built in `main` before the managed [`Storage`] exists and so
+/// cannot be constructed around the trail. Attaching is idempotent, lock-free
+/// after the first call, and does not reach storage — it stores one cloned
+/// handle — so paying for it per command is cheaper than any way of
+/// remembering whether it has already been done.
+///
+/// Every path on which the assistant can dispatch a tool starts at one of
+/// these commands. The test
+/// `every_command_that_can_settle_a_tool_call_attaches_the_audit_trail` pins
+/// that list against the commands that actually reach the executor.
+fn attach_trail(agent: &AgentManager, storage: &Storage) {
+    agent.attach_audit_trail(storage.audit_trail());
+}
+
 /// Every AI command, checked against the invoke handler by a test in
 /// `main.rs`. A command the renderer is written against but that was never
 /// registered fails only at runtime, so the list is asserted at build time.
@@ -805,10 +824,12 @@ async fn start_message_inner(
 pub async fn ai_send_message(
     app: AppHandle,
     agent: State<'_, AgentManager>,
+    storage: State<'_, Storage>,
     conversation_id: Uuid,
     text: String,
     provider_id: Option<String>,
 ) -> Result<Uuid, AiCommandError> {
+    attach_trail(&agent, &storage);
     let (user_msg_id, mut rx) =
         start_message_inner(&agent, conversation_id, text, provider_id).await?;
 
@@ -846,9 +867,11 @@ async fn approve_tool_call_inner(
 #[tauri::command]
 pub async fn ai_approve_tool_call(
     agent: State<'_, AgentManager>,
+    storage: State<'_, Storage>,
     conversation_id: Uuid,
     tool_call_id: String,
 ) -> Result<(), AiCommandError> {
+    attach_trail(&agent, &storage);
     approve_tool_call_inner(&agent, conversation_id, tool_call_id).await
 }
 
@@ -1066,8 +1089,10 @@ async fn approve_plan_inner(
 #[tauri::command]
 pub async fn ai_approve_plan(
     agent: State<'_, AgentManager>,
+    storage: State<'_, Storage>,
     conversation_id: Uuid,
 ) -> Result<AiPlan, AiCommandError> {
+    attach_trail(&agent, &storage);
     approve_plan_inner(&agent, conversation_id).await
 }
 
@@ -1094,9 +1119,11 @@ async fn run_plan_step_inner(
 #[tauri::command]
 pub async fn ai_run_plan_step(
     agent: State<'_, AgentManager>,
+    storage: State<'_, Storage>,
     conversation_id: Uuid,
     step_id: Uuid,
 ) -> Result<AiPlan, AiCommandError> {
+    attach_trail(&agent, &storage);
     run_plan_step_inner(&agent, conversation_id, step_id).await
 }
 
@@ -1121,8 +1148,10 @@ async fn run_plan_inner(
 #[tauri::command]
 pub async fn ai_run_plan(
     agent: State<'_, AgentManager>,
+    storage: State<'_, Storage>,
     conversation_id: Uuid,
 ) -> Result<AiPlan, AiCommandError> {
+    attach_trail(&agent, &storage);
     run_plan_inner(&agent, conversation_id).await
 }
 
@@ -1563,9 +1592,12 @@ mod tests {
              which is why availability has to be reported separately"
         );
 
-        mcp.set_enabled_tools(vec!["cf_list_zones".to_string()])
-            .await
-            .expect("grants stored");
+        mcp.set_enabled_tools(
+            vec!["cf_list_zones".to_string()],
+            &bc_storage::RecordingAuditTrail::default(),
+        )
+        .await
+        .expect("grants stored");
 
         let after = get_permissions_inner(&agent).await;
         assert!(after.availability.dispatch_available);
@@ -1932,6 +1964,69 @@ mod tests {
         assert_eq!(plan.status, bc_ai_agent::AiPlanStatus::Paused);
     }
 
+    /// The commands that can settle a tool call, and therefore the commands
+    /// that have to attach the audit trail before delegating.
+    ///
+    /// Pinned as a list because the compiler cannot enforce it: the manager is
+    /// built in `main` before the managed `Storage` exists, so the trail is
+    /// attached per command rather than at construction. The test below checks
+    /// the list against the source in both directions.
+    const TRAIL_ATTACHING_COMMANDS: [(&str, &str); 5] = [
+        ("ai_send_message", "start_message_inner"),
+        ("ai_approve_tool_call", "approve_tool_call_inner"),
+        ("ai_approve_plan", "approve_plan_inner"),
+        ("ai_run_plan_step", "run_plan_step_inner"),
+        ("ai_run_plan", "run_plan_inner"),
+    ];
+
+    /// An assistant tool call that reached the executor but not the trail is
+    /// a gap in a security record, and the gap would be silent — the call
+    /// still works, it just goes unrecorded. So the wiring is pinned here.
+    #[test]
+    fn every_command_that_can_settle_a_tool_call_attaches_the_audit_trail() {
+        let source = include_str!("ai_commands.rs");
+        // Split on the test module itself: an earlier `#[cfg(test)]` guards
+        // `COMMAND_NAMES`, so splitting on the attribute would cut the file
+        // off before any command.
+        let production = source
+            .split_once("mod tests {")
+            .map(|(production, _)| production)
+            .expect("ai_commands.rs should retain a separate test module");
+
+        for (command, delegate) in TRAIL_ATTACHING_COMMANDS {
+            // Up to the next command attribute, which is the end of this
+            // command's body whatever the file's line endings are.
+            let after = production
+                .split_once(&format!("pub async fn {command}("))
+                .map(|(_, rest)| rest)
+                .unwrap_or_else(|| panic!("{command} should be defined in ai_commands.rs"));
+            let body = after
+                .split_once("#[tauri::command]")
+                .map_or(after, |(body, _)| body);
+            assert!(
+                body.contains("attach_trail(&agent, &storage);"),
+                "{command} can settle a tool call, so it must attach the audit trail"
+            );
+            // One caller each: a second path into the same delegate would
+            // reach the executor without passing the attach above.
+            assert_eq!(
+                production.matches(&format!("{delegate}(&agent")).count(),
+                1,
+                "{delegate} must be reached only from {command}, or the new \
+                 caller needs its own attach"
+            );
+        }
+
+        assert_eq!(
+            production
+                .matches("attach_trail(&agent, &storage);")
+                .count(),
+            TRAIL_ATTACHING_COMMANDS.len(),
+            "a command attaching the trail that is not in TRAIL_ATTACHING_COMMANDS \
+             means the list has drifted from the code"
+        );
+    }
+
     #[tokio::test]
     async fn plan_commands_report_a_missing_plan_and_step_distinctly() {
         let agent = plan_agent(AiPermissionMode::ReadOnly).await;
@@ -2175,6 +2270,7 @@ mod tests {
                 conversation_id,
                 attempt,
                 "cf_delete_dns_record",
+                &serde_json::json!({}),
                 &bc_ai_tools::executor::ExecutionResult::Error(bc_ai_provider::ToolResult {
                     tool_call_id: "call-1".into(),
                     content: "the API rejected it".into(),
@@ -2230,6 +2326,7 @@ mod tests {
                 conversation_id,
                 attempt,
                 "cf_create_dns_record",
+                &serde_json::json!({}),
                 &bc_ai_tools::executor::ExecutionResult::Success(bc_ai_provider::ToolResult {
                     tool_call_id: "call-1".into(),
                     content: "{}".into(),

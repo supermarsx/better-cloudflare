@@ -222,8 +222,14 @@ async fn execute_one_tool_call(
     // verdict, which withdraws the attempt if the gate refused the call.
     let attempt = runs.open_turn_call(conversation_id, &tool_call.name).await;
     let result = executor.execute(tool_call, false).await;
-    runs.close_turn_call(conversation_id, attempt, &tool_call.name, &result)
-        .await;
+    runs.close_turn_call(
+        conversation_id,
+        attempt,
+        &tool_call.name,
+        &tool_call.arguments,
+        &result,
+    )
+    .await;
     result
 }
 

@@ -20,4 +20,8 @@ bc-dns-tools = { path = "../bc-dns-tools" }
 bc-domain-audit = { path = "../bc-domain-audit" }
 bc-notify = { path = "../bc-notify" }
 bc-spf = { path = "../bc-spf" }
+# The audit trail every tool call is recorded in. The shape and the retention
+# rule live with the log itself, so the MCP server and the AI assistant record
+# into one record rather than two that have to be merged to be read.
+bc-storage = { path = "../bc-storage" }
 bc-topology = { path = "../bc-topology" }

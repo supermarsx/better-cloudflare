@@ -25,7 +25,10 @@ use tokio::time::{sleep, timeout};
 use tokio_util::sync::CancellationToken;
 use tower::ServiceExt;
 
-use crate::permissions::{self, PermissionGrantSet};
+use bc_storage::{AuditActor, AuditTrail};
+
+use crate::audit::{self, FailureKind, ToolCallVerdict};
+use crate::permissions::PermissionGrantSet;
 use crate::protocol::{
     error_response, error_response_with_data, initialize_response, success_response, tool_disabled,
     tool_error, tool_success, JsonRpcRequest, RpcErrorCode,
@@ -63,6 +66,12 @@ pub(crate) struct HttpRuntimeState {
     shutdown: CancellationToken,
     policy: RuntimePolicy,
     dispatcher: Arc<dyn ToolDispatcher>,
+    /// Where every tool call this transport sees is recorded.
+    ///
+    /// Not optional. A running server is reachable by any program on the
+    /// machine that holds the bearer token, so "we were not wired up to record"
+    /// must not be a state it can be in.
+    audit: Arc<dyn AuditTrail>,
 }
 
 impl HttpRuntimeState {
@@ -73,6 +82,7 @@ impl HttpRuntimeState {
         bind_port: u16,
         shutdown: CancellationToken,
         policy: RuntimePolicy,
+        audit: Arc<dyn AuditTrail>,
     ) -> Self {
         Self {
             grants,
@@ -84,11 +94,21 @@ impl HttpRuntimeState {
             shutdown,
             policy,
             dispatcher: Arc::new(ProductionToolDispatcher),
+            audit,
         }
     }
 
     #[cfg(test)]
     fn with_dispatcher(dispatcher: Arc<dyn ToolDispatcher>, policy: RuntimePolicy) -> Self {
+        Self::with_dispatcher_and_audit(dispatcher, policy, Arc::new(DiscardedTrail))
+    }
+
+    #[cfg(test)]
+    fn with_dispatcher_and_audit(
+        dispatcher: Arc<dyn ToolDispatcher>,
+        policy: RuntimePolicy,
+        audit: Arc<dyn AuditTrail>,
+    ) -> Self {
         Self {
             grants: Arc::new(RwLock::new(PermissionGrantSet::all())),
             auth_token: Arc::new(RwLock::new(Some("test-token".to_string()))),
@@ -99,8 +119,18 @@ impl HttpRuntimeState {
             shutdown: CancellationToken::new(),
             policy,
             dispatcher,
+            audit,
         }
     }
+}
+
+/// A trail for the transport tests that are not about the trail.
+#[cfg(test)]
+struct DiscardedTrail;
+
+#[cfg(test)]
+impl AuditTrail for DiscardedTrail {
+    fn record(&self, _entry: bc_storage::AuditEntry) {}
 }
 
 #[derive(Clone)]
@@ -977,19 +1007,33 @@ async fn dispatch_tool_call(
         .cloned()
         .unwrap_or_else(|| json!({}));
     let grants = state.grants.read().await.clone();
+    // Recorded on every exit from here on, including the ones that never
+    // reach a handler. A trail that only showed the calls that ran would hide
+    // exactly the half a user opens it to look for: what something tried to
+    // do and was not allowed to.
+    let record = |verdict: ToolCallVerdict| {
+        state.audit.record(audit::tool_call_entry(
+            AuditActor::McpClient,
+            audit::MCP_TOOL_CALL_OPERATION,
+            name,
+            verdict,
+            &arguments,
+        ));
+    };
     let prepared = match tools::prepare_tool_invocation(&grants, name, &arguments) {
         Ok(prepared) => prepared,
-        Err(error) => {
-            if permissions::permission_for_invocation(name)
-                .is_some_and(|permission| !grants.allows(permission))
-            {
+        Err(denial) => {
+            record(ToolCallVerdict::Denied(denial.audit_reason()));
+            if matches!(denial, tools::ToolDenial::Ungranted { .. }) {
                 return Ok(tool_disabled(name));
             }
-            return Ok(tool_error(&error));
+            return Ok(tool_error(&denial.message()));
         }
     };
 
     let Ok(permit) = Arc::clone(&state.tool_slots).try_acquire_owned() else {
+        // Nothing was dispatched, and the client is told to retry rather than
+        // being refused, so this is not a trail entry: no action was taken.
         return Err(error_response(
             Some(response_id),
             RpcErrorCode::ServerOverloaded.code(),
@@ -1002,6 +1046,9 @@ async fn dispatch_tool_call(
     let result = tokio::select! {
         _ = state.shutdown.cancelled() => {
             drop(permit);
+            // The call left the application and stopped being observable, so
+            // a write may have landed. Recorded as such.
+            record(ToolCallVerdict::Failed(FailureKind::Cancelled));
             return Err(error_response(
                 Some(response_id),
                 RpcErrorCode::ServerShuttingDown.code(),
@@ -1013,16 +1060,27 @@ async fn dispatch_tool_call(
     drop(permit);
 
     match result {
-        Err(_) => Err(error_response(
-            Some(response_id),
-            RpcErrorCode::RequestTimeout.code(),
-            "Tool execution exceeded its deadline.".to_string(),
-        )),
-        Ok(Err(error)) => Ok(tool_error(&bounded_message(&error))),
+        Err(_) => {
+            record(ToolCallVerdict::Failed(FailureKind::Timeout));
+            Err(error_response(
+                Some(response_id),
+                RpcErrorCode::RequestTimeout.code(),
+                "Tool execution exceeded its deadline.".to_string(),
+            ))
+        }
+        Ok(Err(error)) => {
+            record(ToolCallVerdict::Failed(FailureKind::ToolError));
+            Ok(tool_error(&bounded_message(&error)))
+        }
         Ok(Ok(value)) => {
             if validate_json(&value, TOOL_RESULT_JSON_LIMITS).is_err()
                 || serialize_json_limited(&value, state.policy.max_tool_result_bytes).is_err()
             {
+                // The call ran. The client gets an error because the answer
+                // would not fit, which is not the same as the call not having
+                // happened — so the trail says it ran and names why nothing
+                // came back.
+                record(ToolCallVerdict::Failed(FailureKind::ResultTooLarge));
                 return Err(error_response(
                     Some(response_id),
                     RpcErrorCode::ResponseTooLarge.code(),
@@ -1031,12 +1089,14 @@ async fn dispatch_tool_call(
             }
             let result = tool_success(&value);
             if validate_json(&result, RESPONSE_JSON_LIMITS).is_err() {
+                record(ToolCallVerdict::Failed(FailureKind::ResultTooLarge));
                 return Err(error_response(
                     Some(response_id),
                     RpcErrorCode::ResponseTooLarge.code(),
                     "Tool output exceeded the MCP response structure budget.".to_string(),
                 ));
             }
+            record(ToolCallVerdict::Succeeded);
             Ok(result)
         }
     }
@@ -1129,6 +1189,20 @@ mod tests {
         HttpRuntimeState::with_dispatcher(Arc::new(StubDispatcher { behavior }), test_policy())
     }
 
+    /// [`state_with`], plus the trail it records into, for the tests that are
+    /// about what reached the trail.
+    fn audited_state_with(
+        behavior: StubBehavior,
+    ) -> (HttpRuntimeState, Arc<bc_storage::RecordingAuditTrail>) {
+        let audit = Arc::new(bc_storage::RecordingAuditTrail::default());
+        let state = HttpRuntimeState::with_dispatcher_and_audit(
+            Arc::new(StubDispatcher { behavior }),
+            test_policy(),
+            audit.clone(),
+        );
+        (state, audit)
+    }
+
     fn production_state() -> HttpRuntimeState {
         HttpRuntimeState::production(
             Arc::new(RwLock::new(PermissionGrantSet::all())),
@@ -1137,6 +1211,7 @@ mod tests {
             8787,
             CancellationToken::new(),
             test_policy(),
+            Arc::new(DiscardedTrail),
         )
     }
 
@@ -1282,6 +1357,259 @@ mod tests {
             None
         );
         assert_eq!(items[1]["result"]["isError"], true);
+    }
+
+    // ── Audit trail ─────────────────────────────────────────────────────
+
+    /// The question the trail answers for an MCP client is "what did that
+    /// other program do to my zones", so the entry has to name the actor, the
+    /// tool, the effect tier and the zone and record it touched.
+    #[tokio::test]
+    async fn a_tool_call_is_recorded_with_its_actor_effect_and_target() {
+        let (state, audit) = audited_state_with(StubBehavior::Echo);
+        let response = process(
+            &state,
+            rpc(
+                "tools/call",
+                Some(json!(1)),
+                json!({
+                    "name": "cf_delete_dns_record",
+                    "arguments": {
+                        "api_key": "cf-token",
+                        "zone_id": "zone-1",
+                        "record_id": "record-1",
+                        "confirmHighRisk": true
+                    }
+                }),
+            ),
+        )
+        .await;
+        assert_eq!(
+            response["result"]["structuredContent"]["record_id"],
+            json!("record-1"),
+            "the call has to have run for its entry to mean anything"
+        );
+
+        let entries = audit.entries();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0]["operation"], json!("mcp:tool_call"));
+        assert_eq!(entries[0]["actor"], json!("mcp_client"));
+        assert_eq!(entries[0]["outcome"], json!("succeeded"));
+        assert_eq!(entries[0]["resource"], json!("cf_delete_dns_record"));
+        assert_eq!(entries[0]["effect"], json!("destructive"));
+        assert_eq!(entries[0]["zone_id"], json!("zone-1"));
+        assert_eq!(entries[0]["record_id"], json!("record-1"));
+        assert!(
+            !entries[0].to_string().contains("cf-token"),
+            "the client's credential must never reach the trail: {}",
+            entries[0]
+        );
+    }
+
+    /// Every way a call can be refused, and the layer each one names. A trail
+    /// that recorded only the calls that ran would hide the half a user opens
+    /// it to find: what something tried to do and was not allowed to.
+    #[tokio::test]
+    async fn every_refusal_reaches_the_trail_naming_the_layer_that_refused() {
+        let (state, audit) = audited_state_with(StubBehavior::Echo);
+
+        // Registered, granted, but called without its acknowledgement.
+        process(
+            &state,
+            rpc(
+                "tools/call",
+                Some(json!(1)),
+                json!({
+                    "name": "cf_delete_dns_record",
+                    "arguments": {"zone_id": "zone-1", "record_id": "record-1"}
+                }),
+            ),
+        )
+        .await;
+        // Not in the registry at all.
+        process(
+            &state,
+            rpc(
+                "tools/call",
+                Some(json!(2)),
+                json!({"name": "cf_future_write", "arguments": {"zone_id": "zone-1"}}),
+            ),
+        )
+        .await;
+        // Arguments outside the permission's bounds.
+        process(
+            &state,
+            rpc(
+                "tools/call",
+                Some(json!(3)),
+                json!({"name": "dns_validate_record", "arguments": "not-an-object"}),
+            ),
+        )
+        .await;
+        // Registered, but no longer granted.
+        *state.grants.write().await = PermissionGrantSet::default();
+        let disabled = process(
+            &state,
+            rpc(
+                "tools/call",
+                Some(json!(4)),
+                json!({
+                    "name": "cf_delete_dns_record",
+                    "arguments": {
+                        "zone_id": "zone-1",
+                        "record_id": "record-1",
+                        "confirmHighRisk": true
+                    }
+                }),
+            ),
+        )
+        .await;
+        assert_eq!(
+            disabled["result"]["isError"], true,
+            "an ungranted tool is still answered as disabled, not as a protocol error"
+        );
+
+        let reasons = audit
+            .entries()
+            .iter()
+            .map(|entry| entry["denied_by"].clone())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            reasons,
+            vec![
+                json!("high_risk_confirmation"),
+                json!("unregistered_tool"),
+                json!("argument_bounds"),
+                json!("mcp_grants"),
+            ]
+        );
+        for entry in audit.entries() {
+            assert_eq!(entry["outcome"], json!("denied"));
+            assert_eq!(entry["actor"], json!("mcp_client"));
+        }
+    }
+
+    /// A call that left the application and stopped being observable may have
+    /// landed, so the trail says it was dispatched and names where it stopped.
+    #[tokio::test]
+    async fn a_timed_out_call_is_recorded_as_a_dispatch_that_may_have_landed() {
+        let (state, audit) = audited_state_with(StubBehavior::Hang {
+            entered: Arc::new(Notify::new()),
+            dropped: Arc::new(AtomicBool::new(false)),
+        });
+        process(
+            &state,
+            rpc(
+                "tools/call",
+                Some(json!(1)),
+                json!({
+                    "name": "cf_delete_dns_record",
+                    "arguments": {
+                        "zone_id": "zone-1",
+                        "record_id": "record-1",
+                        "confirmHighRisk": true
+                    }
+                }),
+            ),
+        )
+        .await;
+
+        let entries = audit.entries();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0]["outcome"], json!("failed"));
+        assert_eq!(entries[0]["failure"], json!("timeout"));
+        assert_eq!(entries[0]["record_id"], json!("record-1"));
+    }
+
+    /// A handler that returned an error was still dispatched, and a result too
+    /// large to return is not a call that did not happen.
+    #[tokio::test]
+    async fn a_failed_and_an_oversized_dispatch_are_both_recorded_as_dispatched() {
+        let call = || {
+            rpc(
+                "tools/call",
+                Some(json!(1)),
+                json!({
+                    "name": "dns_validate_record",
+                    "arguments": {"record_type": "A", "content": "192.0.2.1"}
+                }),
+            )
+        };
+
+        let (errored, error_audit) = audited_state_with(StubBehavior::Error);
+        process(&errored, call()).await;
+        assert_eq!(error_audit.entries()[0]["failure"], json!("tool_error"));
+
+        let (oversized, oversized_audit) = audited_state_with(StubBehavior::Large);
+        process(&oversized, call()).await;
+        assert_eq!(
+            oversized_audit.entries()[0]["failure"],
+            json!("result_too_large")
+        );
+    }
+
+    /// Nothing was dispatched and the client is told to retry, so there is no
+    /// action to record. An entry here would be a line in the trail for
+    /// something that never happened.
+    #[tokio::test]
+    async fn a_call_refused_for_overload_records_nothing() {
+        let entered = Arc::new(Notify::new());
+        let audit = Arc::new(bc_storage::RecordingAuditTrail::default());
+        let mut policy = test_policy();
+        policy.tool_timeout = Duration::from_millis(150);
+        let state = HttpRuntimeState::with_dispatcher_and_audit(
+            Arc::new(StubDispatcher {
+                behavior: StubBehavior::Hang {
+                    entered: Arc::clone(&entered),
+                    dropped: Arc::new(AtomicBool::new(false)),
+                },
+            }),
+            policy,
+            audit.clone(),
+        );
+        let call = || {
+            rpc(
+                "tools/call",
+                Some(json!(1)),
+                json!({
+                    "name": "dns_validate_record",
+                    "arguments": {"record_type": "A", "content": "192.0.2.1"}
+                }),
+            )
+        };
+        let first_state = state.clone();
+        let first = tokio::spawn(async move { process(&first_state, call()).await });
+        entered.notified().await;
+        let refused = process(&state, call()).await;
+        assert_eq!(
+            refused["error"]["code"],
+            RpcErrorCode::ServerOverloaded.code()
+        );
+        assert_eq!(
+            audit.len(),
+            0,
+            "an overload refusal is not an action: {:?}",
+            audit.operations()
+        );
+
+        let _ = first.await.unwrap();
+        assert_eq!(
+            audit.len(),
+            1,
+            "and the call that did run is still recorded"
+        );
+    }
+
+    /// Listing tools or reading a resource reaches no account and changes
+    /// nothing, so it is not in the trail. Recording it would bury the tool
+    /// calls under protocol chatter.
+    #[tokio::test]
+    async fn protocol_traffic_that_touches_no_account_is_not_recorded() {
+        let (state, audit) = audited_state_with(StubBehavior::Echo);
+        for method in ["initialize", "ping", "tools/list", "prompts/list"] {
+            process(&state, rpc(method, Some(json!(1)), json!({}))).await;
+        }
+        assert!(audit.is_empty(), "recorded: {:?}", audit.operations());
     }
 
     #[tokio::test]

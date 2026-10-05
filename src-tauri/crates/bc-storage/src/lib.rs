@@ -11,6 +11,10 @@
 //! Higher-level helpers manage API keys, vault secrets, passkey credentials,
 //! audit log entries, registrar credentials, encryption settings, and user
 //! preferences.
+//!
+//! The audit log is the one store with more than one kind of writer — a
+//! person in the app, an MCP client, the AI assistant — so its entry shape and
+//! its retention rule live in [`audit`].
 
 use keyring::Entry;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
@@ -19,6 +23,9 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, Weak};
 use thiserror::Error;
 
+pub mod audit;
+
+pub use audit::{AuditActor, AuditEntry, AuditOutcome, AuditTrail, RecordingAuditTrail};
 pub use bc_crypto::EncryptionConfig;
 
 // ── Constants ───────────────────────────────────────────────────────────────
@@ -468,6 +475,11 @@ impl SecretBackend for MemoryBackend {
 // ── Storage ─────────────────────────────────────────────────────────────────
 
 /// Secure storage backed by the OS keyring, or by explicit in-memory mode.
+///
+/// `Clone` shares the backend rather than copying it, so a clone reads and
+/// writes the same store — including an in-memory one, which is what makes a
+/// clone usable as an audit sink in tests.
+#[derive(Clone)]
 pub struct Storage {
     backend: Arc<dyn SecretBackend>,
 }
@@ -1114,13 +1126,33 @@ impl Storage {
         self.delete_secret("audit_log").await
     }
 
+    /// Append a pre-built entry object.
+    ///
+    /// The untyped path, kept for the application commands that have always
+    /// written the log directly. Anything it does not set is filled in by
+    /// [`audit::stamped`] — including `actor`, which defaults to
+    /// [`AuditActor::User`] because every caller of this path is the
+    /// application acting for the person at the keyboard. New writers that are
+    /// not that person use [`AuditTrail::record`] instead, which makes the
+    /// actor a required argument.
     pub async fn add_audit_entry(&self, entry: Value) -> Result<(), StorageError> {
+        self.append_audit_entry(entry)
+    }
+
+    /// A shareable handle on this store's audit trail.
+    ///
+    /// The crates that record tool calls hold this rather than a `Storage`, so
+    /// what they depend on is the trail's shape and not the store's whole
+    /// surface.
+    pub fn audit_trail(&self) -> Arc<dyn AuditTrail> {
+        Arc::new(self.clone())
+    }
+
+    fn append_audit_entry(&self, entry: Value) -> Result<(), StorageError> {
+        let entry = audit::stamped(entry);
         self.mutate_json_list("audit_log", false, move |entries: &mut Vec<Value>| {
             entries.push(entry);
-            if entries.len() > MAX_AUDIT_ENTRIES {
-                let drop_count = entries.len() - MAX_AUDIT_ENTRIES;
-                entries.drain(..drop_count);
-            }
+            audit::evict_to_cap(entries);
             Ok(())
         })
     }
@@ -1168,6 +1200,19 @@ impl Storage {
         self.get_legacy_preferences()
             .await?
             .ok_or(StorageError::NotFound)
+    }
+}
+
+impl AuditTrail for Storage {
+    /// Record one entry, swallowing storage failures.
+    ///
+    /// Infallible from the caller's side on purpose: a trail that can fail a
+    /// DNS change or a tool call because the keyring was busy would make the
+    /// audit log a new way for the application to break, and callers would
+    /// start recording conditionally to avoid it. The existing `log_audit`
+    /// helper has always discarded its error for the same reason.
+    fn record(&self, entry: AuditEntry) {
+        let _ = self.append_audit_entry(entry.into_value());
     }
 }
 

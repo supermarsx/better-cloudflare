@@ -11,6 +11,7 @@ mod spf_tools;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::audit::DenialReason;
 use crate::permissions::{
     permission_for_invocation, requires_high_risk_confirmation, validate_arguments,
     ArgumentProfile, PermissionDefinition, PermissionGrantSet,
@@ -178,13 +179,67 @@ pub async fn execute_tool_with_grants(
     name: &str,
     args: &Value,
 ) -> Result<Value, String> {
-    let prepared = prepare_tool_invocation(grants, name, args)?;
+    let prepared =
+        prepare_tool_invocation(grants, name, args).map_err(|denial| denial.message())?;
     dispatch_prepared_tool(prepared.canonical_name, &prepared.arguments).await
 }
 
 pub(crate) struct PreparedToolInvocation {
     pub(crate) canonical_name: &'static str,
     pub(crate) arguments: Value,
+}
+
+/// Why [`prepare_tool_invocation`] refused a call.
+///
+/// A value, not a message. The message is written for whoever was refused;
+/// callers that have to *act* on the refusal — the transport, which answers
+/// an ungranted tool differently from a malformed one, and the audit trail,
+/// which files the reason — read the variant. Recovering either by matching
+/// on the prose would mis-handle the refusal the first time it was reworded.
+#[derive(Debug)]
+pub(crate) enum ToolDenial {
+    /// The name is not in the permission registry.
+    Unregistered,
+    /// Registered, but the grants in force do not cover it.
+    Ungranted {
+        permission: &'static PermissionDefinition,
+    },
+    /// The arguments failed the permission's bounds.
+    Arguments { reason: String },
+    /// A high-risk or destructive tool was called without the per-call
+    /// acknowledgement.
+    Unconfirmed {
+        permission: &'static PermissionDefinition,
+    },
+}
+
+impl ToolDenial {
+    /// The refusal as the caller is told it. Unchanged wording: these strings
+    /// are the server's contract with its clients.
+    pub(crate) fn message(&self) -> String {
+        match self {
+            Self::Unregistered => "Tool dispatch denied: tool is not registered.".to_string(),
+            Self::Ungranted { permission } => format!(
+                "Tool '{}' is not enabled by the server permission grants.",
+                permission.invocation_name
+            ),
+            Self::Arguments { reason } => reason.clone(),
+            Self::Unconfirmed { permission } => format!(
+                "Tool '{}' requires the exact boolean argument confirmHighRisk: true.",
+                permission.invocation_name
+            ),
+        }
+    }
+
+    /// How the audit trail files this refusal.
+    pub(crate) fn audit_reason(&self) -> DenialReason {
+        match self {
+            Self::Unregistered => DenialReason::UnregisteredTool,
+            Self::Ungranted { .. } => DenialReason::McpGrants,
+            Self::Arguments { .. } => DenialReason::ArgumentBounds,
+            Self::Unconfirmed { .. } => DenialReason::HighRiskConfirmation,
+        }
+    }
 }
 
 /// Resolve the exact registered permission, enforce the current grant and
@@ -194,14 +249,10 @@ pub(crate) fn prepare_tool_invocation(
     grants: &PermissionGrantSet,
     name: &str,
     args: &Value,
-) -> Result<PreparedToolInvocation, String> {
-    let permission = permission_for_invocation(name)
-        .ok_or_else(|| "Tool dispatch denied: tool is not registered.".to_string())?;
+) -> Result<PreparedToolInvocation, ToolDenial> {
+    let permission = permission_for_invocation(name).ok_or(ToolDenial::Unregistered)?;
     if !grants.allows(permission) {
-        return Err(format!(
-            "Tool '{}' is not enabled by the server permission grants.",
-            permission.invocation_name
-        ));
+        return Err(ToolDenial::Ungranted { permission });
     }
     let handler_args = prepare_handler_arguments(permission, args)?;
     Ok(PreparedToolInvocation {
@@ -237,17 +288,14 @@ pub(crate) async fn dispatch_prepared_tool(
 }
 
 fn prepare_handler_arguments(
-    permission: &PermissionDefinition,
+    permission: &'static PermissionDefinition,
     args: &Value,
-) -> Result<Value, String> {
-    validate_arguments(permission, args)?;
+) -> Result<Value, ToolDenial> {
+    validate_arguments(permission, args).map_err(|reason| ToolDenial::Arguments { reason })?;
     if requires_high_risk_confirmation(permission)
         && args.get("confirmHighRisk") != Some(&Value::Bool(true))
     {
-        return Err(format!(
-            "Tool '{}' requires the exact boolean argument confirmHighRisk: true.",
-            permission.invocation_name
-        ));
+        return Err(ToolDenial::Unconfirmed { permission });
     }
 
     let mut handler_args = args.clone();

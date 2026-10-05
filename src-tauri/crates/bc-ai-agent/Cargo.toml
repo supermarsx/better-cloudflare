@@ -12,6 +12,10 @@ bc-mcp = { path = "../bc-mcp" }
 # what a domain is, so both use the one definition. Already in the tree
 # through bc-mcp; this only makes the dependency visible where it is used.
 bc-notify = { path = "../bc-notify" }
+# The application's audit trail. The assistant's tool calls belong in the same
+# record as the user's own edits and the MCP server's, so a user can read one
+# ordered account rather than reconciling three.
+bc-storage = { path = "../bc-storage" }
 async-trait = "0.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

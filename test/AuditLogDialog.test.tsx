@@ -156,6 +156,127 @@ test("AuditLogDialog ignores stale loads across close and reopen", async () => {
   assert.ok(screen.getByText("fresh-entry"));
 });
 
+/**
+ * A log that mixes all three writers, which is the state the filter exists
+ * for: the first entry predates the actor field and has to read as the human
+ * who wrote it.
+ */
+const mixedTrail = () => [
+  { operation: "dns:create", timestamp: "2026-01-01T00:00:00Z" },
+  {
+    operation: "dns:delete",
+    timestamp: "2026-01-02T00:00:00Z",
+    actor: "user",
+    outcome: "succeeded",
+  },
+  {
+    operation: "mcp:tool_call",
+    timestamp: "2026-01-03T00:00:00Z",
+    actor: "mcp_client",
+    outcome: "succeeded",
+    resource: "cf_update_dns_record",
+  },
+  {
+    operation: "assistant:tool_call",
+    timestamp: "2026-01-04T00:00:00Z",
+    actor: "assistant",
+    outcome: "denied",
+    resource: "cf_delete_dns_record",
+    denied_by: "mcp_grants",
+  },
+];
+
+test("AuditLogDialog counts each actor, treating an entry with no actor as the user", async () => {
+  (globalThis as unknown as { window?: unknown }).window = { __TAURI__: {} };
+  TauriClient.getAuditEntries = async () => mixedTrail();
+  TauriClient.exportAuditEntries = async () => "{}";
+
+  await act(async () => {
+    render(<AuditLogDialog open={true} onOpenChange={() => {}} />);
+  });
+
+  await waitFor(() => {
+    assert.ok(screen.getByRole("button", { name: "Everything (4)" }));
+  });
+  assert.ok(
+    screen.getByRole("button", { name: "You (2)" }),
+    "the entry written before the actor field counts as the user's",
+  );
+  assert.ok(screen.getByRole("button", { name: "MCP client (1)" }));
+  assert.ok(screen.getByRole("button", { name: "Assistant (1)" }));
+  assert.ok(screen.getByRole("button", { name: "Denied (1)" }));
+});
+
+test("AuditLogDialog filters by actor so the human record can be read alone", async () => {
+  (globalThis as unknown as { window?: unknown }).window = { __TAURI__: {} };
+  TauriClient.getAuditEntries = async () => mixedTrail();
+  TauriClient.exportAuditEntries = async () => "{}";
+
+  await act(async () => {
+    render(<AuditLogDialog open={true} onOpenChange={() => {}} />);
+  });
+  await waitFor(() => {
+    assert.ok(screen.getByRole("button", { name: "You (2)" }));
+  });
+
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "You (2)" }));
+  });
+
+  await waitFor(() => {
+    assert.ok(screen.getByText(/Showing 2 of 4 entries/));
+  });
+  assert.ok(screen.getByText("dns:create"));
+  assert.ok(screen.getByText("dns:delete"));
+  assert.equal(screen.queryByText("mcp:tool_call"), null);
+  assert.equal(screen.queryByText("assistant:tool_call"), null);
+  assert.equal(
+    screen
+      .getByRole("button", { name: "You (2)" })
+      .getAttribute("aria-pressed"),
+    "true",
+  );
+
+  // Clicking the active filter again clears it.
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "You (2)" }));
+  });
+  await waitFor(() => {
+    assert.ok(screen.getByText("mcp:tool_call"));
+  });
+});
+
+test("AuditLogDialog filters by outcome so refused attempts can be read alone", async () => {
+  (globalThis as unknown as { window?: unknown }).window = { __TAURI__: {} };
+  TauriClient.getAuditEntries = async () => mixedTrail();
+  TauriClient.exportAuditEntries = async () => "{}";
+
+  await act(async () => {
+    render(<AuditLogDialog open={true} onOpenChange={() => {}} />);
+  });
+  await waitFor(() => {
+    assert.ok(screen.getByRole("button", { name: "Denied (1)" }));
+  });
+
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Denied (1)" }));
+  });
+
+  await waitFor(() => {
+    assert.ok(screen.getByText(/Showing 1 of 4 entries/));
+  });
+  assert.ok(screen.getByText("assistant:tool_call"));
+  assert.equal(screen.queryByText("dns:create"), null);
+
+  // Actor and outcome compose rather than replacing each other.
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "You (2)" }));
+  });
+  await waitFor(() => {
+    assert.ok(screen.getByText(/No entries match this filter/));
+  });
+});
+
 test("AuditLogDialog revokes export URLs and removes links when click fails", async () => {
   (globalThis as unknown as { window?: unknown }).window = { __TAURI__: {} };
   TauriClient.getAuditEntries = async () => [
