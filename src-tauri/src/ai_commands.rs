@@ -1925,7 +1925,9 @@ mod tests {
         let storage = Storage::new(false);
         let agent = plan_agent(AiPermissionMode::ReadOnly).await;
         // The real wiring, not a test double: this is the line every
-        // dispatching command runs.
+        // dispatching command runs. `the_commands_themselves_record_into_the
+        // _managed_store` drives the commands instead, which is the stronger
+        // claim; this one keeps the chain below it readable.
         attach_trail(&agent, &storage);
         let conversation_id = create_valid_conversation(&agent).await;
 
@@ -2005,6 +2007,177 @@ mod tests {
                 "a credential reached the stored log: {entry}"
             );
         }
+    }
+
+    /// A mock app with a real in-memory store and a plan already proposed,
+    /// and — crucially — no trail attached yet.
+    ///
+    /// `approved` uses `approve_plan_inner` rather than the `ai_approve_plan`
+    /// command, because the command would attach the trail and the point of
+    /// this fixture is to hand each command an app where **it** is the first
+    /// thing that could attach one.
+    #[allow(deprecated)]
+    async fn unattached_app(approved: bool) -> (tauri::App<tauri::test::MockRuntime>, Uuid) {
+        use tauri::Manager;
+
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("mock application should build");
+        app.manage(Storage::new(false));
+        app.manage(plan_agent(AiPermissionMode::ReadOnly).await);
+
+        let agent = app.state::<AgentManager>();
+        let conversation_id = create_valid_conversation(&agent).await;
+        propose(
+            &agent,
+            conversation_id,
+            serde_json::json!([
+                { "title": "parse it", "tool": "dns_parse_spf", "arguments": { "content": "v=spf1 -all" } },
+                {
+                    "title": "drop the stale record",
+                    "tool": "cf_delete_dns_record",
+                    "arguments": { "zone_id": "zone-9", "record_id": "record-9" },
+                },
+            ]),
+        )
+        .await;
+        if approved {
+            approve_plan_inner(&agent, conversation_id)
+                .await
+                .expect("approve without attaching");
+        }
+        assert!(
+            app.state::<Storage>()
+                .get_audit_entries()
+                .await
+                .expect("read the audit log")
+                .is_empty(),
+            "the fixture must hand over a store with nothing in it yet"
+        );
+        (app, conversation_id)
+    }
+
+    async fn stored_operations(app: &tauri::App<tauri::test::MockRuntime>) -> Vec<String> {
+        use tauri::Manager;
+
+        app.state::<Storage>()
+            .get_audit_entries()
+            .await
+            .expect("read the audit log")
+            .iter()
+            .filter_map(|entry| {
+                entry
+                    .get("operation")
+                    .and_then(|value| value.as_str())
+                    .map(str::to_string)
+            })
+            .collect()
+    }
+
+    /// Each command, called as the Tauri runtime calls it, is on its own
+    /// enough to get what it did into the store.
+    ///
+    /// This is the one test that *executes* the wiring instead of reading the
+    /// source for it, and it is why that matters: a commented-out or
+    /// `cfg`-disabled attach is still written down, so
+    /// `every_command_that_can_settle_a_tool_call_attaches_the_audit_trail`
+    /// cannot tell it from a live one. Each case below gets a fresh app with
+    /// no trail attached, so the command under test is the only thing that can
+    /// attach one — which is also the only situation where a single missing
+    /// attach would matter, since the first attach in a process serves the
+    /// rest of it.
+    #[tokio::test]
+    async fn each_command_on_its_own_records_into_the_managed_store() {
+        use tauri::Manager;
+
+        // ai_approve_plan, first thing in the process.
+        let (app, conversation_id) = unattached_app(false).await;
+        ai_approve_plan(app.state(), app.state(), conversation_id)
+            .await
+            .expect("approve");
+        assert_eq!(
+            stored_operations(&app).await,
+            vec!["assistant:plan_approved".to_string()],
+            "ai_approve_plan must record without relying on an earlier command"
+        );
+
+        // ai_run_plan_step, first thing in the process.
+        let (app, conversation_id) = unattached_app(true).await;
+        let step_id = {
+            let agent = app.state::<AgentManager>();
+            get_plan_inner(&agent, conversation_id)
+                .await
+                .expect("an approved plan")
+                .steps[0]
+                .id
+        };
+        ai_run_plan_step(app.state(), app.state(), conversation_id, step_id)
+            .await
+            .expect("run the granted step");
+        assert_eq!(
+            stored_operations(&app).await,
+            vec!["assistant:tool_call".to_string()],
+            "ai_run_plan_step must record without relying on an earlier command"
+        );
+
+        // ai_run_plan, first thing in the process. It runs the granted step
+        // and stops on the one the assistant's own policy refuses, so both a
+        // success and a refusal land from this one call.
+        let (app, conversation_id) = unattached_app(true).await;
+        ai_run_plan(app.state(), app.state(), conversation_id)
+            .await
+            .expect("run the plan");
+        assert_eq!(
+            stored_operations(&app).await,
+            vec![
+                "assistant:tool_call".to_string(),
+                "assistant:tool_call".to_string(),
+            ],
+            "ai_run_plan must record without relying on an earlier command"
+        );
+        let entries = app
+            .state::<Storage>()
+            .get_audit_entries()
+            .await
+            .expect("read the audit log");
+        assert_eq!(
+            entries[1]["denied_by"],
+            serde_json::json!("assistant_policy"),
+            "{entries:#?}"
+        );
+        assert_eq!(entries[1]["zone_id"], serde_json::json!("zone-9"));
+
+        // `ai_approve_tool_call` cannot be driven to a recorded entry without
+        // a live provider turn to leave a call pending, so its attach is
+        // observed indirectly: let the command fail at its *next* step, then
+        // record through a path that attaches nothing. Something lands only if
+        // the failed command had already attached the trail.
+        //
+        // `ai_send_message` is the one command not covered here. It takes a
+        // runtime-concrete `AppHandle`, which a mock app cannot supply, and
+        // making the production signature generic to reach it would be
+        // changing shipping code for a test's convenience. It stays covered by
+        // the source-text check above.
+        let (app, conversation_id) = unattached_app(false).await;
+        assert!(
+            ai_approve_tool_call(
+                app.state(),
+                app.state(),
+                conversation_id,
+                "no-such-call".to_string(),
+            )
+            .await
+            .is_err(),
+            "there is no pending call, so the approval must fail after attaching"
+        );
+        approve_plan_inner(&app.state::<AgentManager>(), conversation_id)
+            .await
+            .expect("approve through the non-attaching path");
+        assert_eq!(
+            stored_operations(&app).await,
+            vec!["assistant:plan_approved".to_string()],
+            "ai_approve_tool_call must attach the trail before it can fail"
+        );
     }
 
     /// What the whole plan-time resolution exists for: before approving
