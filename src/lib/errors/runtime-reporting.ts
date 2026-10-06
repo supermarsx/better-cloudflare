@@ -460,10 +460,20 @@ export function formatRuntimeDiagnostic(diagnostic: RuntimeDiagnostic): string {
     .join("\n");
 }
 
-export async function copyRuntimeDiagnostic(
-  diagnostic: RuntimeDiagnostic,
-): Promise<boolean> {
-  const text = formatRuntimeDiagnostic(diagnostic);
+/**
+ * Put text on the clipboard, falling back to a detached `<textarea>`.
+ *
+ * Both paths are needed. `navigator.clipboard` is absent on an insecure origin
+ * and rejects when the document is not focused, which is exactly the state a
+ * modal error surface tends to be in; `execCommand("copy")` still works there.
+ * Neither failure is reported as a runtime error, because a failed copy is
+ * already visible to the user as a button that did not say "Copied" — and
+ * reporting it from inside an error surface risks a loop.
+ *
+ * Shared with the diagnostics panel (`@/lib/diagnostics`) so a copy button
+ * behaves the same wherever it appears.
+ */
+export async function copyTextToClipboard(text: string): Promise<boolean> {
   try {
     if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
       await navigator.clipboard.writeText(text);
@@ -491,6 +501,12 @@ export async function copyRuntimeDiagnostic(
   } catch {
     return false;
   }
+}
+
+export async function copyRuntimeDiagnostic(
+  diagnostic: RuntimeDiagnostic,
+): Promise<boolean> {
+  return copyTextToClipboard(formatRuntimeDiagnostic(diagnostic));
 }
 
 export function reportRuntimeError(

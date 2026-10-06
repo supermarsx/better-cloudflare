@@ -6,6 +6,7 @@ mod app_config;
 mod cloudflare_api;
 mod commands;
 mod crypto;
+mod diagnostics_commands;
 mod mcp_server;
 mod notifications;
 mod passkey;
@@ -305,6 +306,7 @@ fn main() {
             commands::run_domain_audit,
             commands::lookup_domain_registry,
             update_commands::update_check,
+            diagnostics_commands::app_host_facts,
             // Biometric Authentication
             commands::biometric_status,
             commands::biometric_authenticate,

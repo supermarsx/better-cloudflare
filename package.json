@@ -42,6 +42,7 @@
     "clean:win": "powershell -NoProfile -Command \"Remove-Item -Recurse -Force ./dist; Get-ChildItem -Recurse -Filter *.js ./src | Remove-Item -Force\"",
     "check": "npm run format:check && npm run lint && npm run typecheck && npm run test && npm run test:ci-contract",
     "ci": "npm run check",
+    "deps:manifest": "tsx ./scripts/generate-dependency-manifest.ts",
     "clean:src": "tsx ./scripts/cleanup-src-js.ts",
     "check-spf": "tsx ./scripts/check-spf.ts",
     "dns": "tsx ./scripts/cli/dns-cli.ts",
