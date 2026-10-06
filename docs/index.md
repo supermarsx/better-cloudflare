@@ -47,7 +47,7 @@ These are the things most likely to be assumed incorrectly:
 - **Passkey login and registration do not work.** Both fail closed by design; only listing and deleting legacy credentials works, for recovery.
 - **There is no AI assistant in the UI.** Four Rust crates and a React hook exist as groundwork, but nothing in the interface imports the hook.
 - **Biometrics are macOS Touch ID only.** Windows Hello and Linux are not implemented.
-- **The updater is disabled**, and there is no code signing or macOS notarization. Package-manager channels do not exist.
+- **The app does not update itself**, and there is no code signing or macOS notarization. Package-manager channels do not exist. It does check whether a newer release exists and link to it, which is a setting you can turn off.
 - **The desktop app is the only shipped target.** A browser-context storage path still exists in the source — it backs the frontend dev server and the jsdom tests — and it never persists credentials.
 - **Secure storage has no in-memory fallback.** If the OS keyring is unavailable, operations fail rather than degrading silently.
 - **The test runner is Node's built-in `node:test`** via `scripts/run-tests-seq.ts` — not Vitest or Jest. See [Development](development.md#the-unit-runner-is-nodetest-not-vitest-and-not-jest).

@@ -229,7 +229,8 @@ Enabling any write, bulk, destructive, credential-touching or administrative too
 
 ## Distribution
 
-- **The auto-updater is disabled.** `tauri.conf.json` sets `"updater": { "active": false }`. The desktop app does not self-update.
+- **There is no self-updater.** Tauri v2's updater is a plugin, and it is not installed — the app has no code that can replace its own binary. `tauri.conf.json` previously carried `plugins.updater.active = false`, which read as if it were the control; `active` is a Tauri **v1** key that v2 ignores, so it configured nothing and has been removed. Self-updating would need signed update artifacts first, which these releases do not have.
+- **The app does check for new releases.** `bc-update` asks the public GitHub releases API whether a newer `YY.N` tag exists and links to it; nothing is downloaded or installed. It sends no credentials, never reads a release's notes, and is switched off by a setting for anyone who does not want the request.
 - **There is no code signing and no macOS notarization.** `certificateThumbprint` is `null` and the macOS block configures no signing identity or notarization. Bundles produced by `npm run tauri:build` are unsigned.
 - **There is no package-manager distribution.** No Homebrew, Chocolatey, WinGet, Flathub or Snap channel exists. This is future work.
 
