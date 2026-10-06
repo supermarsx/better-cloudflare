@@ -20,12 +20,17 @@ jobs:
       NODE_OPTIONS: --max-old-space-size=1536
     outputs:
       matrix: ${{ steps.matrix.outputs.matrix }}
+      version: ${{ steps.version.outputs.version }}
     steps:
       - name: Checkout release commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.commit_sha }}
           persist-credentials: false
+          # Tags are needed to work out which YY.N comes next. This checkout is
+          # read-only about them: the tag is not created until the publish job.
+          fetch-depth: 0
+          fetch-tags: true
       - name: Use Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -40,6 +45,21 @@ jobs:
         env:
           RELEASE_SHA: ${{ inputs.commit_sha }}
         run: node .github/scripts/release-contract.mjs assert-main "$RELEASE_SHA"
+      # The binary has to know which release it is, and the tag is not
+      # reserved until the publish job -- long after these builds run. So the
+      # tag is predicted here, from the same `next-tag` function the
+      # reservation uses, and the publish job refuses to continue if what it
+      # actually reserved differs. Without this a shipped build carries
+      # version 0.0.0 and cannot tell whether it is current.
+      - name: Predict the release tag the publish job will reserve
+        id: version
+        run: |
+          year="$(date -u +%y)"
+          # Word splitting is wanted here: next-tag takes the tags as
+          # separate arguments.
+          # shellcheck disable=SC2046
+          version="$(node .github/scripts/release-contract.mjs next-tag "$year" $(git tag --list))"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
       - name: Generate native build matrix
         id: matrix
         run: node .github/scripts/release-contract.mjs matrix >> "$GITHUB_OUTPUT"
@@ -105,6 +125,10 @@ jobs:
         if: matrix.platform == 'windows' && matrix.arch == 'arm64'
         run: npm ci --ignore-scripts --no-audit --no-fund
       - name: Build native Tauri bundle
+        # Read with `option_env!`, so a build without it says its version is
+        # unknown rather than guessing one.
+        env:
+          BC_RELEASE_VERSION: ${{ needs.contract.outputs.version }}
         run: >-
           npm run tauri -- build
           --target ${{ matrix.target }}
@@ -222,6 +246,20 @@ jobs:
         env:
           RELEASE_SHA: ${{ inputs.commit_sha }}
         run: node .github/scripts/release-contract.mjs reserve-tag "$RELEASE_SHA"
+      # The builds stamped the predicted tag into the binaries, so a
+      # reservation that came out different means every asset in this run
+      # reports the wrong version and would tell users they are out of date
+      # forever. Stop before publishing rather than ship that.
+      - name: Require the reserved tag to match what the builds stamped
+        env:
+          RESERVED: ${{ steps.tag.outputs.tag }}
+          STAMPED: ${{ needs.contract.outputs.version }}
+        run: |
+          if [ "$RESERVED" != "$STAMPED" ]; then
+            echo "Reserved tag $RESERVED does not match the stamped version $STAMPED." >&2
+            exit 1
+          fi
+          echo "Reserved tag $RESERVED matches the stamped version."
       - name: Validate isolated platform artifacts
         env:
           RELEASE_TAG: ${{ steps.tag.outputs.tag }}
