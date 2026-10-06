@@ -825,6 +825,16 @@ test("a conversation can be created from a configured provider and deleted", asy
   render(<AiAssistantPanel />);
   await screen.findByTestId("ai-conversations");
 
+  // The provider and model are creation-time parameters behind the toggle
+  // now, not a standing row above the transcript. `+` on its own creates with
+  // whatever is selected; this opens the pair to pin that path still works.
+  assertAbsent(
+    screen.queryByLabelText("Model"),
+    "a standing model field above the transcript",
+  );
+  fireEvent.click(
+    screen.getByRole("button", { name: "Choose provider and model" }),
+  );
   fireEvent.change(await screen.findByLabelText("Model"), {
     target: { value: "gpt-4o-mini" },
   });
@@ -839,6 +849,7 @@ test("a conversation can be created from a configured provider and deleted", asy
     ]),
   );
 
+  // Closing is on the tab itself, the way a tab strip sets the convention.
   fireEvent.click(
     screen.getByRole("button", { name: "Delete conversation: First chat" }),
   );
@@ -1224,7 +1235,7 @@ test("a mode the backend refuses leaves the control on the stored value", async 
   assert.equal(screen.getByTestId("ai-mode-select").dataset.mode, "ask");
 });
 
-test("a mode read as read-only reports what that costs, unprompted", async () => {
+test("a mode read as read-only still says what that costs, without printing it", async () => {
   installBackend({
     config: { toolsEnabled: true },
     conversations: [conversationMeta()],
@@ -1233,8 +1244,24 @@ test("a mode read as read-only reports what that costs, unprompted", async () =>
   render(<AiAssistantPanel />);
   await screen.findByTestId("ai-mode-select");
 
+  // Still said — this is the one mode whose behaviour nobody guesses.
+  const consequence = screen.getByTestId("ai-mode-consequence");
   assert.match(
-    screen.getByTestId("ai-mode-consequence").textContent ?? "",
+    consequence.textContent ?? "",
+    /refused outright — you are not prompted/,
+  );
+  // But no longer printed under the control. Docked above the message input,
+  // the consequence and the plan warning were about eight lines of permanent
+  // height in a 22rem sidebar; they are now the trigger's own description and
+  // its hover text instead. `AiModeSelect.test.tsx` pins the association.
+  assert.match(consequence.className, /(?:^|\s)sr-only(?:$|\s)/);
+  assert.match(
+    screen.getByTestId("ai-mode-plan-warning").className,
+    /(?:^|\s)sr-only(?:$|\s)/,
+  );
+  assert.match(
+    screen.getByLabelText("What the assistant may do").getAttribute("title") ??
+      "",
     /refused outright — you are not prompted/,
   );
 });
@@ -1382,6 +1409,17 @@ test("a conversation can be renamed, which nothing in the UI could do before", a
   render(<AiAssistantPanel />);
   await screen.findByTestId("ai-transcript");
 
+  // Rename belongs to the tab you are on: at 22rem a strip cannot carry two
+  // icon buttons per tab, and retitling a conversation you are not reading is
+  // not something a tab strip does. So this switches to it first — which is
+  // also the gesture a user would make.
+  assertAbsent(
+    screen.queryByRole("button", { name: "Rename conversation: Second chat" }),
+    "a rename control on an inactive tab",
+  );
+  fireEvent.click(
+    await screen.findByRole("tab", { name: "Second chat", selected: false }),
+  );
   fireEvent.click(
     await screen.findByRole("button", {
       name: "Rename conversation: Second chat",
@@ -1554,7 +1592,10 @@ test("a blank title is refused before it reaches the backend", async () => {
   assert.equal(named(backend, "aiSetConversationTitle").length, 0);
 });
 
-test("the history is selectable and says which conversation is active", async () => {
+test("the conversations are tabs, and switching one reloads its transcript", async () => {
+  // This used to be a vertical list of rows carrying `aria-pressed`, which is
+  // what the user contradicted: a set of toggle buttons that grew the panel by
+  // a row per conversation and said nothing about controlling the transcript.
   const backend = installBackend({
     conversations: [
       conversationMeta({ id: "conv-1", title: "First chat" }),
@@ -1564,51 +1605,187 @@ test("the history is selectable and says which conversation is active", async ()
   render(<AiAssistantPanel presentation="sidebar" />);
   await screen.findByTestId("ai-transcript");
 
-  const rows = () =>
+  const tabs = () =>
     Array.from(
       document.querySelectorAll<HTMLElement>(
-        '[data-testid="ai-conversation-row"]',
+        '[data-testid="ai-conversation-tab"]',
       ),
     );
   // Landed on the most recent, and says so rather than leaving the user to
   // guess which transcript they are reading.
-  await waitFor(() => assert.equal(rows()[0].dataset.active, "true"));
-  assert.equal(rows()[1].dataset.active, "false");
-  // Filtered on `pressed`: the rename and delete controls in the same row
-  // also carry the title in their names, and only the select button is a
-  // toggle.
+  await waitFor(() => assert.equal(tabs()[0].dataset.active, "true"));
+  assert.equal(tabs()[1].dataset.active, "false");
+
+  // A real tablist: `aria-selected`, not `aria-pressed`, and the transcript is
+  // named as the region the tabs control.
+  const strip = screen.getByTestId("ai-conversation-tabs");
+  assert.equal(strip.getAttribute("role"), "tablist");
+  const first = within(tabs()[0]).getByRole("tab", { name: "First chat" });
+  assert.equal(first.getAttribute("aria-selected"), "true");
+  const panel = screen.getByTestId("ai-conversation-scroll");
+  assert.equal(panel.getAttribute("role"), "tabpanel");
+  assertSameNode(
+    document.getElementById(panel.getAttribute("aria-labelledby") ?? ""),
+    first,
+    "the panel to be labelled by the selected tab",
+  );
+  assert.equal(first.getAttribute("aria-controls"), panel.id);
+  // Closing is afforded on every tab, not only the one being read: that is the
+  // convention a tab strip sets, and a `×` is small enough to carry on all of
+  // them. The pencil is not — see the rename test for why it is active-only.
   assert.ok(
-    within(rows()[0]).getByRole("button", {
-      name: /First chat/,
-      pressed: true,
+    within(tabs()[1]).getByRole("button", {
+      name: "Delete conversation: Second chat",
     }),
+    "an inactive tab must still be closable",
+  );
+
+  // Roving tabindex: one stop for the strip, the arrows move inside it.
+  assert.equal(first.getAttribute("tabindex"), "0");
+  assert.equal(
+    within(tabs()[1])
+      .getByRole("tab", { name: "Second chat" })
+      .getAttribute("tabindex"),
+    "-1",
   );
 
   // Switching reloads that conversation's transcript from the backend rather
   // than reusing the one on screen.
   const readsBefore = named(backend, "aiGetConversation").length;
   fireEvent.click(
-    within(rows()[1]).getByRole("button", {
-      name: /Second chat/,
-      pressed: false,
+    within(tabs()[1]).getByRole("tab", {
+      name: "Second chat",
+      selected: false,
     }),
   );
-  await waitFor(() => assert.equal(rows()[1].dataset.active, "true"));
+  await waitFor(() => assert.equal(tabs()[1].dataset.active, "true"));
   await waitFor(() =>
     assert.ok(named(backend, "aiGetConversation").length > readsBefore),
   );
 });
 
-test("the create row stacks on a framed surface and pairs on the tab", async () => {
-  // The row is a 9rem select, a 12rem input and a button: about 23rem, which
-  // `flex-wrap` saved from overflowing a 22rem dock but left ragged. It is
-  // keyed off the surface, not a viewport breakpoint — a docked panel can be
-  // 22rem wide on a 2560px display.
+test("the tab strip is pinned above the transcript and never grows a second row", async () => {
+  installBackend({
+    conversations: [
+      conversationMeta({ id: "conv-1", title: "First chat" }),
+      conversationMeta({ id: "conv-2", title: "Second chat" }),
+      conversationMeta({ id: "conv-3", title: "Third chat" }),
+    ],
+  });
+  render(<AiAssistantPanel presentation="sidebar" />);
+  await screen.findByTestId("ai-transcript");
+
+  const strip = screen.getByTestId("ai-conversation-tabs");
+  const scroll = screen.getByTestId("ai-conversation-scroll");
+  const dock = screen.getByTestId("ai-conversation-dock");
+  // Outside the scroll region, above it, and unshrinkable — the mirror of the
+  // composer dock below. Inside it, the strip travelled with the transcript, so
+  // switching conversation meant scrolling back up to find the switch.
+  assert.ok(
+    !scroll.contains(strip),
+    "the strip must not scroll with the transcript",
+  );
+  assert.ok(dock.contains(strip));
+  assert.ok(
+    dock.compareDocumentPosition(scroll) & Node.DOCUMENT_POSITION_FOLLOWING,
+  );
+  assert.match(dock.className, /(?:^|\s)shrink-0(?:$|\s)/);
+  assertSameNode(
+    dock.parentElement,
+    scroll.parentElement,
+    "the strip and the transcript to be siblings in one flex column",
+  );
+
+  // `ui-segment-group` scrolls sideways with `overflow-y: hidden`; the paired
+  // `scrollbar-themed` is what its `scrollbar-gutter: auto` override keys off,
+  // so the themed gutter does not steal inline room from the tabs. Wrapping
+  // instead would let three conversations become three rows, which is the cost
+  // this change exists to remove.
+  assert.match(strip.className, /(?:^|\s)ui-segment-group(?:$|\s)/);
+  assert.match(strip.className, /(?:^|\s)scrollbar-themed(?:$|\s)/);
+});
+
+test("arrows move along the strip, and Home and End reach its ends", async () => {
+  const backend = installBackend({
+    conversations: [
+      conversationMeta({ id: "conv-1", title: "First chat" }),
+      conversationMeta({ id: "conv-2", title: "Second chat" }),
+      conversationMeta({ id: "conv-3", title: "Third chat" }),
+    ],
+  });
+  render(<AiAssistantPanel />);
+  await screen.findByTestId("ai-transcript");
+  const tab = (name: string) => screen.getByRole("tab", { name });
+  await waitFor(() =>
+    assert.equal(tab("First chat").getAttribute("aria-selected"), "true"),
+  );
+
+  // Selection follows focus: switching costs one read and shows the thing the
+  // user is looking for, so making them confirm with Enter is a keystroke for
+  // nothing.
+  fireEvent.keyDown(tab("First chat"), { key: "ArrowRight" });
+  await waitFor(() =>
+    assert.equal(tab("Second chat").getAttribute("aria-selected"), "true"),
+  );
+
+  fireEvent.keyDown(tab("Second chat"), { key: "End" });
+  await waitFor(() =>
+    assert.equal(tab("Third chat").getAttribute("aria-selected"), "true"),
+  );
+
+  // Wrapping, like every other tablist in this app.
+  fireEvent.keyDown(tab("Third chat"), { key: "ArrowRight" });
+  await waitFor(() =>
+    assert.equal(tab("First chat").getAttribute("aria-selected"), "true"),
+  );
+
+  fireEvent.keyDown(tab("First chat"), { key: "ArrowLeft" });
+  await waitFor(() =>
+    assert.equal(tab("Third chat").getAttribute("aria-selected"), "true"),
+  );
+
+  fireEvent.keyDown(tab("Third chat"), { key: "Home" });
+  await waitFor(() =>
+    assert.equal(tab("First chat").getAttribute("aria-selected"), "true"),
+  );
+
+  // An arrow on a tab is a move, not a page scroll.
+  assert.equal(
+    fireEvent.keyDown(tab("First chat"), {
+      key: "ArrowRight",
+      cancelable: true,
+    }),
+    false,
+  );
+  // And every switch went through the backend rather than being faked locally.
+  await waitFor(() =>
+    assert.ok(named(backend, "aiGetConversation").length >= 5),
+  );
+});
+
+test("the provider and model are behind the toggle, stacked on a framed surface", async () => {
+  // The pair is a 9rem select and a 12rem input: about 21rem, which `flex-wrap`
+  // saved from overflowing a 22rem dock but left ragged. Keyed off the surface,
+  // not a viewport breakpoint — a docked panel can be 22rem wide on a 2560px
+  // display. They are collapsed now because they are read once per
+  // conversation, and standing above the transcript they cost the same height
+  // the conversation list used to.
   installBackend({
     providers: [providerProfile()],
     conversations: [conversationMeta()],
   });
   render(<AiAssistantPanel presentation="sidebar" />);
+  const toggle = await screen.findByRole("button", {
+    name: "Choose provider and model",
+  });
+  assert.equal(toggle.getAttribute("aria-expanded"), "false");
+  assertAbsent(
+    screen.queryByTestId("ai-conversation-pickers"),
+    "a standing picker row",
+  );
+
+  fireEvent.click(toggle);
+  assert.equal(toggle.getAttribute("aria-expanded"), "true");
   const docked = await screen.findByLabelText("Model");
   assert.match(docked.className, /(?:^|\s)w-full(?:$|\s)/);
   cleanup();
@@ -1618,6 +1795,9 @@ test("the create row stacks on a framed surface and pairs on the tab", async () 
     conversations: [conversationMeta()],
   });
   render(<AiAssistantPanel presentation="panel" />);
+  fireEvent.click(
+    await screen.findByRole("button", { name: "Choose provider and model" }),
+  );
   const tabbed = await screen.findByLabelText("Model");
   assert.match(tabbed.className, /(?:^|\s)w-48(?:$|\s)/);
 });

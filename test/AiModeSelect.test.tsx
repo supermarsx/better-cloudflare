@@ -53,6 +53,39 @@ function renderSelect(
   return chosen;
 }
 
+function assertAbsent(node: Element | null, label: string): void {
+  // Compared to `null` first: inspecting a jsdom element on a failed
+  // comparison walks its whole document graph. See AiAssistantPanel.test.tsx.
+  assert.ok(node === null, `expected no ${label}`);
+}
+
+/** The node is in the accessibility tree but spends no layout height. */
+function assertSrOnly(node: Element, label: string): void {
+  assert.match(
+    node.className,
+    /(?:^|\s)sr-only(?:$|\s)/,
+    `${label} must be sr-only, not printed`,
+  );
+}
+
+/**
+ * The trigger points at these nodes, in order, through `aria-describedby`.
+ *
+ * The association is the whole point of moving the prose: text that merely
+ * exists somewhere in the DOM is not reachable, it is just hidden.
+ */
+function assertDescribes(trigger: Element, ...described: Element[]): void {
+  assert.deepEqual(
+    (trigger.getAttribute("aria-describedby") ?? "")
+      .split(/\s+/)
+      .filter(Boolean),
+    described.map((node) => node.id),
+  );
+  for (const node of described) {
+    assert.ok(node.id.length > 0, "a described node needs an id");
+  }
+}
+
 beforeEach(async () => {
   await useEnglishLocale();
   enableThemedSelectEnvironment();
@@ -90,18 +123,34 @@ test("every mode is offered, in the shared order, with the current one shown", a
 
 test("read-only says it refuses outright, and warns about a plan in flight", () => {
   renderSelect({ mode: "readOnly" });
+  const trigger = screen.getByLabelText("What the assistant may do");
 
   // The one consequence nobody guesses from the name.
+  const consequence = screen.getByTestId("ai-mode-consequence");
   assert.match(
-    screen.getByTestId("ai-mode-consequence").textContent ?? "",
+    consequence.textContent ?? "",
     /refused outright — you are not prompted/,
   );
   // And the part specific to changing it mid-task rather than in a settings
   // screen: a step that was runnable a moment ago comes back blocked.
+  const warning = screen.getByTestId("ai-mode-plan-warning");
   assert.match(
-    screen.getByTestId("ai-mode-plan-warning").textContent ?? "",
+    warning.textContent ?? "",
     /come back blocked while this is set, not ask you/,
   );
+
+  // Both are *reachable*, not printed. This control is docked directly above
+  // the message input now, and eight lines of standing prose there is height
+  // the transcript needs more — so the sentences moved into the accessibility
+  // tree and onto hover instead of being deleted.
+  assertSrOnly(consequence, "the consequence");
+  assertSrOnly(warning, "the plan warning");
+  assertDescribes(trigger, consequence, warning);
+  // Hover is where a sighted user still gets them, and the plan warning has
+  // nowhere else to be seen at all.
+  const title = trigger.getAttribute("title") ?? "";
+  assert.match(title, /refused outright — you are not prompted/);
+  assert.match(title, /come back blocked while this is set, not ask you/);
 });
 
 test("the other modes state their own consequence and carry no plan warning", () => {
@@ -111,13 +160,58 @@ test("the other modes state their own consequence and carry no plan warning", ()
       (entry) => entry.id === mode,
     )?.consequence;
     assert.ok(expected);
-    assert.equal(
-      screen.getByTestId("ai-mode-consequence").textContent,
-      expected,
-    );
+    const consequence = screen.getByTestId("ai-mode-consequence");
+    assert.equal(consequence.textContent, expected);
     assert.equal(screen.queryByTestId("ai-mode-plan-warning"), null, mode);
+
+    const trigger = screen.getByLabelText("What the assistant may do");
+    assertSrOnly(consequence, `the consequence for ${mode}`);
+    assertDescribes(trigger, consequence);
+    assert.equal(trigger.getAttribute("title"), expected, mode);
     cleanup();
   }
+});
+
+test("the control is named without printing a label above it", () => {
+  renderSelect({ mode: "ask" });
+
+  // The visible "What the assistant may do" heading is gone — that is the line
+  // the user objected to — but the name it carried is not: an unnamed dropdown
+  // deciding what the assistant may do would be worse than a wasted line.
+  const trigger = screen.getByLabelText("What the assistant may do");
+  assert.equal(trigger.getAttribute("role"), "combobox");
+  assertAbsent(
+    document.querySelector("label[for]"),
+    "a visible label element above the control",
+  );
+
+  // Nothing inside the control spends visible height on prose. Asserted over
+  // every paragraph rather than the two known ids, so a third one added later
+  // has to make the same choice.
+  const control = screen.getByTestId("ai-mode-select");
+  const paragraphs = Array.from(control.querySelectorAll("p"));
+  assert.ok(paragraphs.length > 0, "the description must still exist");
+  for (const paragraph of paragraphs) {
+    assertSrOnly(paragraph, `"${paragraph.textContent?.slice(0, 32)}…"`);
+  }
+});
+
+test("each option carries its own consequence, for the moment of choosing", async () => {
+  renderSelect({ mode: "ask" });
+
+  // The better placement would be a description inside each option, but the
+  // shared `SelectItem` wraps every child in Radix's `ItemText`, so visible
+  // text there would also be painted on the closed trigger. A `title` is what
+  // is left that does not require changing a component this one does not own.
+  const popover = await openThemedSelect(
+    screen.getByLabelText("What the assistant may do"),
+  );
+  for (const entry of AI_PERMISSION_MODE_COPY) {
+    const option = popover.querySelector(`[data-value="${entry.id}"]`);
+    assert.ok(option, `no option for ${entry.id}`);
+    assert.equal(option.getAttribute("title"), entry.consequence, entry.id);
+  }
+  await closeThemedSelect();
 });
 
 test("choosing a mode reports it once, and re-choosing the current one reports nothing", async () => {

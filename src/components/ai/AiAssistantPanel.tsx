@@ -74,7 +74,7 @@ import { withObjectUrl } from "@/lib/runtime/resource-scope";
 import { cn } from "@/lib/utils";
 
 import { AiComposer } from "./AiComposer";
-import { AiConversationList } from "./AiConversationList";
+import { AiConversationList, aiConversationTabId } from "./AiConversationList";
 import { AiLinkList } from "./AiLinkList";
 import { AiModeSelect } from "./AiModeSelect";
 import { AiPlanView } from "./AiPlanView";
@@ -148,6 +148,16 @@ export function AiAssistantPanel({
   // Scoped per instance: the dock and a workspace tab can both be mounted in
   // the same document while the placement is mid-change.
   const modeId = useId();
+  /**
+   * Scopes the conversation tab ids and names the region they control.
+   *
+   * The tabs are in `AiConversationList` and the region is the scroll area
+   * below, so the two halves of the `aria-controls`/`aria-labelledby` pair are
+   * in different components and the ids have to be minted somewhere both can
+   * reach. Here, because this is what owns both.
+   */
+  const tabsId = useId();
+  const transcriptPanelId = `${tabsId}-panel`;
 
   /**
    * The dock and the bubble are handed a height by their chrome; the tab is
@@ -516,6 +526,9 @@ export function AiAssistantPanel({
   // message the backend already persisted.
   const stalled = chat.error?.message === AI_STREAM_STALLED_MESSAGE;
 
+  /** Whether the strip below renders a tablist at all. */
+  const hasConversationTabs = conversations.conversations.length > 0;
+
   return (
     <Card
       className={cn(
@@ -574,17 +587,13 @@ export function AiAssistantPanel({
           framed && "p-4 pt-0",
         )}
       >
-        <div
-          ref={scrollRef}
-          onScroll={handleScroll}
-          data-testid="ai-conversation-scroll"
-          className="scrollbar-themed min-h-0 flex-1 space-y-4 overflow-x-hidden overflow-y-auto"
-        >
-          <AiToolNotice
-            posture={posture}
-            availability={toolPermissions.snapshot?.availability ?? null}
-          />
-
+        {/* The tab strip, pinned above the scroll region — the mirror of the
+            composer dock below it. Inside the scroll region it travelled with
+            the transcript, so switching conversation meant scrolling back up
+            to find the switch; a tab strip that scrolls away is not a tab
+            strip. One row, whatever the conversation count: it scrolls
+            sideways rather than wrapping. */}
+        <div className="shrink-0" data-testid="ai-conversation-dock">
           <AiConversationList
             conversations={conversations.conversations}
             selectedId={selectedId}
@@ -599,7 +608,32 @@ export function AiAssistantPanel({
             onSelect={setSelectedId}
             onDelete={handleDelete}
             onRename={handleRename}
+            idPrefix={tabsId}
+            panelId={transcriptPanelId}
             compact={framed}
+          />
+        </div>
+
+        <div
+          ref={scrollRef}
+          onScroll={handleScroll}
+          id={transcriptPanelId}
+          data-testid="ai-conversation-scroll"
+          // The region the tabs above control. Only a `tabpanel` when there is
+          // a tablist to own it: with no conversations there are no tabs, and
+          // a panel nothing points at would be a claim about a relationship
+          // that does not exist.
+          role={hasConversationTabs ? "tabpanel" : undefined}
+          aria-labelledby={
+            hasConversationTabs && selectedId !== null
+              ? aiConversationTabId(tabsId, selectedId)
+              : undefined
+          }
+          className="scrollbar-themed min-h-0 flex-1 space-y-4 overflow-x-hidden overflow-y-auto"
+        >
+          <AiToolNotice
+            posture={posture}
+            availability={toolPermissions.snapshot?.availability ?? null}
           />
           {/* The plan sits above the transcript, not below it, and the
                 reason is the point of the whole screen: a blocked step has to
