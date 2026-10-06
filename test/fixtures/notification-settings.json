@@ -14,12 +14,20 @@
       "backoffMaxMinutes": 120
     },
     "kinds": {
-      "domainExpiry": { "enabled": true, "severity": "auto", "osNotify": true },
+      "domainExpiry": {
+        "enabled": true,
+        "severity": "auto",
+        "osNotify": true
+      },
       "recordChange": {
         "enabled": true,
         "severity": "auto",
         "osNotify": true,
-        "changes": { "added": true, "changed": true, "removed": true },
+        "changes": {
+          "added": true,
+          "changed": true,
+          "removed": true
+        },
         "fields": [
           "content",
           "ttl",
@@ -30,7 +38,11 @@
           "type"
         ]
       },
-      "service": { "enabled": true, "severity": "info", "osNotify": false },
+      "service": {
+        "enabled": true,
+        "severity": "info",
+        "osNotify": false
+      },
       "auditFinding": {
         "enabled": false,
         "severity": "auto",
@@ -43,9 +55,20 @@
       "milestones": [90, 60, 30, 14, 7, 3, 1],
       "notifyExpired": true,
       "source": "auto",
-      "severityByMilestone": { "warningAtOrBelow": 14, "criticalAtOrBelow": 3 }
+      "severityByMilestone": {
+        "warningAtOrBelow": 14,
+        "criticalAtOrBelow": 3
+      },
+      "refreshCountdown": true,
+      "recheckDate": true,
+      "onDateChange": "archive"
     },
-    "zones": { "mode": "all", "include": [], "exclude": [], "overrides": {} },
+    "zones": {
+      "mode": "all",
+      "include": [],
+      "exclude": [],
+      "overrides": {}
+    },
     "quietHours": {
       "enabled": false,
       "start": "22:00",
@@ -54,8 +77,14 @@
       "timezone": "local",
       "behaviour": "silence"
     },
-    "osNotifications": { "enabled": true, "minSeverity": "warning" },
-    "inApp": { "toastMinSeverity": "critical", "badge": true },
+    "osNotifications": {
+      "enabled": true,
+      "minSeverity": "warning"
+    },
+    "inApp": {
+      "toastMinSeverity": "critical",
+      "badge": true
+    },
     "retention": {
       "autoArchiveReadAfterDays": 30,
       "purgeArchivedAfterDays": 90,
@@ -91,7 +120,11 @@
     },
     {
       "name": "partial service.enabled keeps every other default",
-      "input": { "service": { "enabled": false } },
+      "input": {
+        "service": {
+          "enabled": false
+        }
+      },
       "expectedNormalized": {
         "$defaults": true,
         "service": {
@@ -202,7 +235,11 @@
     },
     {
       "name": "milestones dedup, drop out-of-range, sort descending",
-      "input": { "expiry": { "milestones": [1, 1, 400, 30, 0] } },
+      "input": {
+        "expiry": {
+          "milestones": [1, 1, 400, 30, 0]
+        }
+      },
       "expectedNormalized": {
         "$defaults": true,
         "expiry": {
@@ -212,7 +249,10 @@
           "severityByMilestone": {
             "warningAtOrBelow": 14,
             "criticalAtOrBelow": 3
-          }
+          },
+          "refreshCountdown": true,
+          "recheckDate": true,
+          "onDateChange": "archive"
         }
       }
     },
@@ -233,13 +273,20 @@
           "severityByMilestone": {
             "warningAtOrBelow": 14,
             "criticalAtOrBelow": 3
-          }
+          },
+          "refreshCountdown": true,
+          "recheckDate": true,
+          "onDateChange": "archive"
         }
       }
     },
     {
       "name": "empty milestones stays empty (expired-only)",
-      "input": { "expiry": { "milestones": [] } },
+      "input": {
+        "expiry": {
+          "milestones": []
+        }
+      },
       "expectedNormalized": {
         "$defaults": true,
         "expiry": {
@@ -249,7 +296,10 @@
           "severityByMilestone": {
             "warningAtOrBelow": 14,
             "criticalAtOrBelow": 3
-          }
+          },
+          "refreshCountdown": true,
+          "recheckDate": true,
+          "onDateChange": "archive"
         }
       }
     },
@@ -273,7 +323,10 @@
           "severityByMilestone": {
             "warningAtOrBelow": 7,
             "criticalAtOrBelow": 7
-          }
+          },
+          "refreshCountdown": true,
+          "recheckDate": true,
+          "onDateChange": "archive"
         }
       }
     },
@@ -282,18 +335,34 @@
       "input": {
         "bogusTopLevel": 1,
         "kinds": {
-          "bogusKind": { "enabled": true },
-          "domainExpiry": { "severity": "loud" },
+          "bogusKind": {
+            "enabled": true
+          },
+          "domainExpiry": {
+            "severity": "loud"
+          },
           "recordChange": {
             "severity": "critical",
-            "changes": { "removed": false },
+            "changes": {
+              "removed": false
+            },
             "fields": ["ttl", "content", "ttl", "bogus"]
           },
-          "service": { "severity": "warning", "osNotify": true }
+          "service": {
+            "severity": "warning",
+            "osNotify": true
+          }
         },
-        "expiry": { "source": "whois" },
-        "osNotifications": { "minSeverity": "verbose" },
-        "inApp": { "toastMinSeverity": "never", "badge": false }
+        "expiry": {
+          "source": "whois"
+        },
+        "osNotifications": {
+          "minSeverity": "verbose"
+        },
+        "inApp": {
+          "toastMinSeverity": "never",
+          "badge": false
+        }
       },
       "expectedNormalized": {
         "$defaults": true,
@@ -307,7 +376,11 @@
             "enabled": true,
             "severity": "critical",
             "osNotify": true,
-            "changes": { "added": true, "changed": true, "removed": false },
+            "changes": {
+              "added": true,
+              "changed": true,
+              "removed": false
+            },
             "fields": ["content", "ttl"]
           },
           "service": {
@@ -323,12 +396,21 @@
             "categories": ["email", "security", "hygiene"]
           }
         },
-        "inApp": { "toastMinSeverity": "never", "badge": false }
+        "inApp": {
+          "toastMinSeverity": "never",
+          "badge": false
+        }
       }
     },
     {
       "name": "empty fields list resets to the default field list",
-      "input": { "kinds": { "recordChange": { "fields": [] } } },
+      "input": {
+        "kinds": {
+          "recordChange": {
+            "fields": []
+          }
+        }
+      },
       "expectedNormalized": "$defaults"
     },
     {
@@ -339,14 +421,24 @@
           "include": [" z1 ", "z1", "", "z2"],
           "exclude": ["z3", "z3"],
           "overrides": {
-            "z1": { "muted": true, "mutedUntil": "2000-01-01T00:00:00Z" },
-            "z2": { "muted": false, "kinds": {} },
+            "z1": {
+              "muted": true,
+              "mutedUntil": "2000-01-01T00:00:00Z"
+            },
+            "z2": {
+              "muted": false,
+              "kinds": {}
+            },
             "z3": {
               "muted": false,
               "mutedUntil": "2999-01-01T00:00:00Z",
-              "kinds": { "recordChange": false }
+              "kinds": {
+                "recordChange": false
+              }
             },
-            "": { "muted": true }
+            "": {
+              "muted": true
+            }
           }
         }
       },
@@ -357,11 +449,15 @@
           "include": ["z1", "z2"],
           "exclude": ["z3"],
           "overrides": {
-            "z1": { "muted": true },
+            "z1": {
+              "muted": true
+            },
             "z3": {
               "muted": false,
               "mutedUntil": "2999-01-01T00:00:00Z",
-              "kinds": { "recordChange": false }
+              "kinds": {
+                "recordChange": false
+              }
             }
           }
         }
@@ -369,7 +465,11 @@
     },
     {
       "name": "zones: invalid mode falls back to all",
-      "input": { "zones": { "mode": "denylist" } },
+      "input": {
+        "zones": {
+          "mode": "denylist"
+        }
+      },
       "expectedNormalized": "$defaults"
     },
     {
@@ -422,12 +522,18 @@
     },
     {
       "name": "version is always rewritten to 1",
-      "input": { "version": 7 },
+      "input": {
+        "version": 7
+      },
       "expectedNormalized": "$defaults"
     },
     {
       "name": "audit poll below the floor is clamped up",
-      "input": { "service": { "auditPollMinutes": 1 } },
+      "input": {
+        "service": {
+          "auditPollMinutes": 1
+        }
+      },
       "expectedNormalized": {
         "$defaults": true,
         "service": {
@@ -445,7 +551,11 @@
     },
     {
       "name": "audit poll above the ceiling is clamped down",
-      "input": { "service": { "auditPollMinutes": 99999 } },
+      "input": {
+        "service": {
+          "auditPollMinutes": 99999
+        }
+      },
       "expectedNormalized": {
         "$defaults": true,
         "service": {
@@ -484,7 +594,11 @@
             "enabled": true,
             "severity": "auto",
             "osNotify": true,
-            "changes": { "added": true, "changed": true, "removed": true },
+            "changes": {
+              "added": true,
+              "changed": true,
+              "removed": true
+            },
             "fields": [
               "content",
               "ttl",
@@ -495,7 +609,11 @@
               "type"
             ]
           },
-          "service": { "enabled": true, "severity": "info", "osNotify": false },
+          "service": {
+            "enabled": true,
+            "severity": "info",
+            "osNotify": false
+          },
           "auditFinding": {
             "enabled": true,
             "severity": "auto",
@@ -507,10 +625,63 @@
       }
     },
     {
+      "name": "expiry: unknown onDateChange falls back to archive, refresh switches default on",
+      "input": {
+        "expiry": { "onDateChange": "shred" }
+      },
+      "expectedNormalized": "$defaults"
+    },
+    {
+      "name": "expiry: both refresh switches can be turned off and the stale action chosen",
+      "input": {
+        "expiry": {
+          "refreshCountdown": false,
+          "recheckDate": false,
+          "onDateChange": "update"
+        }
+      },
+      "expectedNormalized": {
+        "$defaults": true,
+        "expiry": {
+          "milestones": [90, 60, 30, 14, 7, 3, 1],
+          "notifyExpired": true,
+          "source": "auto",
+          "severityByMilestone": {
+            "warningAtOrBelow": 14,
+            "criticalAtOrBelow": 3
+          },
+          "refreshCountdown": false,
+          "recheckDate": false,
+          "onDateChange": "update"
+        }
+      }
+    },
+    {
+      "name": "expiry: resolve is accepted as a stale action",
+      "input": { "expiry": { "onDateChange": "resolve" } },
+      "expectedNormalized": {
+        "$defaults": true,
+        "expiry": {
+          "milestones": [90, 60, 30, 14, 7, 3, 1],
+          "notifyExpired": true,
+          "source": "auto",
+          "severityByMilestone": {
+            "warningAtOrBelow": 14,
+            "criticalAtOrBelow": 3
+          },
+          "refreshCountdown": true,
+          "recheckDate": true,
+          "onDateChange": "resolve"
+        }
+      }
+    },
+    {
       "name": "audit categories dedupe into canonical order",
       "input": {
         "kinds": {
-          "auditFinding": { "categories": ["hygiene", "email", "email"] }
+          "auditFinding": {
+            "categories": ["hygiene", "email", "email"]
+          }
         }
       },
       "expectedNormalized": {
@@ -525,7 +696,11 @@
             "enabled": true,
             "severity": "auto",
             "osNotify": true,
-            "changes": { "added": true, "changed": true, "removed": true },
+            "changes": {
+              "added": true,
+              "changed": true,
+              "removed": true
+            },
             "fields": [
               "content",
               "ttl",
@@ -536,7 +711,11 @@
               "type"
             ]
           },
-          "service": { "enabled": true, "severity": "info", "osNotify": false },
+          "service": {
+            "enabled": true,
+            "severity": "info",
+            "osNotify": false
+          },
           "auditFinding": {
             "enabled": false,
             "severity": "auto",

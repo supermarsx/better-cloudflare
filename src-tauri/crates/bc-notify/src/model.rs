@@ -117,6 +117,26 @@ impl Notification {
         self.read_at.is_none()
     }
 
+    /// Mark read at `now` if it was not read already. Idempotent: an item the
+    /// user read keeps the instant they read it.
+    pub fn mark_read_at(&mut self, now: DateTime<Utc>) {
+        if self.read_at.is_none() {
+            self.read_at = Some(format_ts(now));
+        }
+    }
+
+    /// Archive at `now`, marking it read if it was not already.
+    ///
+    /// The inbox's rule in one place: an archived item never counts towards the
+    /// unread badge, so archiving one the user never opened also reads it.
+    /// Takes the clock so a pass that withdraws an item (see
+    /// [`crate::expiry::refresh_expiry_notification`]) stamps the same instant
+    /// it is reasoning about rather than reading the wall clock of its own.
+    pub fn archive_at(&mut self, now: DateTime<Utc>) {
+        self.archived_at = Some(format_ts(now));
+        self.mark_read_at(now);
+    }
+
     pub fn is_archived(&self) -> bool {
         self.archived_at.is_some()
     }

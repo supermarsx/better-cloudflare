@@ -36,7 +36,7 @@ pub use diff::{
 };
 pub use expiry::{
     build_expiry_notification, days_left, due_milestone, normalize_milestones, parse_rdap_expiry,
-    EXPIRED_MILESTONE,
+    refresh_expiry_notification, ExpiryRefresh, EXPIRED_MILESTONE,
 };
 pub use ledger::OwnChangeLedger;
 pub use model::{
@@ -46,7 +46,9 @@ pub use rdap::{
     fetch_rdap_expiry, fetch_rdap_registration, is_valid_hostname, normalize_domain, RdapError,
     RdapRegistration,
 };
-pub use settings::{AuditMinSeverity, NotificationSettings, QuietBehaviour};
+pub use settings::{
+    AuditMinSeverity, NotificationSettings, QuietBehaviour, StaleExpiryAction,
+};
 pub use store::{
     AuditFindingState, DomainExpiryState, NotifyState, NotifyStore, StoreError, ZoneAuditState,
     ZoneState,
@@ -148,6 +150,19 @@ pub struct PassReport {
     pub duration_ms: u64,
     pub zones_checked: u32,
     pub notifications_created: u32,
+    /// Existing expiry notices whose countdown this pass brought up to date.
+    ///
+    /// Counted apart from `notifications_created` because a refresh is not an
+    /// alert: it keeps the item's id, `createdAt` and `readAt`, so nothing
+    /// reaches the OS notification centre and nothing comes back unread. It is
+    /// still a change the inbox should be told about, which is what the Tauri
+    /// layer uses this for.
+    #[serde(default)]
+    pub notifications_refreshed: u32,
+    /// Expiry notices withdrawn because the date they were written for is no
+    /// longer the date on record — a renewal, usually. Archived, not deleted.
+    #[serde(default)]
+    pub notifications_superseded: u32,
     pub errors: u32,
     #[serde(default)]
     pub error_messages: Vec<String>,
@@ -159,13 +174,18 @@ pub struct PassReport {
 }
 
 impl PassReport {
-    fn new(kind: PassKind, now: DateTime<Utc>) -> Self {
+    /// An empty report for a pass starting at `now`. Public so callers that
+    /// stand in for a pass (the Tauri layer's test runner) do not have to spell
+    /// out every field and go stale when one is added.
+    pub fn new(kind: PassKind, now: DateTime<Utc>) -> Self {
         Self {
             kind,
             started_at: format_ts(now),
             duration_ms: 0,
             zones_checked: 0,
             notifications_created: 0,
+            notifications_refreshed: 0,
+            notifications_superseded: 0,
             errors: 0,
             error_messages: Vec::new(),
             skipped: false,
@@ -435,7 +455,110 @@ fn zone_for_domain(store: &NotifyStore, domain: &str) -> Option<(String, String)
         .map(|(id, state)| (id.clone(), state.zone_name.clone()))
 }
 
-/// Walk cached expiry dates and emit due milestone notifications (no network).
+/// A domain the expiry kind may act on this pass: a cached date, the source it
+/// came from, and the zone it belongs to if the account still lists one.
+struct ExpiryCandidate {
+    domain: String,
+    zone: Option<(String, String)>,
+    expires_at: DateTime<Utc>,
+    source: String,
+}
+
+/// Domains with a usable cached expiry date whose zone settings allow the
+/// `domain_expiry` kind right now.
+///
+/// One list feeds both halves of the kind — the refresh and the milestone
+/// evaluation — so a zone the user muted or turned the kind off for is out of
+/// reach of either. A refresh must not become a way around a setting, and that
+/// cuts both ways: a muted zone's countdown stops where its alerts stop.
+fn expiry_candidates(
+    store: &NotifyStore,
+    settings: &NotificationSettings,
+    now: DateTime<Utc>,
+) -> Vec<ExpiryCandidate> {
+    let mut candidates = Vec::new();
+    for (domain, entry) in &store.state().expiry {
+        let Some(expires_at) = entry.expires_at.as_deref().and_then(parse_ts) else {
+            continue;
+        };
+        let zone = zone_for_domain(store, domain);
+        if let Some((zone_id, _)) = &zone {
+            if !settings.is_zone_monitored(zone_id)
+                || !settings.zone_kind_enabled(zone_id, NotificationKind::DomainExpiry)
+                || settings.is_zone_muted(zone_id, now)
+            {
+                continue;
+            }
+        }
+        candidates.push(ExpiryCandidate {
+            domain: domain.clone(),
+            zone,
+            expires_at,
+            source: entry.source.clone().unwrap_or_else(|| "rdap".to_string()),
+        });
+    }
+    candidates
+}
+
+/// Correct every unarchived expiry notice against the date the store holds, and
+/// withdraw the ones written for a date that no longer applies.
+///
+/// Spends no network call: the date is the one the expiry pass already fetched
+/// and cached, so this runs on every pass (it is reached from [`finish_pass`])
+/// while the date itself is re-checked only on `service.rdapCacheHours`. The
+/// per-notice decision — and why a withdrawal archives rather than deletes — is
+/// [`refresh_expiry_notification`].
+///
+/// An archived notice is left alone: the user has filed it, and resurrecting it
+/// to tick a countdown nobody is reading is the opposite of the point. So is a
+/// notice for a domain with no cached date, where there is nothing truer to say.
+fn refresh_expiry_notices(
+    store: &mut NotifyStore,
+    settings: &NotificationSettings,
+    candidates: &[ExpiryCandidate],
+    now: DateTime<Utc>,
+    report: &mut PassReport,
+) {
+    let held: HashMap<&str, (DateTime<Utc>, &str)> = candidates
+        .iter()
+        .map(|c| (c.domain.as_str(), (c.expires_at, c.source.as_str())))
+        .collect();
+    let mut refreshed = 0;
+    let mut withdrawn = 0;
+    let result = store.update_items(|item| {
+        if item.kind != NotificationKind::DomainExpiry || item.is_archived() {
+            return false;
+        }
+        let current = expiry::expiry_payload_domain(&item.payload)
+            .and_then(|domain| held.get(domain).copied());
+        let Some((expires_at, source)) = current else {
+            return false;
+        };
+        match refresh_expiry_notification(settings, item, expires_at, source, now) {
+            ExpiryRefresh::Unchanged => false,
+            ExpiryRefresh::Refreshed => {
+                refreshed += 1;
+                true
+            }
+            ExpiryRefresh::Withdrawn => {
+                withdrawn += 1;
+                true
+            }
+        }
+    });
+    if let Err(error) = result {
+        report.record_error(error.to_string());
+    }
+    report.notifications_refreshed += refreshed;
+    report.notifications_superseded += withdrawn;
+}
+
+/// Bring expiry notices up to date and emit due milestone notifications, both
+/// from cached dates (no network).
+///
+/// Two distinct jobs, in order: existing notices are corrected or withdrawn
+/// quietly ([`refresh_expiry_notices`]), then a milestone the domain has newly
+/// crossed is delivered as its own notification — the only half that alerts.
 pub fn evaluate_expiry_milestones(
     store: &mut NotifyStore,
     settings: &NotificationSettings,
@@ -445,36 +568,37 @@ pub fn evaluate_expiry_milestones(
     if !settings.kinds.domain_expiry.enabled {
         return 0;
     }
+    let candidates = expiry_candidates(store, settings, now);
+    refresh_expiry_notices(store, settings, &candidates, now, report);
+
     let mut created = 0;
-    let domains: Vec<String> = store.state().expiry.keys().cloned().collect();
-    for domain in domains {
-        let Some(entry) = store.state().expiry.get(&domain).cloned() else {
-            continue;
-        };
-        let Some(expires_at) = entry.expires_at.as_deref().and_then(parse_ts) else {
-            continue;
-        };
-        let zone = zone_for_domain(store, &domain);
-        if let Some((zone_id, _)) = &zone {
-            if !settings.is_zone_monitored(zone_id)
-                || !settings.zone_kind_enabled(zone_id, NotificationKind::DomainExpiry)
-                || settings.is_zone_muted(zone_id, now)
-            {
-                continue;
-            }
-        }
-        let days = days_left(expires_at, now);
-        let emitted: HashSet<u32> = entry.emitted.iter().copied().collect();
+    for candidate in &candidates {
+        let emitted: HashSet<u32> = store
+            .state()
+            .expiry
+            .get(&candidate.domain)
+            .map(|entry| entry.emitted.iter().copied().collect())
+            .unwrap_or_default();
+        let days = days_left(candidate.expires_at, now);
         let (due, newly) = due_milestone(days, &settings.expiry.milestones, &emitted);
         if newly.is_empty() {
             continue;
         }
-        let source = entry.source.clone().unwrap_or_else(|| "rdap".to_string());
         if let Some(milestone) = due {
             if milestone != EXPIRED_MILESTONE || settings.expiry.notify_expired {
-                let zone_ref = zone.as_ref().map(|(id, name)| (id.as_str(), name.as_str()));
+                let zone_ref = candidate
+                    .zone
+                    .as_ref()
+                    .map(|(id, name)| (id.as_str(), name.as_str()));
                 let notification = build_expiry_notification(
-                    settings, &domain, zone_ref, expires_at, days, milestone, &source, now,
+                    settings,
+                    &candidate.domain,
+                    zone_ref,
+                    candidate.expires_at,
+                    days,
+                    milestone,
+                    &candidate.source,
+                    now,
                 );
                 match deliver(store, settings, notification, now) {
                     Ok(true) => created += 1,
@@ -483,7 +607,7 @@ pub fn evaluate_expiry_milestones(
                 }
             }
         }
-        if let Some(state) = store.state_mut().expiry.get_mut(&domain) {
+        if let Some(state) = store.state_mut().expiry.get_mut(&candidate.domain) {
             for m in newly {
                 if !state.emitted.contains(&m) {
                     state.emitted.push(m);
@@ -625,6 +749,23 @@ pub async fn run_expiry_pass_with<S: ZoneSource>(
         }
         report.zones_checked += 1;
 
+        let existing = store
+            .state()
+            .expiry
+            .get(&domain)
+            .cloned()
+            .unwrap_or_default();
+        // `expiry.recheckDate = false` pins a date once one is known, whatever
+        // the source: re-reading the registry is the half that spends a
+        // rate-limited lookup, and the registrar path would otherwise make the
+        // switch mean different things under different `expiry.source` values.
+        // A domain with no date yet is still looked up — there is nothing to
+        // keep current, and skipping it would leave a newly added zone silently
+        // unwatched.
+        if !settings.expiry.recheck_date && existing.expires_at.is_some() {
+            continue;
+        }
+
         let use_registrar = settings.expiry.source != ExpirySource::Rdap;
         if use_registrar {
             if let Some(info) = registrar.get(&domain) {
@@ -640,12 +781,6 @@ pub async fn run_expiry_pass_with<S: ZoneSource>(
         }
 
         // RDAP, cached for `rdapCacheHours`; failures retried after RDAP_RETRY_HOURS.
-        let existing = store
-            .state()
-            .expiry
-            .get(&domain)
-            .cloned()
-            .unwrap_or_default();
         let fresh = existing
             .fetched_at
             .as_deref()

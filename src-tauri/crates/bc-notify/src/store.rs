@@ -341,18 +341,35 @@ impl NotifyStore {
     }
 
     pub fn archive(&mut self, ids: &[String]) -> Result<usize, StoreError> {
-        let now = format_ts(Utc::now());
+        let now = Utc::now();
         let mut affected = 0;
         for item in self
             .inbox
             .iter_mut()
             .filter(|n| ids.contains(&n.id) && !n.is_archived())
         {
-            item.archived_at = Some(now.clone());
-            if item.read_at.is_none() {
-                item.read_at = Some(now.clone());
-            }
+            item.archive_at(now);
             affected += 1;
+        }
+        self.save_if(affected)
+    }
+
+    /// Edit items in place, persisting once if anything changed.
+    ///
+    /// `edit` returns `true` for an item it actually changed; returning `false`
+    /// for an item it left alone is what keeps a pass that finds nothing to do
+    /// from rewriting the whole inbox file. Used by the expiry refresh to
+    /// correct a stale countdown without going through insert, which would mint
+    /// a new item and alert again.
+    pub fn update_items(
+        &mut self,
+        mut edit: impl FnMut(&mut Notification) -> bool,
+    ) -> Result<usize, StoreError> {
+        let mut affected = 0;
+        for item in self.inbox.iter_mut() {
+            if edit(item) {
+                affected += 1;
+            }
         }
         self.save_if(affected)
     }

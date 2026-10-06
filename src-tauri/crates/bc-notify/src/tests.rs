@@ -22,9 +22,9 @@ use crate::settings::{
 };
 use crate::store::{AuditFindingState, NotifyStore};
 use crate::{
-    deliver, evaluate_expiry_milestones, reconcile_findings, record_expiry, run_audit_pass,
-    run_expiry_pass_with, run_record_pass, PassKind, PassReport, RdapClient, ZoneRef, ZoneSource,
-    RESOLVED_EPISODE_RETENTION_DAYS,
+    build_expiry_notification, deliver, evaluate_expiry_milestones, reconcile_findings,
+    record_expiry, run_audit_pass, run_expiry_pass_with, run_record_pass, PassKind, PassReport,
+    RdapClient, ZoneRef, ZoneSource, RESOLVED_EPISODE_RETENTION_DAYS,
 };
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -226,7 +226,16 @@ fn renewal_resets_emitted_milestones() {
         evaluate_expiry_milestones(&mut store, &settings, now(), &mut report),
         0
     );
-    // Renewed for a year: ledger cleared, no milestone due.
+    let items = store.list(&NotificationQuery::default());
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].kind, NotificationKind::DomainExpiry);
+    assert_eq!(items[0].payload["milestone"], json!(30));
+    assert_eq!(items[0].payload["daysLeft"], json!(20));
+    assert_eq!(items[0].severity, Severity::Info);
+
+    // Renewed for a year: ledger cleared, no milestone due. What becomes of the
+    // notice written for the old date is
+    // `a_renewal_withdraws_the_warning_it_made_false`.
     record_expiry(
         &mut store,
         "example.com",
@@ -239,12 +248,6 @@ fn renewal_resets_emitted_milestones() {
         evaluate_expiry_milestones(&mut store, &settings, now(), &mut report),
         0
     );
-    let items = store.list(&NotificationQuery::default());
-    assert_eq!(items.len(), 1);
-    assert_eq!(items[0].kind, NotificationKind::DomainExpiry);
-    assert_eq!(items[0].payload["milestone"], json!(30));
-    assert_eq!(items[0].payload["daysLeft"], json!(20));
-    assert_eq!(items[0].severity, Severity::Info);
 }
 
 #[test]
@@ -282,6 +285,421 @@ fn expired_notice_is_critical_and_respects_notify_expired() {
     assert_eq!(item.severity, Severity::Critical);
     assert!(item.title.contains("has expired"));
     assert_eq!(item.payload["source"], json!("registrar"));
+}
+
+// ── refreshing a live notice ─────────────────────────────────────────────────
+
+fn archived_items(store: &NotifyStore) -> Vec<Notification> {
+    store.list(&NotificationQuery {
+        scope: Scope::Archived,
+        ..NotificationQuery::default()
+    })
+}
+
+/// The one expiry notice in the live inbox, which most of these tests have.
+fn only_item(store: &NotifyStore) -> Notification {
+    let items = store.list(&NotificationQuery::default());
+    assert_eq!(items.len(), 1, "expected exactly one live notice");
+    items.into_iter().next().expect("one item")
+}
+
+/// Run the expiry evaluation at `at`, with the created count folded into the
+/// report the way [`crate::finish_pass`] folds it in production.
+fn evaluate(
+    store: &mut NotifyStore,
+    settings: &NotificationSettings,
+    at: DateTime<Utc>,
+) -> PassReport {
+    let mut report = PassReport::new(PassKind::Expiry, at);
+    let created = evaluate_expiry_milestones(store, settings, at, &mut report);
+    report.notifications_created += created;
+    report
+}
+
+#[test]
+fn a_refresh_corrects_the_countdown_in_place_and_does_not_re_alert() {
+    let (_dir, mut store) = temp_store();
+    let settings = NotificationSettings::default();
+    record_expiry(
+        &mut store,
+        "example.com",
+        Some(now() + Duration::days(20)),
+        "rdap",
+        now(),
+    );
+    assert_eq!(
+        evaluate(&mut store, &settings, now()).notifications_created,
+        1
+    );
+    let first = only_item(&store);
+    assert_eq!(first.payload["daysLeft"], json!(20));
+    store
+        .mark_read(std::slice::from_ref(&first.id), true)
+        .expect("mark read");
+
+    // Five days on: inside the 30-day milestone already emitted, so the pass
+    // has nothing to alert about — only a figure to correct.
+    let later = now() + Duration::days(5);
+    let report = evaluate(&mut store, &settings, later);
+    assert_eq!(report.notifications_created, 0);
+    assert_eq!(report.notifications_refreshed, 1);
+    assert_eq!(report.notifications_superseded, 0);
+
+    let item = only_item(&store);
+    assert_eq!(item.id, first.id, "the same notice, corrected in place");
+    assert_eq!(item.created_at, first.created_at);
+    assert_eq!(item.dedupe_key, first.dedupe_key);
+    assert!(
+        item.read_at.is_some(),
+        "a refresh must not bring a read notice back unread"
+    );
+    assert_eq!(store.unread_count(), 0);
+    assert_eq!(item.payload["daysLeft"], json!(15));
+    assert_eq!(item.title, "example.com expires in 15 days");
+    assert_eq!(
+        item.payload["milestone"],
+        json!(30),
+        "the milestone is the notice's identity, not its countdown"
+    );
+}
+
+#[test]
+fn a_refresh_that_has_nothing_to_change_writes_nothing() {
+    let (_dir, mut store) = temp_store();
+    let settings = NotificationSettings::default();
+    record_expiry(
+        &mut store,
+        "example.com",
+        Some(now() + Duration::days(20)),
+        "rdap",
+        now(),
+    );
+    assert_eq!(
+        evaluate(&mut store, &settings, now()).notifications_created,
+        1
+    );
+    let later = now() + Duration::days(5);
+    let report = evaluate(&mut store, &settings, later);
+    assert_eq!(report.notifications_refreshed, 1);
+    // Same clock, same date: the notice already says it.
+    let report = evaluate(&mut store, &settings, later);
+    assert_eq!(report.notifications_refreshed, 0);
+    assert_eq!(report.notifications_superseded, 0);
+}
+
+#[test]
+fn a_refresh_carries_the_severity_thresholds_with_the_countdown() {
+    let (_dir, mut store) = temp_store();
+    let mut settings = NotificationSettings::default();
+    // One milestone, so crossing the warning threshold cannot be mistaken for
+    // a new milestone raising a notice of its own.
+    settings.expiry.milestones = vec![30];
+    record_expiry(
+        &mut store,
+        "example.com",
+        Some(now() + Duration::days(20)),
+        "rdap",
+        now(),
+    );
+    assert_eq!(
+        evaluate(&mut store, &settings, now()).notifications_created,
+        1
+    );
+    assert_eq!(only_item(&store).severity, Severity::Info);
+
+    // Twelve days left, under the default `warningAtOrBelow` of 14.
+    let later = now() + Duration::days(8);
+    let report = evaluate(&mut store, &settings, later);
+    assert_eq!(report.notifications_created, 0);
+    assert_eq!(report.notifications_refreshed, 1);
+    let item = only_item(&store);
+    assert_eq!(item.severity, Severity::Warning);
+    assert_eq!(item.payload["daysLeft"], json!(12));
+}
+
+#[test]
+fn an_expired_notice_keeps_counting_while_its_wording_stands() {
+    let (_dir, mut store) = temp_store();
+    let settings = NotificationSettings::default();
+    record_expiry(
+        &mut store,
+        "gone.com",
+        Some(now() - Duration::days(2)),
+        "rdap",
+        now(),
+    );
+    assert_eq!(
+        evaluate(&mut store, &settings, now()).notifications_created,
+        1
+    );
+    let first = only_item(&store);
+    assert_eq!(first.payload["daysLeft"], json!(-2));
+
+    let later = now() + Duration::days(3);
+    let report = evaluate(&mut store, &settings, later);
+    assert_eq!(
+        report.notifications_refreshed, 1,
+        "the payload moves even where the wording cannot"
+    );
+    let item = only_item(&store);
+    assert_eq!(item.id, first.id);
+    assert_eq!(
+        item.title, first.title,
+        "\"has expired\" takes no countdown"
+    );
+    assert_eq!(item.payload["daysLeft"], json!(-5));
+}
+
+// ── withdrawing a notice the date has outrun ─────────────────────────────────
+
+#[test]
+fn a_renewal_withdraws_the_warning_it_made_false() {
+    let (_dir, mut store) = temp_store();
+    let settings = NotificationSettings::default();
+    let expires = now() + Duration::days(12);
+    record_expiry(&mut store, "example.com", Some(expires), "rdap", now());
+    assert_eq!(
+        evaluate(&mut store, &settings, now()).notifications_created,
+        1
+    );
+    let first = only_item(&store);
+    assert_eq!(first.payload["milestone"], json!(14));
+    assert_eq!(first.severity, Severity::Warning);
+
+    // The next lookup finds the name renewed for a year.
+    let renewed = expires + Duration::days(365);
+    record_expiry(&mut store, "example.com", Some(renewed), "rdap", now());
+    let report = evaluate(&mut store, &settings, now());
+    assert_eq!(
+        report.notifications_created, 0,
+        "a year out, no milestone is due"
+    );
+    assert_eq!(report.notifications_superseded, 1);
+    assert_eq!(report.notifications_refreshed, 0);
+    assert!(
+        store.list(&NotificationQuery::default()).is_empty(),
+        "a warning the renewal falsified must not sit in the inbox"
+    );
+
+    let archived = archived_items(&store);
+    assert_eq!(archived.len(), 1, "withdrawn, not deleted");
+    let item = &archived[0];
+    assert_eq!(item.id, first.id);
+    assert_eq!(item.title, "example.com was renewed");
+    assert_eq!(
+        item.severity,
+        Severity::Info,
+        "a withdrawn warning is not a warning"
+    );
+    assert_eq!(
+        item.body,
+        "The domain registration for example.com now expires on 2027-03-13, not 2026-03-13 \
+         as this 14-day reminder said (source: rdap). The 14-day reminder no longer applies \
+         and has been withdrawn."
+    );
+    assert_eq!(item.payload["superseded"], json!(true));
+    assert_eq!(item.payload["expiresAt"], json!(format_ts(renewed)));
+    assert_eq!(item.payload["daysLeft"], json!(377));
+    assert_eq!(item.payload["previousExpiresAt"], json!(format_ts(expires)));
+    assert!(
+        item.read_at.is_some(),
+        "a withdrawn warning is not unread work"
+    );
+    assert_eq!(store.unread_count(), 0);
+
+    // Idempotent: the next pass finds it archived and leaves it there.
+    let report = evaluate(&mut store, &settings, now() + Duration::days(1));
+    assert_eq!(report.notifications_superseded, 0);
+    assert_eq!(report.notifications_refreshed, 0);
+}
+
+#[test]
+fn an_earlier_date_withdraws_the_old_notice_and_the_new_date_alerts() {
+    let (_dir, mut store) = temp_store();
+    let settings = NotificationSettings::default();
+    record_expiry(
+        &mut store,
+        "example.com",
+        Some(now() + Duration::days(20)),
+        "rdap",
+        now(),
+    );
+    assert_eq!(
+        evaluate(&mut store, &settings, now()).notifications_created,
+        1
+    );
+    let first = only_item(&store);
+    assert_eq!(first.payload["milestone"], json!(30));
+
+    // The registry now reports ten days out, not twenty.
+    record_expiry(
+        &mut store,
+        "example.com",
+        Some(now() + Duration::days(10)),
+        "rdap",
+        now(),
+    );
+    let report = evaluate(&mut store, &settings, now());
+    assert_eq!(
+        report.notifications_created, 1,
+        "the new date crosses the 14-day milestone"
+    );
+    assert_eq!(report.notifications_superseded, 1);
+
+    let live = only_item(&store);
+    assert_ne!(
+        live.id, first.id,
+        "the live notice is a new one, and alerts"
+    );
+    assert_eq!(live.payload["milestone"], json!(14));
+    assert_eq!(live.payload["daysLeft"], json!(10));
+    assert_eq!(live.severity, Severity::Warning);
+    assert!(live.is_unread());
+
+    let archived = archived_items(&store);
+    assert_eq!(archived.len(), 1);
+    assert_eq!(archived[0].id, first.id);
+    assert_eq!(archived[0].title, "example.com expiry date moved earlier");
+    assert_eq!(archived[0].payload["daysLeft"], json!(10));
+}
+
+#[test]
+fn the_refresh_leaves_filed_items_other_kinds_and_untracked_domains_alone() {
+    let (_dir, mut store) = temp_store();
+    let settings = NotificationSettings::default();
+    record_expiry(
+        &mut store,
+        "example.com",
+        Some(now() + Duration::days(20)),
+        "rdap",
+        now(),
+    );
+    assert_eq!(
+        evaluate(&mut store, &settings, now()).notifications_created,
+        1
+    );
+    let filed = only_item(&store);
+    store
+        .archive(std::slice::from_ref(&filed.id))
+        .expect("archive");
+
+    let change = notification(NotificationKind::RecordChange, "change:1", now());
+    let change_id = change.id.clone();
+    store.insert_deduped(change).expect("insert change");
+    // An expiry notice for a domain this store holds no date for.
+    let orphan = build_expiry_notification(
+        &settings,
+        "untracked.com",
+        None,
+        now() + Duration::days(9),
+        9,
+        14,
+        "rdap",
+        now(),
+    );
+    let orphan_id = orphan.id.clone();
+    store.insert_deduped(orphan).expect("insert orphan");
+
+    let later = now() + Duration::days(5);
+    let report = evaluate(&mut store, &settings, later);
+    assert_eq!(report.notifications_created, 0);
+    assert_eq!(report.notifications_refreshed, 0);
+    assert_eq!(report.notifications_superseded, 0);
+    assert_eq!(
+        archived_items(&store)[0].payload["daysLeft"],
+        json!(20),
+        "a notice the user filed stays as filed"
+    );
+    assert_eq!(
+        store.get(&orphan_id).expect("orphan").payload["daysLeft"],
+        json!(9),
+        "no cached date for the domain, so nothing truer to say"
+    );
+    let change = store.get(&change_id).expect("change");
+    assert_eq!(change.payload, Value::Null, "other kinds are not touched");
+}
+
+#[test]
+fn the_refresh_obeys_the_mute_and_the_kind_toggle() {
+    let (_dir, mut store) = temp_store();
+    let mut settings = NotificationSettings::default();
+    store
+        .state_mut()
+        .zones
+        .entry("z1".to_string())
+        .or_default()
+        .zone_name = "example.com".to_string();
+    record_expiry(
+        &mut store,
+        "example.com",
+        Some(now() + Duration::days(20)),
+        "rdap",
+        now(),
+    );
+    assert_eq!(
+        evaluate(&mut store, &settings, now()).notifications_created,
+        1
+    );
+    let later = now() + Duration::days(5);
+
+    settings.zones.overrides.insert(
+        "z1".to_string(),
+        ZoneOverride {
+            muted: true,
+            ..ZoneOverride::default()
+        },
+    );
+    assert_eq!(
+        evaluate(&mut store, &settings, later).notifications_refreshed,
+        0,
+        "a muted zone's countdown stops where its alerts stop"
+    );
+
+    settings.zones.overrides.clear();
+    settings.kinds.domain_expiry.enabled = false;
+    assert_eq!(
+        evaluate(&mut store, &settings, later).notifications_refreshed,
+        0,
+        "the kind toggle turns the whole kind off, refresh included"
+    );
+
+    settings.kinds.domain_expiry.enabled = true;
+    assert_eq!(
+        evaluate(&mut store, &settings, later).notifications_refreshed,
+        1
+    );
+    assert_eq!(only_item(&store).payload["daysLeft"], json!(15));
+}
+
+#[test]
+fn quiet_hours_do_not_stop_a_refresh_from_telling_the_truth() {
+    let (_dir, mut store) = temp_store();
+    let mut settings = NotificationSettings::default();
+    record_expiry(
+        &mut store,
+        "example.com",
+        Some(now() + Duration::days(20)),
+        "rdap",
+        now(),
+    );
+    assert_eq!(
+        evaluate(&mut store, &settings, now()).notifications_created,
+        1
+    );
+    // A quiet window covering `later`, holding rather than silencing.
+    settings.quiet_hours.enabled = true;
+    settings.quiet_hours.start = "00:00".to_string();
+    settings.quiet_hours.end = "23:59".to_string();
+    settings.quiet_hours.behaviour = QuietBehaviour::Hold;
+    let later = now() + Duration::days(5);
+    assert!(settings.quiet_hours_active(later));
+    let report = evaluate(&mut store, &settings, later);
+    assert_eq!(
+        report.notifications_refreshed, 1,
+        "a refresh delivers nothing, so there is nothing for quiet hours to hold"
+    );
+    assert_eq!(only_item(&store).payload["daysLeft"], json!(15));
+    assert_eq!(store.held_count(), 0);
 }
 
 // ── diff ─────────────────────────────────────────────────────────────────────

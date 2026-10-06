@@ -16,6 +16,12 @@ export type NotificationSeverity = "info" | "warning" | "critical";
 export type NotificationSeverityChoice = "auto" | NotificationSeverity;
 export type ToastMinSeverity = NotificationSeverity | "never";
 export type ExpirySource = "auto" | "rdap" | "registrar";
+/**
+ * What becomes of an open expiry notice once the registry reports a different
+ * date than the one it was written for. Mirror of
+ * `bc_notify::settings::StaleExpiryAction`; none of the three deletes anything.
+ */
+export type StaleExpiryAction = "archive" | "resolve" | "update";
 export type ZoneMonitorMode = "all" | "allowlist";
 export type QuietHoursBehaviour = "silence" | "hold";
 export type NotificationKindKey =
@@ -74,6 +80,22 @@ export interface ExpirySettings {
   notifyExpired: boolean;
   source: ExpirySource;
   severityByMilestone: { warningAtOrBelow: number; criticalAtOrBelow: number };
+  /**
+   * Keep an open notice's `daysLeft`, wording and severity in step with the
+   * date already held, on every pass. Costs no lookup. Off pins every open
+   * notice to the words it was written with.
+   */
+  refreshCountdown: boolean;
+  /**
+   * Re-read the date from the registry for a domain whose date is already
+   * known — the half that spends a rate-limited lookup, hence its own switch.
+   * *How often* is `service.expiryPollMinutes` gated by
+   * `service.rdapCacheHours`, not a schedule of its own. A domain with no date
+   * yet is always looked up.
+   */
+  recheckDate: boolean;
+  /** What happens to a notice whose date the registry has since changed. */
+  onDateChange: StaleExpiryAction;
 }
 
 export interface ZoneOverride {
@@ -195,6 +217,13 @@ export const NOTIFICATION_SEVERITIES: readonly NotificationSeverity[] = [
   "critical",
 ];
 
+/** Option list for `expiry.onDateChange`; the first entry is the default. */
+export const STALE_EXPIRY_ACTIONS: readonly StaleExpiryAction[] = [
+  "archive",
+  "resolve",
+  "update",
+];
+
 const SEVERITY_RANK: Record<NotificationSeverity, number> = {
   info: 0,
   warning: 1,
@@ -244,6 +273,13 @@ export function createDefaultNotificationSettings(): NotificationSettings {
         criticalAtOrBelow:
           NOTIFICATION_SETTING_LIMITS.criticalAtOrBelow.default,
       },
+      // On: a notice frozen at "30 days" while the real answer is 12 is the
+      // bug these two exist to fix, and keeping the countdown current is free.
+      refreshCountdown: true,
+      recheckDate: true,
+      // The false warning leaves the inbox but stays on file. `resolve` and
+      // `update` are the other two readings; see `StaleExpiryAction`.
+      onDateChange: "archive",
     },
     zones: { mode: "all", include: [], exclude: [], overrides: {} },
     quietHours: {
@@ -530,6 +566,16 @@ export function clampNotificationSettings(
       notifyExpired: bool(expiry.notifyExpired, d.expiry.notifyExpired),
       source: oneOf(expiry.source, ["auto", "rdap", "registrar"], "auto"),
       severityByMilestone: { warningAtOrBelow, criticalAtOrBelow },
+      refreshCountdown: bool(
+        expiry.refreshCountdown,
+        d.expiry.refreshCountdown,
+      ),
+      recheckDate: bool(expiry.recheckDate, d.expiry.recheckDate),
+      onDateChange: oneOf(
+        expiry.onDateChange,
+        STALE_EXPIRY_ACTIONS,
+        d.expiry.onDateChange,
+      ),
     },
     zones: {
       mode: oneOf(zones.mode, ["all", "allowlist"], "all"),

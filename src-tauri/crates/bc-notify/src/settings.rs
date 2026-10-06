@@ -168,6 +168,30 @@ pub enum ExpirySource {
     Registrar,
 }
 
+/// What becomes of an open expiry notice once the registry reports a different
+/// date than the one it was written for — a renewal, usually.
+///
+/// A setting rather than a default because it is a genuine judgement call. The
+/// warning is false under every option; what differs is whether the record of
+/// having warned is worth an inbox row. None of them deletes anything.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum StaleExpiryAction {
+    /// Restate both dates and archive it: out of the inbox, still on file, and
+    /// purged with everything else archived (`retention.purgeArchivedAfterDays`).
+    #[default]
+    Archive,
+    /// Restate both dates and mark it read, leaving it in the inbox. For someone
+    /// who wants to see that a warning was withdrawn without going to look.
+    Resolve,
+    /// Re-point it at the new date and let it go on counting down from there,
+    /// keeping its milestone. The notice becomes a live status row rather than a
+    /// record of one moment. Note that a date which moved *earlier* still
+    /// crosses a nearer milestone, so this can leave two rows for one domain —
+    /// one per threshold — where the other two options leave one.
+    Update,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ZoneMode {
@@ -571,6 +595,31 @@ pub struct ExpirySettings {
     pub source: ExpirySource,
     #[serde(deserialize_with = "lenient")]
     pub severity_by_milestone: SeverityByMilestone,
+    /// Keep an open notice's `daysLeft`, wording and severity in step with the
+    /// date already held, on every pass.
+    ///
+    /// Free — no lookup, and no write unless a figure actually moved — and on by
+    /// default, because a notice frozen at "30 days" while the real answer is 12
+    /// is the bug this exists to fix. Turning it off pins every open notice to
+    /// the words it was written with, for someone who reads the inbox as a log
+    /// of what was said rather than a statement of what is true. It does *not*
+    /// keep a notice the registry has outrun: that is `on_date_change`.
+    pub refresh_countdown: bool,
+    /// Re-read the expiry date from the registry for a domain whose date is
+    /// already known.
+    ///
+    /// Unlike the countdown this costs a rate-limited lookup, which is why it is
+    /// a separate switch. *How often* is deliberately not a second schedule: the
+    /// pass already runs on `service.expiry_poll_minutes` and already declines
+    /// to re-fetch a date younger than `service.rdap_cache_hours`, so those two
+    /// are the cadence and a third interval could only contradict them.
+    ///
+    /// `false` pins a date once it is known. The first lookup for a domain still
+    /// happens — there is nothing to keep current yet, and skipping it would
+    /// leave the kind silently doing nothing for a newly added zone.
+    pub recheck_date: bool,
+    #[serde(deserialize_with = "lenient")]
+    pub on_date_change: StaleExpiryAction,
 }
 
 impl Default for ExpirySettings {
@@ -580,6 +629,9 @@ impl Default for ExpirySettings {
             notify_expired: true,
             source: ExpirySource::Auto,
             severity_by_milestone: SeverityByMilestone::default(),
+            refresh_countdown: true,
+            recheck_date: true,
+            on_date_change: StaleExpiryAction::Archive,
         }
     }
 }

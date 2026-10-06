@@ -1152,7 +1152,17 @@ impl PassContext<'_> {
             let store = self.store.lock().await;
             store.as_ref().map(NotifyStore::unread_count).unwrap_or(0)
         };
-        if report.notifications_created > 0 {
+        // A refreshed or withdrawn expiry notice changes what the inbox says
+        // without adding an item, and the panel renders `daysLeft` straight off
+        // the payload — so it has to hear about those too, or it keeps showing
+        // the figure the pass just corrected until something else reloads it.
+        // This is only a reload cue: the badge is unaffected (a refresh leaves
+        // `readAt` alone) and the toast path filters on `createdAt`, which a
+        // refresh also leaves alone, so no refresh can toast.
+        let touched = report.notifications_created
+            + report.notifications_refreshed
+            + report.notifications_superseded;
+        if touched > 0 {
             self.host.emit(CHANGED_EVENT, json!({ "unread": unread }));
         }
         self.host.emit(
@@ -1590,17 +1600,7 @@ mod tests {
         ) -> BoxFuture<'a, PassReport> {
             // No RDAP in tests: only evaluate cached milestones + retention.
             Box::pin(async move {
-                let mut report = PassReport {
-                    kind: PassKind::Expiry,
-                    started_at: format_ts(now),
-                    duration_ms: 0,
-                    zones_checked: 0,
-                    notifications_created: 0,
-                    errors: 0,
-                    error_messages: Vec::new(),
-                    skipped: false,
-                    backoff: false,
-                };
+                let mut report = PassReport::new(PassKind::Expiry, now);
                 report.notifications_created +=
                     bc_notify::evaluate_expiry_milestones(store, settings, now, &mut report);
                 store.state_mut().last_expiry_check_at = Some(format_ts(now));
@@ -1619,17 +1619,10 @@ mod tests {
                 self.audit_passes.fetch_add(1, Ordering::SeqCst);
                 if self.audit_fails.load(Ordering::SeqCst) {
                     // What a zone listing failure looks like to the scheduler.
-                    return PassReport {
-                        kind: PassKind::Audit,
-                        started_at: format_ts(now),
-                        duration_ms: 0,
-                        zones_checked: 0,
-                        notifications_created: 0,
-                        errors: 1,
-                        error_messages: vec!["list zones: boom".to_string()],
-                        skipped: false,
-                        backoff: false,
-                    };
+                    let mut report = PassReport::new(PassKind::Audit, now);
+                    report.errors = 1;
+                    report.error_messages = vec!["list zones: boom".to_string()];
+                    return report;
                 }
                 let report = bc_notify::run_audit_pass(self, store, settings, now).await;
                 self.audit_zones
@@ -2197,6 +2190,134 @@ mod tests {
             .is_empty());
     }
 
+    /// A refreshed expiry countdown must be invisible to the OS notification
+    /// centre. What a pass "created" is decided here by diffing the inbox's ids
+    /// across it (see `PassContext::run`), so that is the quantity to assert on:
+    /// a refresh keeps the item's id, and therefore cannot reach `notify_os`.
+    #[test]
+    fn a_refreshed_expiry_countdown_is_not_something_the_pass_created() {
+        let dir = TestDir::new();
+        let mut store = NotifyStore::open(dir.0.join("notifications")).expect("open store");
+        let settings = NotificationSettings::default();
+        let written = Utc::now();
+        // Twelve days out: warning severity, so it does clear every OS gate and
+        // a silent second alert would really show up in `sent`.
+        let expires = written + chrono::Duration::days(12) + chrono::Duration::hours(1);
+        bc_notify::record_expiry(&mut store, "example.com", Some(expires), "rdap", written);
+        let mut report = PassReport::new(PassKind::Expiry, written);
+        assert_eq!(
+            bc_notify::evaluate_expiry_milestones(&mut store, &settings, written, &mut report),
+            1
+        );
+        let host = OsRecordingHost::default();
+        let created: Vec<Notification> = store.items().to_vec();
+        assert_eq!(
+            send_os_notifications(&host, &created, &settings, written),
+            1
+        );
+
+        // Four days on: no new milestone, so the pass only corrects the figure.
+        let later = written + chrono::Duration::days(4);
+        let before: HashSet<String> = store.items().iter().map(|n| n.id.clone()).collect();
+        let mut report = PassReport::new(PassKind::Expiry, later);
+        assert_eq!(
+            bc_notify::evaluate_expiry_milestones(&mut store, &settings, later, &mut report),
+            0
+        );
+        assert_eq!(report.notifications_refreshed, 1);
+        let created: Vec<Notification> = store
+            .items()
+            .iter()
+            .filter(|n| !before.contains(&n.id))
+            .cloned()
+            .collect();
+        assert!(created.is_empty(), "a refresh keeps the item it corrects");
+        assert_eq!(send_os_notifications(&host, &created, &settings, later), 0);
+        assert_eq!(
+            host.sent.lock().unwrap().len(),
+            1,
+            "one alert for the milestone, none for the countdown"
+        );
+        assert_eq!(store.items()[0].payload["daysLeft"], json!(8));
+    }
+
+    /// The inbox panel renders `daysLeft` straight off the payload, so a pass
+    /// that corrected it has to say so even though it created nothing.
+    #[tokio::test(start_paused = true)]
+    async fn an_expiry_pass_that_only_refreshes_still_announces_the_change() {
+        let h = harness_with(Some(fast_settings())).await;
+        h.manager
+            .start_with(h.source.clone(), "token".into())
+            .await
+            .expect("start");
+        settle().await;
+        let expires = Utc::now() + chrono::Duration::days(12) + chrono::Duration::hours(1);
+        let (id, created_at) = {
+            let mut store = h.manager.store.lock().await;
+            let store = store.as_mut().unwrap();
+            bc_notify::record_expiry(store, "example.com", Some(expires), "rdap", Utc::now());
+            store
+                .state_mut()
+                .expiry
+                .get_mut("example.com")
+                .expect("seeded expiry")
+                .emitted = vec![14, 30, 60, 90];
+            // The notice as it was written two days ago, when 14 days were left:
+            // the right date, a figure that has since gone stale.
+            let stale = bc_notify::build_expiry_notification(
+                &NotificationSettings::default(),
+                "example.com",
+                Some(("zone1", "example.com")),
+                expires,
+                14,
+                14,
+                "rdap",
+                Utc::now() - chrono::Duration::days(2),
+            );
+            let id = stale.id.clone();
+            let created_at = stale.created_at.clone();
+            store.insert_deduped(stale).expect("seed notice");
+            store
+                .mark_read(std::slice::from_ref(&id), true)
+                .expect("read it");
+            (id, created_at)
+        };
+
+        let before = h.host.events(CHANGED_EVENT);
+        h.manager
+            .check_now(CheckKind::Expiry)
+            .await
+            .expect("check now");
+        let last = h
+            .manager
+            .status()
+            .await
+            .unwrap()
+            .last_pass
+            .expect("last pass");
+        assert_eq!(last.kind, PassKind::Expiry);
+        assert_eq!(last.notifications_created, 0, "nothing new, so no alert");
+        assert_eq!(
+            h.host.events(CHANGED_EVENT),
+            before + 1,
+            "the inbox still has to hear that the figure moved"
+        );
+
+        let item = h
+            .manager
+            .list(NotificationQuery::default())
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|n| n.id == id)
+            .expect("the same notice, corrected");
+        assert_eq!(item.created_at, created_at, "a refresh does not re-date it");
+        assert!(item.read_at.is_some());
+        assert_eq!(item.payload["daysLeft"], json!(12));
+        assert_eq!(h.manager.unread_count().await.unwrap(), 0);
+        h.manager.shutdown();
+    }
+
     #[tokio::test(start_paused = true)]
     async fn reset_state_deletes_only_what_was_asked() {
         let h = harness_with(Some(fast_settings())).await;
@@ -2423,17 +2544,10 @@ mod tests {
             next_check_at: None,
             backoff_until: None,
             last_error: None,
-            last_pass: Some(PassSummary::from(&PassReport {
-                kind: PassKind::Audit,
-                started_at: "2026-09-04T00:00:00.000Z".to_string(),
-                duration_ms: 0,
-                zones_checked: 0,
-                notifications_created: 0,
-                errors: 0,
-                error_messages: Vec::new(),
-                skipped: false,
-                backoff: false,
-            })),
+            last_pass: Some(PassSummary::from(&PassReport::new(
+                PassKind::Audit,
+                parse_ts("2026-09-04T00:00:00.000Z").expect("timestamp"),
+            ))),
         })
         .unwrap();
         assert!(status.get("quietHoursActive").is_some());
