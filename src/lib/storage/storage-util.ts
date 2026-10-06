@@ -55,6 +55,15 @@ export interface BrowserSessionSettingsProfile {
   mcpServerPort?: number;
   mcpEnabledTools?: string[];
   loadingOverlayTimeoutMs?: number;
+  /**
+   * Whether to ask GitHub, on a schedule, if a newer release exists. Checking
+   * only -- nothing is ever downloaded or installed.
+   */
+  updateCheckEnabled?: boolean;
+  /** Hours between checks. Clamped on read, so a stored extreme cannot hammer the API. */
+  updateCheckIntervalHours?: number;
+  /** Whether a pre-release counts as newer. Off means stable releases only. */
+  updateCheckIncludePrereleases?: boolean;
   topologyResolutionMaxHops?: number;
   topologyResolverMode?: "dns" | "doh";
   topologyDnsServer?: string;
@@ -268,6 +277,9 @@ const SESSION_PROFILE_SCHEMA = {
   mcpServerPort: "number",
   mcpEnabledTools: "strings",
   loadingOverlayTimeoutMs: "number",
+  updateCheckEnabled: "boolean",
+  updateCheckIntervalHours: "number",
+  updateCheckIncludePrereleases: "boolean",
   topologyResolutionMaxHops: "number",
   topologyResolverMode: ["dns", "doh"],
   topologyDnsServer: "string",

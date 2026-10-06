@@ -82,3 +82,52 @@ test("clearing settings forgets the bubble position too", async () => {
   storageManager.clearSettings();
   assert.equal(storageManager.getAiAssistantBubblePosition(), null);
 });
+
+test("update checking is on by default and can be turned off", async () => {
+  // Default on: a notifier that is off by default notifies nobody.
+  storageManager.clearSettings();
+  assert.equal(storageManager.getUpdateCheckEnabled(), true);
+  storageManager.setUpdateCheckEnabled(false);
+  assert.equal(storageManager.getUpdateCheckEnabled(), false);
+});
+
+test("the check interval is clamped on the way out, not just in", async () => {
+  // GitHub rate-limits unauthenticated callers, so a hand-edited profile
+  // holding 0 must not become a request per render.
+  storageManager.clearSettings();
+  assert.equal(storageManager.getUpdateCheckIntervalHours(), 24);
+  const profile = storageManager as unknown as {
+    data: { updateCheckIntervalHours?: unknown };
+  };
+  for (const [stored, expected] of [
+    [0, 1],
+    [-5, 1],
+    [10_000, 168],
+    [Number.NaN, 24],
+    ["soon", 24],
+  ] as Array<[unknown, number]>) {
+    profile.data.updateCheckIntervalHours = stored;
+    assert.equal(
+      storageManager.getUpdateCheckIntervalHours(),
+      expected,
+      `stored ${String(stored)} should read back as ${expected}`,
+    );
+  }
+});
+
+test("pre-releases are excluded unless asked for", async () => {
+  storageManager.clearSettings();
+  assert.equal(storageManager.getUpdateCheckIncludePrereleases(), false);
+  storageManager.setUpdateCheckIncludePrereleases(true);
+  assert.equal(storageManager.getUpdateCheckIncludePrereleases(), true);
+});
+
+test("clearing settings forgets the update-check preferences", async () => {
+  storageManager.setUpdateCheckEnabled(false);
+  storageManager.setUpdateCheckIntervalHours(72);
+  storageManager.setUpdateCheckIncludePrereleases(true);
+  storageManager.clearSettings();
+  assert.equal(storageManager.getUpdateCheckEnabled(), true);
+  assert.equal(storageManager.getUpdateCheckIntervalHours(), 24);
+  assert.equal(storageManager.getUpdateCheckIncludePrereleases(), false);
+});

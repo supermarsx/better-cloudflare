@@ -1490,6 +1490,56 @@ export class StorageManager {
     }
   }
 
+  /**
+   * Whether the app asks GitHub for a newer release.
+   *
+   * Defaults to on. A notifier that is off by default notifies nobody, and the
+   * check is a single unauthenticated request to a public endpoint -- the same
+   * place the download came from. Turning it off stops all outbound checking.
+   */
+  setUpdateCheckEnabled(enabled: boolean): void {
+    this.data.updateCheckEnabled = enabled;
+    this.save();
+    this.dispatchPreferencesChanged({ updateCheckEnabled: enabled });
+  }
+
+  getUpdateCheckEnabled(): boolean {
+    return this.data.updateCheckEnabled !== false;
+  }
+
+  /**
+   * Hours between checks, clamped to 1-168 (a week).
+   *
+   * Clamped on read as well as write: GitHub rate-limits unauthenticated
+   * callers, so a stored value of zero from a hand-edited profile must not
+   * turn into a request per render.
+   */
+  setUpdateCheckIntervalHours(hours: number): void {
+    const clamped = Math.max(1, Math.min(168, Math.round(hours)));
+    this.data.updateCheckIntervalHours = clamped;
+    this.save();
+    this.dispatchPreferencesChanged({ updateCheckIntervalHours: clamped });
+  }
+
+  getUpdateCheckIntervalHours(): number {
+    const value = this.data.updateCheckIntervalHours;
+    if (typeof value !== "number" || !Number.isFinite(value)) return 24;
+    return Math.max(1, Math.min(168, Math.round(value)));
+  }
+
+  /** Whether a pre-release counts as newer. Off by default: stable only. */
+  setUpdateCheckIncludePrereleases(include: boolean): void {
+    this.data.updateCheckIncludePrereleases = include;
+    this.save();
+    this.dispatchPreferencesChanged({
+      updateCheckIncludePrereleases: include,
+    });
+  }
+
+  getUpdateCheckIncludePrereleases(): boolean {
+    return this.data.updateCheckIncludePrereleases === true;
+  }
+
   setLoadingOverlayTimeoutMs(ms: number): void {
     const clamped = Math.max(1000, Math.min(60000, Math.round(ms)));
     this.data.loadingOverlayTimeoutMs = clamped;
@@ -2163,6 +2213,9 @@ export class StorageManager {
     delete this.data.mcpRemovedImportedToolIds;
     delete this.data.mcpPermissionPolicyVersion;
     delete this.data.loadingOverlayTimeoutMs;
+    delete this.data.updateCheckEnabled;
+    delete this.data.updateCheckIntervalHours;
+    delete this.data.updateCheckIncludePrereleases;
     delete this.data.topologyResolutionMaxHops;
     delete this.data.topologyResolverMode;
     delete this.data.topologyDnsServer;
