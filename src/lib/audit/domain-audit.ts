@@ -19,10 +19,266 @@ export type DomainAuditItem = {
   };
 };
 
+/**
+ * The severities a check's findings may be re-reported at.
+ *
+ * `pass` is absent on purpose. A severity override changes how loudly a
+ * *problem* is reported, and a finding forced to `pass` would be a problem
+ * presented as healthy, with `details` still describing it — the UI hides
+ * passing findings by default, so the text would vanish while the condition
+ * stayed. Silencing a check entirely is `enabled: false`, which removes the
+ * finding instead of disguising it.
+ */
+export type DomainAuditCheckSeverity = Exclude<DomainAuditSeverity, "pass">;
+
+/**
+ * Per-check configuration, keyed by the finding id the audit emits.
+ *
+ * The unit of configuration is the finding id, not the "check" as a reader
+ * might group it: `cname-chains-warn` and `cname-chains-fail` are two ids and
+ * configure separately, as do `ns-single` and `ns-redundancy`. That is the same
+ * key the per-zone dismissal in the UI uses, so the two mechanisms line up
+ * instead of needing to be reconciled.
+ *
+ * Both fields are optional and both fall back to running the check as the
+ * engine sees it, so `{}` is indistinguishable from no entry at all.
+ */
+export type DomainAuditCheckSettings = {
+  /** `false` drops the finding entirely. Anything else runs the check. */
+  enabled?: boolean;
+  /**
+   * Report this check's problems at this severity instead of the computed one.
+   * Applied only to findings that are not already `pass`: a healthy check stays
+   * `pass` rather than being promoted into a finding nobody asked for.
+   */
+  severity?: DomainAuditCheckSeverity;
+};
+
+/** A tunable number: its default, and the range a stored value must fall in. */
+export type DomainAuditThresholdSpec = {
+  readonly default: number;
+  readonly min: number;
+  readonly max: number;
+};
+
+/**
+ * Every number a check compares against that is a preference rather than a
+ * protocol constant.
+ *
+ * Each `default` reproduces the behaviour the audit had before any of this was
+ * configurable, so an absent or empty `thresholds` map produces byte-identical
+ * findings — `test/domain-audit-config.test.ts` pins that, and pins this table
+ * against its Rust counterpart in `bc-domain-audit`, defaults and bounds
+ * included.
+ *
+ * Keys are camelCase in both implementations because they are a wire format:
+ * this table is what a stored settings object is read against, in either
+ * language. Bounds exist so a stored value cannot make a check unreachable or
+ * absurd; a value outside them is ignored and the default stands, which is also
+ * what happens to a key this build does not know.
+ *
+ * Deliberately *not* here: the SOA timer bands, SPF's ten-lookup ceiling, the
+ * SRV port range, and the caps on how many lines a finding lists. The first
+ * three are RFC constants or prose-bound ranges rather than preferences, and the
+ * last is presentation. Adding a row later is this table plus one call site.
+ */
+export const DOMAIN_AUDIT_THRESHOLDS = {
+  /** Fewer days remaining than this fails `domain-expiry` outright. */
+  domainExpiryCriticalDays: { default: 15, min: 1, max: 365 },
+  /** Fewer days remaining than this warns, once past the critical band. */
+  domainExpiryWarnDays: { default: 30, min: 1, max: 1095 },
+  /** A TTL under this many seconds is `ttl-critical`. */
+  ttlCriticalBelowSeconds: { default: 30, min: 1, max: 3600 },
+  /** A TTL under this many seconds is a `ttl-hygiene` outlier. */
+  ttlLowBelowSeconds: { default: 60, min: 1, max: 86400 },
+  /** An NS or MX TTL under this many seconds is a `ttl-hygiene` outlier. */
+  ttlDelegationLowBelowSeconds: { default: 300, min: 1, max: 86400 },
+  /** An SOA TTL under this many seconds is a `ttl-hygiene` outlier. */
+  ttlSoaLowBelowSeconds: { default: 3600, min: 1, max: 604800 },
+  /** A TTL above this many seconds is a `ttl-hygiene` outlier. */
+  ttlHighAboveSeconds: { default: 86400, min: 300, max: 2419200 },
+  /** A CNAME chain of this many hops or more is `cname-chains-warn`. */
+  cnameChainWarnHops: { default: 3, min: 2, max: 20 },
+  /** A CNAME chain of this many hops or more is `cname-chains-fail`. */
+  cnameChainFailHops: { default: 5, min: 2, max: 20 },
+  /** More than this many TXT records at one name is `txt-sprawl`. */
+  txtRecordsPerNameLimit: { default: 5, min: 1, max: 100 },
+  /** Fewer than this many NS records at the apex is a failure. */
+  nsMinimumAtApex: { default: 2, min: 2, max: 13 },
+  /** More than this many MX records at the apex is `mx-too-many`. */
+  mxManyAtApexLimit: { default: 10, min: 1, max: 100 },
+  /** This many estimated SPF lookups or more warns. */
+  spfLookupWarnCount: { default: 10, min: 1, max: 10 },
+  /** More than this many distinct CAA issuers is reported. */
+  caaIssuerLimit: { default: 3, min: 1, max: 50 },
+} as const satisfies Readonly<Record<string, DomainAuditThresholdSpec>>;
+
+export type DomainAuditThresholdKey = keyof typeof DOMAIN_AUDIT_THRESHOLDS;
+
+/** Every threshold, resolved to the value the audit will actually compare. */
+export type DomainAuditThresholds = Record<DomainAuditThresholdKey, number>;
+
+/**
+ * Every finding id the audit can emit, with the category it belongs to.
+ *
+ * Exported so a settings surface can list the checks without hard-coding ids —
+ * adding a check means adding a row here, and nothing else outside this file.
+ * `test/domain-audit-config.test.ts` pins this list against the ids both
+ * implementations actually emit, so a row that is wrong, missing or left behind
+ * fails rather than quietly offering a toggle that controls nothing.
+ *
+ * Human-readable labels are deliberately absent: they belong to the UI that
+ * renders them, alongside the rest of its settings copy and translations.
+ */
+export const DOMAIN_AUDIT_CHECKS: ReadonlyArray<{
+  readonly id: string;
+  readonly category: DomainAuditCategory;
+}> = [
+  // ── Hygiene ───────────────────────────────────────────────────────────────
+  { id: "domain-expiry", category: "hygiene" },
+  { id: "ttl-critical", category: "hygiene" },
+  { id: "ttl-hygiene", category: "hygiene" },
+  { id: "cname-conflicts", category: "hygiene" },
+  { id: "cname-at-apex", category: "hygiene" },
+  { id: "cname-chains", category: "hygiene" },
+  { id: "cname-chains-warn", category: "hygiene" },
+  { id: "cname-chains-fail", category: "hygiene" },
+  { id: "spf-type-deprecated", category: "hygiene" },
+  { id: "special-a", category: "hygiene" },
+  { id: "special-aaaa", category: "hygiene" },
+  { id: "ns-missing", category: "hygiene" },
+  { id: "ns-single", category: "hygiene" },
+  { id: "ns-redundancy", category: "hygiene" },
+  { id: "apex-single-ip", category: "hygiene" },
+  { id: "apex-single-ipv6", category: "hygiene" },
+  { id: "soa-missing", category: "hygiene" },
+  { id: "soa-multiple", category: "hygiene" },
+  { id: "soa-review", category: "hygiene" },
+  { id: "txt-sprawl", category: "hygiene" },
+  { id: "srv-review", category: "hygiene" },
+
+  // ── Security ──────────────────────────────────────────────────────────────
+  { id: "caa-analysis", category: "security" },
+
+  // ── Email ─────────────────────────────────────────────────────────────────
+  { id: "mx-present", category: "email" },
+  { id: "mx-single", category: "email" },
+  { id: "mx-too-many", category: "email" },
+  { id: "mx-redundancy", category: "email" },
+  { id: "mx-cname-target", category: "email" },
+  { id: "mx-duplicate-priority", category: "email" },
+  { id: "mx-no-resolution", category: "email" },
+  { id: "spf-missing", category: "email" },
+  { id: "spf-multiple", category: "email" },
+  { id: "spf-ok", category: "email" },
+  { id: "spf-all-missing", category: "email" },
+  { id: "spf-too-permissive", category: "email" },
+  { id: "spf-neutral", category: "email" },
+  { id: "spf-softfail", category: "email" },
+  { id: "spf-ptr", category: "email" },
+  { id: "spf-lookups-estimate", category: "email" },
+  { id: "dmarc-missing", category: "email" },
+  { id: "dmarc-multiple", category: "email" },
+  { id: "dmarc-missing-policy", category: "email" },
+  { id: "dmarc-no-rua", category: "email" },
+  { id: "dmarc-policy-none", category: "email" },
+  { id: "dmarc-ok", category: "email" },
+  { id: "dkim-missing", category: "email" },
+];
+
+/**
+ * How the audit is configured.
+ *
+ * Every field is optional and every default is the behaviour the audit had
+ * before it was configurable, so `{}` — or a stored object from a build that
+ * knew about fewer of these — runs exactly the audit this app has always run.
+ */
 export type DomainAuditOptions = {
-  includeCategories: Record<DomainAuditCategory, boolean>;
+  /** Whole categories to run. A missing or non-`false` entry runs. */
+  includeCategories?: Partial<Record<DomainAuditCategory, boolean>>;
+  /** Per-check settings keyed by finding id. Unknown ids are ignored. */
+  checks?: Readonly<Record<string, DomainAuditCheckSettings | undefined>>;
+  /** Threshold overrides. Unknown keys and out-of-range values are ignored. */
+  thresholds?: Readonly<Partial<Record<DomainAuditThresholdKey, number>>>;
   domainExpiresAt?: string | null;
 };
+
+/**
+ * Resolve one stored value against its spec.
+ *
+ * Anything that is not a finite number, or that falls outside the spec's
+ * bounds, leaves the default in place: a stored config from a newer build, a
+ * hand-edited file or a half-finished form field must not be able to turn a
+ * check off or push it somewhere meaningless. Fractional values are truncated
+ * rather than rejected, because a number input that reads `30.0` is a `30` that
+ * took a different route.
+ */
+function resolveThreshold(
+  spec: DomainAuditThresholdSpec,
+  stored: unknown,
+): number {
+  if (typeof stored !== "number" || !Number.isFinite(stored)) {
+    return spec.default;
+  }
+  const whole = Math.trunc(stored);
+  if (whole < spec.min || whole > spec.max) return spec.default;
+  return whole;
+}
+
+/**
+ * The effective value of every threshold.
+ *
+ * Exported so a settings surface can show what the audit will actually compare
+ * against — including what an out-of-range entry resolved back to — rather than
+ * re-implementing the rules above.
+ */
+export function resolveDomainAuditThresholds(
+  overrides?: DomainAuditOptions["thresholds"] | null,
+): DomainAuditThresholds {
+  const resolved = {} as Record<string, number>;
+  for (const [key, spec] of Object.entries(DOMAIN_AUDIT_THRESHOLDS)) {
+    resolved[key] = resolveThreshold(
+      spec,
+      overrides?.[key as DomainAuditThresholdKey],
+    );
+  }
+  return resolved as DomainAuditThresholds;
+}
+
+/**
+ * The severities a stored `severity` override is allowed to name.
+ *
+ * Exported because a settings surface has to offer exactly these and no others:
+ * retyping the list there is how a build ends up offering `pass`, which this
+ * engine ignores.
+ */
+export const DOMAIN_AUDIT_OVERRIDE_SEVERITIES: readonly DomainAuditCheckSeverity[] =
+  ["info", "warn", "fail"];
+
+/** Whether this finding id is configured off. Unknown ids are on. */
+function checkIsEnabled(options: DomainAuditOptions, id: string): boolean {
+  return options.checks?.[id]?.enabled !== false;
+}
+
+/**
+ * Re-report a finding at its configured severity.
+ *
+ * `pass` findings are left alone, and so is a `severity` this build does not
+ * recognise — including `pass` itself, which would hide a live problem behind a
+ * healthy label.
+ */
+function applySeverityOverride(
+  options: DomainAuditOptions,
+  item: DomainAuditItem,
+): DomainAuditItem {
+  if (item.severity === "pass") return item;
+  const requested = options.checks?.[item.id]?.severity;
+  if (!requested || !DOMAIN_AUDIT_OVERRIDE_SEVERITIES.includes(requested)) {
+    return item;
+  }
+  if (requested === item.severity) return item;
+  return { ...item, severity: requested };
+}
 
 /**
  * What each flagged record actually does, and what follows from its absence or
@@ -449,14 +705,20 @@ const CAA_IODEF_SUGGESTION_SCOPE =
 export function runDomainAudit(
   zoneName: string,
   records: DNSRecord[],
-  options: DomainAuditOptions = {
-    includeCategories: { email: true, security: true, hygiene: true },
-    domainExpiresAt: null,
-  },
+  options: DomainAuditOptions = {},
 ): DomainAuditItem[] {
   const apex = zoneApex(zoneName);
   const normalizedZone = apex;
   const items: DomainAuditItem[] = [];
+
+  // A category runs unless it is switched off explicitly, so a stored object
+  // naming only the categories a build knew about does not silence the rest.
+  const categories = {
+    email: options.includeCategories?.email !== false,
+    security: options.includeCategories?.security !== false,
+    hygiene: options.includeCategories?.hygiene !== false,
+  };
+  const limits = resolveDomainAuditThresholds(options.thresholds);
 
   const mx = records.filter((r) => r.type === "MX");
   const mxAtApex = mx.filter((r) => recordNameIsApex(r.name, normalizedZone));
@@ -506,7 +768,7 @@ export function runDomainAudit(
     byName.get(n)!.push(r);
   }
 
-  if (options.includeCategories.hygiene) {
+  if (categories.hygiene) {
     const expiryDate = parseDate(options.domainExpiresAt);
     if (!expiryDate) {
       items.push({
@@ -531,15 +793,15 @@ export function runDomainAudit(
           title: "Domain appears expired",
           details: `Expiry date: ${fullExpiry} (${daysUntilExpiry} days). Renew immediately.`,
         });
-      } else if (daysUntilExpiry < 15) {
+      } else if (daysUntilExpiry < limits.domainExpiryCriticalDays) {
         items.push({
           id: "domain-expiry",
           category: "hygiene",
           severity: "fail",
-          title: "Domain expiry critical (<15 days)",
+          title: `Domain expiry critical (<${limits.domainExpiryCriticalDays} days)`,
           details: `Expiry date: ${fullExpiry} (${daysUntilExpiry} days remaining). Renew now.`,
         });
-      } else if (daysUntilExpiry < 30) {
+      } else if (daysUntilExpiry < limits.domainExpiryWarnDays) {
         items.push({
           id: "domain-expiry",
           category: "hygiene",
@@ -564,17 +826,24 @@ export function runDomainAudit(
       const ttl = getTtlSeconds(r.ttl);
       if (ttl === null) continue;
       if (ttl <= 0) ttlCritical.push(`${r.type} ${r.name}: invalid TTL ${ttl}`);
-      else if (ttl < 30)
+      else if (ttl < limits.ttlCriticalBelowSeconds)
         ttlCritical.push(
-          `${r.type} ${r.name}: TTL ${ttl}s is dangerously low (<30s should only be temporary)`,
+          `${r.type} ${r.name}: TTL ${ttl}s is dangerously low (<${limits.ttlCriticalBelowSeconds}s should only be temporary)`,
         );
-      else if (ttl < 60)
+      else if (ttl < limits.ttlLowBelowSeconds)
         ttlIssues.push(`${r.type} ${r.name}: TTL ${ttl}s is very low`);
-      else if (r.type === "SOA" && ttl < 3600)
-        ttlIssues.push(`SOA ${r.name}: TTL ${ttl}s is low (often 3600+).`);
-      else if (["NS", "MX"].includes(r.type) && ttl < 300)
-        ttlIssues.push(`${r.type} ${r.name}: TTL ${ttl}s is low (often 300+).`);
-      else if (ttl > 86400)
+      else if (r.type === "SOA" && ttl < limits.ttlSoaLowBelowSeconds)
+        ttlIssues.push(
+          `SOA ${r.name}: TTL ${ttl}s is low (often ${limits.ttlSoaLowBelowSeconds}+).`,
+        );
+      else if (
+        ["NS", "MX"].includes(r.type) &&
+        ttl < limits.ttlDelegationLowBelowSeconds
+      )
+        ttlIssues.push(
+          `${r.type} ${r.name}: TTL ${ttl}s is low (often ${limits.ttlDelegationLowBelowSeconds}+).`,
+        );
+      else if (ttl > limits.ttlHighAboveSeconds)
         ttlIssues.push(
           `${r.type} ${r.name}: TTL ${ttl}s is very high (changes propagate slowly).`,
         );
@@ -587,7 +856,7 @@ export function runDomainAudit(
         title: "TTL dangerously low",
         details:
           ttlCritical.slice(0, 8).join("\n") +
-          "\n\nTTL <30s should only be used temporarily before DNS changes.",
+          `\n\nTTL <${limits.ttlCriticalBelowSeconds}s should only be used temporarily before DNS changes.`,
       });
     }
     items.push({
@@ -663,13 +932,13 @@ export function runDomainAudit(
         cnameChainIssues.push(
           `${r.name}: CNAME cycle detected (${chain.join(" → ")})`,
         );
-      else if (hops >= 5)
+      else if (hops >= limits.cnameChainFailHops)
         cnameChainIssues.push(
           `${r.name}: CNAME chain is ${hops} hops (${chain.join(" → ")})`,
         );
-      else if (hops >= 3)
+      else if (hops >= limits.cnameChainWarnHops)
         cnameChainWarnings.push(
-          `${r.name}: CNAME chain is ${hops} hops (best practice ≤2)`,
+          `${r.name}: CNAME chain is ${hops} hops (best practice ≤${limits.cnameChainWarnHops - 1})`,
         );
     }
     if (cnameChainIssues.length > 0) {
@@ -696,7 +965,7 @@ export function runDomainAudit(
         category: "hygiene",
         severity: "pass",
         title: "CNAME chaining",
-        details: "No excessive CNAME chains detected (all ≤2 hops).",
+        details: `No excessive CNAME chains detected (all ≤${limits.cnameChainWarnHops - 1} hops).`,
       });
     }
 
@@ -769,14 +1038,20 @@ export function runDomainAudit(
         details:
           "No NS records visible at apex (Cloudflare manages these automatically).",
       });
-    } else if (nsAtApex.length === 1) {
+    } else if (nsAtApex.length < limits.nsMinimumAtApex) {
       items.push({
         id: "ns-single",
         category: "hygiene",
         severity: "fail",
-        title: "Single NS record at apex",
-        details:
-          "Best practice requires ≥2 authoritative name servers for redundancy.",
+        // The id and the one-record title are what this finding has always
+        // been. A raised minimum reaches it with more than one NS record, where
+        // "Single NS record at apex" would be an outright false statement, so
+        // that case gets its own title rather than a reworded shared one.
+        title:
+          nsAtApex.length === 1
+            ? "Single NS record at apex"
+            : "Too few NS records at apex",
+        details: `Best practice requires ≥${limits.nsMinimumAtApex} authoritative name servers for redundancy.`,
       });
     } else {
       items.push({
@@ -919,7 +1194,7 @@ export function runDomainAudit(
       txtByName.set(n, (txtByName.get(n) ?? 0) + 1);
     }
     const txtSprawl = Array.from(txtByName.entries())
-      .filter(([, count]) => count > 5)
+      .filter(([, count]) => count > limits.txtRecordsPerNameLimit)
       .map(([name, count]) => `${name}: ${count} TXT records`);
     if (txtSprawl.length > 0) {
       items.push({
@@ -975,7 +1250,7 @@ export function runDomainAudit(
     }
   }
 
-  if (options.includeCategories.security) {
+  if (categories.security) {
     const caaRecords = records.filter((r) => r.type === "CAA");
     if (caaRecords.length > 0) {
       const parsed = caaRecords.map((r) => ({ r, p: parseCaa(r.content) }));
@@ -990,7 +1265,7 @@ export function runDomainAudit(
         .map((x) => (x.p.value ?? "").trim())
         .filter(Boolean);
       const distinct = Array.from(new Set(issueValues));
-      if (distinct.length > 3)
+      if (distinct.length > limits.caaIssuerLimit)
         issues.push(
           `CAA allows many issuers (${distinct.length}). Consider tightening to fewer CAs.`,
         );
@@ -1051,7 +1326,7 @@ export function runDomainAudit(
     }
   }
 
-  if (options.includeCategories.email) {
+  if (categories.email) {
     if (mxAtApex.length > 0) {
       items.push({
         id: "mx-present",
@@ -1082,7 +1357,7 @@ export function runDomainAudit(
         details:
           "Having only one MX can be a single point of failure. Consider adding a secondary MX (or ensuring provider HA).",
       });
-    } else if (mxAtApex.length > 10) {
+    } else if (mxAtApex.length > limits.mxManyAtApexLimit) {
       items.push({
         id: "mx-too-many",
         category: "email",
@@ -1243,7 +1518,10 @@ export function runDomainAudit(
         });
       }
 
-      if (typeof lookupEstimate === "number" && lookupEstimate >= 10) {
+      if (
+        typeof lookupEstimate === "number" &&
+        lookupEstimate >= limits.spfLookupWarnCount
+      ) {
         items.push({
           id: "spf-lookups-estimate",
           category: "email",
@@ -1372,5 +1650,12 @@ export function runDomainAudit(
     }
   }
 
-  return items.map(explainFinding);
+  // Per-check settings are applied to the assembled list rather than threaded
+  // through the branches that build it. No check reads another's findings, so
+  // dropping one here is indistinguishable from never running it — and a check
+  // added later is configurable the moment it has an id, with nothing to wire.
+  return items
+    .filter((item) => checkIsEnabled(options, item.id))
+    .map((item) => applySeverityOverride(options, item))
+    .map(explainFinding);
 }

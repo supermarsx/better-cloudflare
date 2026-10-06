@@ -6,6 +6,9 @@ description = "DNS domain health audit engine: email, security, and hygiene chec
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
+# For lenient deserialisation of stored audit config only: a field a newer build
+# wrote must not fail the whole parse, which needs a `Value` to fall back from.
+serde_json = "1"
 bc-cloudflare-api = { path = "../bc-cloudflare-api" }
 bc-spf = { path = "../bc-spf" }
 bc-dns-tools = { path = "../bc-dns-tools" }

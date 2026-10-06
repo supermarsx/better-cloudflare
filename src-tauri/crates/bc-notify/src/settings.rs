@@ -465,6 +465,12 @@ impl AuditFindingKindSettings {
     /// `domain-expiry` finding covers the same ground as the `domain_expiry`
     /// notification kind, which has its own schedule, milestones and registrar
     /// fallback; feeding the date in here would notify twice for one fact.
+    ///
+    /// The audit's per-check settings and thresholds are left at their defaults:
+    /// those live in the desktop app's own audit configuration, which these
+    /// notification settings do not carry, so the background monitor reports on
+    /// the stock bands. Wiring them through means adding them here and to
+    /// whatever persists `NotificationSettings`.
     pub fn audit_options(&self) -> AuditOptions {
         let categories = self.audit_categories();
         AuditOptions {
@@ -474,6 +480,7 @@ impl AuditFindingKindSettings {
                 hygiene: categories.contains(&AuditCategory::Hygiene),
             },
             domain_expires_at: None,
+            ..AuditOptions::default()
         }
     }
 

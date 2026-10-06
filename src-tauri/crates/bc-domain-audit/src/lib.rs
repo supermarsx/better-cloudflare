@@ -107,25 +107,95 @@ pub struct AuditItem {
     pub suggestion: Option<AuditSuggestion>,
 }
 
-/// Options controlling which audit categories to run.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// How the audit is configured.
+///
+/// Every field has a default that is the behaviour this crate had before any of
+/// it was configurable, so `AuditOptions::default()` — or a stored object from a
+/// build that knew about fewer of these fields — runs exactly the audit the app
+/// has always run.
+///
+/// Mirrors `DomainAuditOptions` in `src/lib/audit/domain-audit.ts`; the two are
+/// one wire format, which is why the threshold keys are camelCase on this side
+/// too. `test/domain-audit-config.test.ts` pins the threshold table — keys,
+/// defaults and bounds — against the TypeScript one.
+///
+/// ## Deserialisation is deliberately forgiving
+///
+/// This type is read from stored settings that a *newer* build may have written,
+/// so a field it does not recognise, or a value of the wrong shape, must leave
+/// the rest of the config intact rather than failing the whole parse and
+/// throwing away the user's other choices. Every field is lenient
+/// independently, and unknown keys inside `checks` and `thresholds` are simply
+/// never looked up.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AuditOptions {
-    #[serde(default = "default_categories")]
+    #[serde(default = "default_categories", deserialize_with = "lenient")]
     pub include_categories: AuditCategories,
-    #[serde(default)]
+    /// Per-check settings keyed by the finding id. Unknown ids are ignored.
+    #[serde(default, deserialize_with = "lenient_check_map")]
+    pub checks: HashMap<String, AuditCheckSettings>,
+    /// Threshold overrides keyed by the names in [`AUDIT_THRESHOLDS`]. Unknown
+    /// keys and out-of-range values are ignored.
+    #[serde(default, deserialize_with = "lenient_threshold_map")]
+    pub thresholds: HashMap<String, f64>,
+    #[serde(default, deserialize_with = "lenient")]
     pub domain_expires_at: Option<String>,
 }
 
 /// Which audit categories to include.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuditCategories {
-    #[serde(default = "default_true")]
+    #[serde(default = "default_true", deserialize_with = "lenient_bool_true")]
     pub email: bool,
-    #[serde(default = "default_true")]
+    #[serde(default = "default_true", deserialize_with = "lenient_bool_true")]
     pub security: bool,
-    #[serde(default = "default_true")]
+    #[serde(default = "default_true", deserialize_with = "lenient_bool_true")]
     pub hygiene: bool,
+}
+
+/// Per-check configuration, keyed by the finding id the audit emits.
+///
+/// The unit of configuration is the finding id, not the "check" as a reader
+/// might group it: `cname-chains-warn` and `cname-chains-fail` are two ids and
+/// configure separately, as do `ns-single` and `ns-redundancy`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuditCheckSettings {
+    /// `Some(false)` drops the finding entirely. Anything else runs the check.
+    #[serde(
+        default,
+        deserialize_with = "lenient",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub enabled: Option<bool>,
+    /// Report this check's problems at this severity instead of the computed
+    /// one. Applied only to findings that are not already `Pass`, and
+    /// [`AuditSeverity::Pass`] is not accepted here: see
+    /// [`AuditCheckSettings::severity_override`].
+    #[serde(
+        default,
+        deserialize_with = "lenient",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub severity: Option<AuditSeverity>,
+}
+
+impl AuditCheckSettings {
+    /// The severity this check's problems should be reported at, if any.
+    ///
+    /// `Pass` is rejected rather than honoured. A severity override changes how
+    /// loudly a *problem* is reported, and a finding forced to `Pass` would be a
+    /// problem presented as healthy, with `details` still describing it — the UI
+    /// hides passing findings by default, so the text would vanish while the
+    /// condition stayed. Silencing a check entirely is `enabled: false`, which
+    /// removes the finding instead of disguising it.
+    pub fn severity_override(&self) -> Option<AuditSeverity> {
+        match self.severity {
+            Some(AuditSeverity::Pass) | None => None,
+            Some(severity) => Some(severity),
+        }
+    }
 }
 
 fn default_true() -> bool {
@@ -140,12 +210,281 @@ fn default_categories() -> AuditCategories {
     }
 }
 
-impl Default for AuditOptions {
+/// All three categories on — which is also what `AuditOptions::default()`
+/// derives from, and what [`lenient`] falls back to for an unreadable value.
+impl Default for AuditCategories {
     fn default() -> Self {
+        default_categories()
+    }
+}
+
+// ── Lenient deserialisation ─────────────────────────────────────────────────
+//
+// Same shape as `bc-notify`'s settings helpers: decode to a `Value` first, then
+// fall back rather than propagate the error, so one unreadable field cannot
+// discard a whole stored config.
+
+/// Deserialize `T`, falling back to `T::default()` when the JSON does not fit
+/// (unknown enum string, wrong type). Missing keys are handled by
+/// `#[serde(default)]`.
+fn lenient<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::de::DeserializeOwned + Default,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(T::deserialize(value).unwrap_or_default())
+}
+
+/// A category flag, where anything that is not literally `false` runs the
+/// category — matching the TypeScript side's `!== false`.
+fn lenient_bool_true<'de, D>(deserializer: D) -> Result<bool, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(value.as_bool().unwrap_or(true))
+}
+
+/// Per-check settings, keeping every entry and defaulting the unreadable ones.
+fn lenient_check_map<'de, D>(
+    deserializer: D,
+) -> Result<HashMap<String, AuditCheckSettings>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    let serde_json::Value::Object(entries) = value else {
+        return Ok(HashMap::new());
+    };
+    Ok(entries
+        .into_iter()
+        .map(|(id, raw)| (id, AuditCheckSettings::deserialize(raw).unwrap_or_default()))
+        .collect())
+}
+
+/// Threshold overrides, keeping only the entries that are numbers at all. The
+/// range check happens in [`AuditThresholds::resolve`], against each key's spec.
+fn lenient_threshold_map<'de, D>(deserializer: D) -> Result<HashMap<String, f64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    let serde_json::Value::Object(entries) = value else {
+        return Ok(HashMap::new());
+    };
+    Ok(entries
+        .into_iter()
+        .filter_map(|(key, raw)| raw.as_f64().map(|number| (key, number)))
+        .collect())
+}
+
+// ── Thresholds ──────────────────────────────────────────────────────────────
+
+/// A tunable number: its default, and the range a stored value must fall in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AuditThresholdSpec {
+    /// The key a stored config uses. camelCase, shared with TypeScript.
+    pub key: &'static str,
+    pub default: u32,
+    pub min: u32,
+    pub max: u32,
+}
+
+/// Fewer days remaining than this fails `domain-expiry` outright.
+pub const DOMAIN_EXPIRY_CRITICAL_DAYS: AuditThresholdSpec = AuditThresholdSpec {
+    key: "domainExpiryCriticalDays",
+    default: 15,
+    min: 1,
+    max: 365,
+};
+/// Fewer days remaining than this warns, once past the critical band.
+pub const DOMAIN_EXPIRY_WARN_DAYS: AuditThresholdSpec = AuditThresholdSpec {
+    key: "domainExpiryWarnDays",
+    default: 30,
+    min: 1,
+    max: 1095,
+};
+/// A TTL under this many seconds is `ttl-critical`.
+pub const TTL_CRITICAL_BELOW_SECONDS: AuditThresholdSpec = AuditThresholdSpec {
+    key: "ttlCriticalBelowSeconds",
+    default: 30,
+    min: 1,
+    max: 3600,
+};
+/// A TTL under this many seconds is a `ttl-hygiene` outlier.
+pub const TTL_LOW_BELOW_SECONDS: AuditThresholdSpec = AuditThresholdSpec {
+    key: "ttlLowBelowSeconds",
+    default: 60,
+    min: 1,
+    max: 86400,
+};
+/// An NS or MX TTL under this many seconds is a `ttl-hygiene` outlier.
+pub const TTL_DELEGATION_LOW_BELOW_SECONDS: AuditThresholdSpec = AuditThresholdSpec {
+    key: "ttlDelegationLowBelowSeconds",
+    default: 300,
+    min: 1,
+    max: 86400,
+};
+/// An SOA TTL under this many seconds is a `ttl-hygiene` outlier.
+pub const TTL_SOA_LOW_BELOW_SECONDS: AuditThresholdSpec = AuditThresholdSpec {
+    key: "ttlSoaLowBelowSeconds",
+    default: 3600,
+    min: 1,
+    max: 604800,
+};
+/// A TTL above this many seconds is a `ttl-hygiene` outlier.
+pub const TTL_HIGH_ABOVE_SECONDS: AuditThresholdSpec = AuditThresholdSpec {
+    key: "ttlHighAboveSeconds",
+    default: 86400,
+    min: 300,
+    max: 2419200,
+};
+/// A CNAME chain of this many hops or more is `cname-chains-warn`.
+pub const CNAME_CHAIN_WARN_HOPS: AuditThresholdSpec = AuditThresholdSpec {
+    key: "cnameChainWarnHops",
+    default: 3,
+    min: 2,
+    max: 20,
+};
+/// A CNAME chain of this many hops or more is `cname-chains-fail`.
+pub const CNAME_CHAIN_FAIL_HOPS: AuditThresholdSpec = AuditThresholdSpec {
+    key: "cnameChainFailHops",
+    default: 5,
+    min: 2,
+    max: 20,
+};
+/// More than this many TXT records at one name is `txt-sprawl`.
+pub const TXT_RECORDS_PER_NAME_LIMIT: AuditThresholdSpec = AuditThresholdSpec {
+    key: "txtRecordsPerNameLimit",
+    default: 5,
+    min: 1,
+    max: 100,
+};
+/// Fewer than this many NS records at the apex is a failure.
+pub const NS_MINIMUM_AT_APEX: AuditThresholdSpec = AuditThresholdSpec {
+    key: "nsMinimumAtApex",
+    default: 2,
+    min: 2,
+    max: 13,
+};
+/// More than this many MX records at the apex is `mx-too-many`.
+pub const MX_MANY_AT_APEX_LIMIT: AuditThresholdSpec = AuditThresholdSpec {
+    key: "mxManyAtApexLimit",
+    default: 10,
+    min: 1,
+    max: 100,
+};
+/// This many estimated SPF lookups or more warns.
+pub const SPF_LOOKUP_WARN_COUNT: AuditThresholdSpec = AuditThresholdSpec {
+    key: "spfLookupWarnCount",
+    default: 10,
+    min: 1,
+    max: 10,
+};
+/// More than this many distinct CAA issuers is reported.
+pub const CAA_ISSUER_LIMIT: AuditThresholdSpec = AuditThresholdSpec {
+    key: "caaIssuerLimit",
+    default: 3,
+    min: 1,
+    max: 50,
+};
+
+/// Every number a check compares against that is a preference rather than a
+/// protocol constant.
+///
+/// Deliberately *not* here: the SOA timer bands, SPF's ten-lookup ceiling, the
+/// SRV port range, and the caps on how many lines a finding lists. The first
+/// three are RFC constants or prose-bound ranges rather than preferences, and
+/// the last is presentation. Adding a row later is this table plus one call
+/// site.
+pub const AUDIT_THRESHOLDS: &[AuditThresholdSpec] = &[
+    DOMAIN_EXPIRY_CRITICAL_DAYS,
+    DOMAIN_EXPIRY_WARN_DAYS,
+    TTL_CRITICAL_BELOW_SECONDS,
+    TTL_LOW_BELOW_SECONDS,
+    TTL_DELEGATION_LOW_BELOW_SECONDS,
+    TTL_SOA_LOW_BELOW_SECONDS,
+    TTL_HIGH_ABOVE_SECONDS,
+    CNAME_CHAIN_WARN_HOPS,
+    CNAME_CHAIN_FAIL_HOPS,
+    TXT_RECORDS_PER_NAME_LIMIT,
+    NS_MINIMUM_AT_APEX,
+    MX_MANY_AT_APEX_LIMIT,
+    SPF_LOOKUP_WARN_COUNT,
+    CAA_ISSUER_LIMIT,
+];
+
+/// Every threshold, resolved to the value the audit will actually compare.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AuditThresholds {
+    pub domain_expiry_critical_days: u32,
+    pub domain_expiry_warn_days: u32,
+    pub ttl_critical_below_seconds: u32,
+    pub ttl_low_below_seconds: u32,
+    pub ttl_delegation_low_below_seconds: u32,
+    pub ttl_soa_low_below_seconds: u32,
+    pub ttl_high_above_seconds: u32,
+    pub cname_chain_warn_hops: u32,
+    pub cname_chain_fail_hops: u32,
+    pub txt_records_per_name_limit: u32,
+    pub ns_minimum_at_apex: u32,
+    pub mx_many_at_apex_limit: u32,
+    pub spf_lookup_warn_count: u32,
+    pub caa_issuer_limit: u32,
+}
+
+/// Resolve one stored value against its spec.
+///
+/// Anything that is not a finite number, or that falls outside the spec's
+/// bounds, leaves the default in place: a stored config from a newer build, a
+/// hand-edited file or a half-finished form field must not be able to turn a
+/// check off or push it somewhere meaningless. Fractional values are truncated
+/// rather than rejected, because a number input that reads `30.0` is a `30`
+/// that took a different route — and because the TypeScript side, where every
+/// JSON number is a float, cannot tell the two apart either.
+fn resolve_threshold(spec: &AuditThresholdSpec, overrides: &HashMap<String, f64>) -> u32 {
+    let Some(&stored) = overrides.get(spec.key) else {
+        return spec.default;
+    };
+    if !stored.is_finite() {
+        return spec.default;
+    }
+    let whole = stored.trunc();
+    if whole < f64::from(spec.min) || whole > f64::from(spec.max) {
+        return spec.default;
+    }
+    whole as u32
+}
+
+impl AuditThresholds {
+    /// The effective value of every threshold.
+    pub fn resolve(overrides: &HashMap<String, f64>) -> Self {
         Self {
-            include_categories: default_categories(),
-            domain_expires_at: None,
+            domain_expiry_critical_days: resolve_threshold(&DOMAIN_EXPIRY_CRITICAL_DAYS, overrides),
+            domain_expiry_warn_days: resolve_threshold(&DOMAIN_EXPIRY_WARN_DAYS, overrides),
+            ttl_critical_below_seconds: resolve_threshold(&TTL_CRITICAL_BELOW_SECONDS, overrides),
+            ttl_low_below_seconds: resolve_threshold(&TTL_LOW_BELOW_SECONDS, overrides),
+            ttl_delegation_low_below_seconds: resolve_threshold(
+                &TTL_DELEGATION_LOW_BELOW_SECONDS,
+                overrides,
+            ),
+            ttl_soa_low_below_seconds: resolve_threshold(&TTL_SOA_LOW_BELOW_SECONDS, overrides),
+            ttl_high_above_seconds: resolve_threshold(&TTL_HIGH_ABOVE_SECONDS, overrides),
+            cname_chain_warn_hops: resolve_threshold(&CNAME_CHAIN_WARN_HOPS, overrides),
+            cname_chain_fail_hops: resolve_threshold(&CNAME_CHAIN_FAIL_HOPS, overrides),
+            txt_records_per_name_limit: resolve_threshold(&TXT_RECORDS_PER_NAME_LIMIT, overrides),
+            ns_minimum_at_apex: resolve_threshold(&NS_MINIMUM_AT_APEX, overrides),
+            mx_many_at_apex_limit: resolve_threshold(&MX_MANY_AT_APEX_LIMIT, overrides),
+            spf_lookup_warn_count: resolve_threshold(&SPF_LOOKUP_WARN_COUNT, overrides),
+            caa_issuer_limit: resolve_threshold(&CAA_ISSUER_LIMIT, overrides),
         }
+    }
+}
+
+impl Default for AuditThresholds {
+    fn default() -> Self {
+        Self::resolve(&HashMap::new())
     }
 }
 
@@ -493,6 +832,7 @@ pub fn run_domain_audit(
     let apex = zone_apex(zone_name);
     let normalized_zone = &apex;
     let mut items = Vec::new();
+    let limits = AuditThresholds::resolve(&options.thresholds);
 
     let mx: Vec<&DNSRecord> = records.iter().filter(|r| r.r#type == "MX").collect();
     let mx_at_apex: Vec<&DNSRecord> = mx
@@ -560,6 +900,7 @@ pub fn run_domain_audit(
             records,
             normalized_zone,
             options,
+            &limits,
             &spf_type_records,
             &cname_records,
             &cname_map,
@@ -572,7 +913,7 @@ pub fn run_domain_audit(
     // ── Security checks ─────────────────────────────────────────────────
 
     if options.include_categories.security {
-        audit_security(&mut items, records, &apex);
+        audit_security(&mut items, records, &apex, &limits);
     }
 
     // ── Email checks ────────────────────────────────────────────────────
@@ -583,6 +924,7 @@ pub fn run_domain_audit(
             records,
             normalized_zone,
             &apex,
+            &limits,
             &mx,
             &mx_at_apex,
             &spf_txt_at_apex,
@@ -595,11 +937,44 @@ pub fn run_domain_audit(
         );
     }
 
+    // Per-check settings are applied to the assembled list rather than threaded
+    // through the branches that build it. No check reads another's findings, so
+    // dropping one here is indistinguishable from never running it — and a
+    // check added later is configurable the moment it has an id, with nothing
+    // to wire.
+    items.retain(|item| check_is_enabled(options, &item.id));
     for item in &mut items {
+        if let Some(severity) = severity_override(options, item) {
+            item.severity = severity;
+        }
         explain_finding(item);
     }
 
     items
+}
+
+/// Whether this finding id is configured off. Unknown ids are on.
+fn check_is_enabled(options: &AuditOptions, id: &str) -> bool {
+    options
+        .checks
+        .get(id)
+        .and_then(|settings| settings.enabled)
+        .unwrap_or(true)
+}
+
+/// The severity this finding should be re-reported at, if it is overridden.
+///
+/// `Pass` findings are left alone: a healthy check stays `Pass` rather than
+/// being promoted into a finding nobody asked for.
+fn severity_override(options: &AuditOptions, item: &AuditItem) -> Option<AuditSeverity> {
+    if item.severity == AuditSeverity::Pass {
+        return None;
+    }
+    options
+        .checks
+        .get(&item.id)
+        .and_then(AuditCheckSettings::severity_override)
+        .filter(|&severity| severity != item.severity)
 }
 
 // ── Finding explanations ────────────────────────────────────────────────────
@@ -695,6 +1070,7 @@ fn audit_hygiene(
     records: &[DNSRecord],
     normalized_zone: &str,
     options: &AuditOptions,
+    limits: &AuditThresholds,
     spf_type_records: &[&DNSRecord],
     cname_records: &[&DNSRecord],
     cname_map: &HashMap<String, String>,
@@ -716,18 +1092,21 @@ fn audit_hygiene(
                     "Domain appears expired",
                     format!("Expiry date: {} ({} days). Renew immediately.", full, days),
                 ));
-            } else if days < 15 {
+            } else if days < i64::from(limits.domain_expiry_critical_days) {
                 items.push(item(
                     "domain-expiry",
                     AuditCategory::Hygiene,
                     AuditSeverity::Fail,
-                    "Domain expiry critical (<15 days)",
+                    &format!(
+                        "Domain expiry critical (<{} days)",
+                        limits.domain_expiry_critical_days
+                    ),
                     format!(
                         "Expiry date: {} ({} days remaining). Renew now.",
                         full, days
                     ),
                 ));
-            } else if days < 30 {
+            } else if days < i64::from(limits.domain_expiry_warn_days) {
                 items.push(item(
                     "domain-expiry",
                     AuditCategory::Hygiene,
@@ -772,24 +1151,26 @@ fn audit_hygiene(
         };
         if ttl == 0 {
             ttl_critical.push(format!("{} {}: invalid TTL {}", r.r#type, r.name, ttl));
-        } else if ttl < 30 {
+        } else if ttl < limits.ttl_critical_below_seconds {
             ttl_critical.push(format!(
-                "{} {}: TTL {}s is dangerously low (<30s should only be temporary)",
-                r.r#type, r.name, ttl
+                "{} {}: TTL {}s is dangerously low (<{}s should only be temporary)",
+                r.r#type, r.name, ttl, limits.ttl_critical_below_seconds
             ));
-        } else if ttl < 60 {
+        } else if ttl < limits.ttl_low_below_seconds {
             ttl_issues.push(format!("{} {}: TTL {}s is very low", r.r#type, r.name, ttl));
-        } else if r.r#type == "SOA" && ttl < 3600 {
+        } else if r.r#type == "SOA" && ttl < limits.ttl_soa_low_below_seconds {
             ttl_issues.push(format!(
-                "SOA {}: TTL {}s is low (often 3600+).",
-                r.name, ttl
+                "SOA {}: TTL {}s is low (often {}+).",
+                r.name, ttl, limits.ttl_soa_low_below_seconds
             ));
-        } else if (r.r#type == "NS" || r.r#type == "MX") && ttl < 300 {
+        } else if (r.r#type == "NS" || r.r#type == "MX")
+            && ttl < limits.ttl_delegation_low_below_seconds
+        {
             ttl_issues.push(format!(
-                "{} {}: TTL {}s is low (often 300+).",
-                r.r#type, r.name, ttl
+                "{} {}: TTL {}s is low (often {}+).",
+                r.r#type, r.name, ttl, limits.ttl_delegation_low_below_seconds
             ));
-        } else if ttl > 86400 {
+        } else if ttl > limits.ttl_high_above_seconds {
             ttl_issues.push(format!(
                 "{} {}: TTL {}s is very high (changes propagate slowly).",
                 r.r#type, r.name, ttl
@@ -798,13 +1179,14 @@ fn audit_hygiene(
     }
     if !ttl_critical.is_empty() {
         let detail = format!(
-            "{}\n\nTTL <30s should only be used temporarily before DNS changes.",
+            "{}\n\nTTL <{}s should only be used temporarily before DNS changes.",
             ttl_critical
                 .iter()
                 .take(8)
                 .cloned()
                 .collect::<Vec<_>>()
-                .join("\n")
+                .join("\n"),
+            limits.ttl_critical_below_seconds
         );
         items.push(item(
             "ttl-critical",
@@ -908,15 +1290,17 @@ fn audit_hygiene(
         let chain_str = chain.chain.join(" → ");
         if chain.cyclic {
             chain_issues.push(format!("{}: CNAME cycle detected ({})", r.name, chain_str));
-        } else if chain.hops >= 5 {
+        } else if chain.hops >= limits.cname_chain_fail_hops as usize {
             chain_issues.push(format!(
                 "{}: CNAME chain is {} hops ({})",
                 r.name, chain.hops, chain_str
             ));
-        } else if chain.hops >= 3 {
+        } else if chain.hops >= limits.cname_chain_warn_hops as usize {
             chain_warnings.push(format!(
-                "{}: CNAME chain is {} hops (best practice ≤2)",
-                r.name, chain.hops
+                "{}: CNAME chain is {} hops (best practice ≤{})",
+                r.name,
+                chain.hops,
+                limits.cname_chain_warn_hops - 1
             ));
         }
     }
@@ -954,7 +1338,10 @@ fn audit_hygiene(
             AuditCategory::Hygiene,
             AuditSeverity::Pass,
             "CNAME chaining",
-            "No excessive CNAME chains detected (all ≤2 hops).",
+            format!(
+                "No excessive CNAME chains detected (all ≤{} hops).",
+                limits.cname_chain_warn_hops - 1
+            ),
         ));
     }
 
@@ -1045,13 +1432,25 @@ fn audit_hygiene(
             "NS records at apex",
             "No NS records visible at apex (Cloudflare manages these automatically).",
         ));
-    } else if ns_at_apex.len() == 1 {
+    } else if ns_at_apex.len() < limits.ns_minimum_at_apex as usize {
         items.push(item(
             "ns-single",
             AuditCategory::Hygiene,
             AuditSeverity::Fail,
-            "Single NS record at apex",
-            "Best practice requires ≥2 authoritative name servers for redundancy.",
+            // The id and the one-record title are what this finding has always
+            // been. A raised minimum reaches it with more than one NS record,
+            // where "Single NS record at apex" would be an outright false
+            // statement, so that case gets its own title rather than a
+            // reworded shared one.
+            if ns_at_apex.len() == 1 {
+                "Single NS record at apex"
+            } else {
+                "Too few NS records at apex"
+            },
+            format!(
+                "Best practice requires ≥{} authoritative name servers for redundancy.",
+                limits.ns_minimum_at_apex
+            ),
         ));
     } else {
         items.push(item(
@@ -1237,7 +1636,7 @@ fn audit_hygiene(
     }
     let txt_sprawl: Vec<String> = txt_by_name
         .iter()
-        .filter(|(_, &count)| count > 5)
+        .filter(|(_, &count)| count > limits.txt_records_per_name_limit as usize)
         .map(|(name, count)| format!("{}: {} TXT records", name, count))
         .collect();
     if !txt_sprawl.is_empty() {
@@ -1346,7 +1745,12 @@ fn audit_hygiene(
 /// compares it against.
 const CAA_IODEF_SUGGESTION_SCOPE: &str = "The suggested record adds the iodef tag only; the other points listed here each need a separate change.";
 
-fn audit_security(items: &mut Vec<AuditItem>, records: &[DNSRecord], apex: &str) {
+fn audit_security(
+    items: &mut Vec<AuditItem>,
+    records: &[DNSRecord],
+    apex: &str,
+    limits: &AuditThresholds,
+) {
     let caa_records: Vec<&DNSRecord> = records.iter().filter(|r| r.r#type == "CAA").collect();
     if !caa_records.is_empty() {
         let parsed: Vec<(Option<u8>, Option<String>, Option<String>)> =
@@ -1370,7 +1774,7 @@ fn audit_security(items: &mut Vec<AuditItem>, records: &[DNSRecord], apex: &str)
             .filter(|v| !v.trim().is_empty())
             .collect();
         let distinct: HashSet<&str> = issue_values.iter().map(|s| s.as_str()).collect();
-        if distinct.len() > 3 {
+        if distinct.len() > limits.caa_issuer_limit as usize {
             issues.push(format!(
                 "CAA allows many issuers ({}). Consider tightening to fewer CAs.",
                 distinct.len()
@@ -1452,6 +1856,7 @@ fn audit_email(
     _records: &[DNSRecord],
     normalized_zone: &str,
     apex: &str,
+    limits: &AuditThresholds,
     mx: &[&DNSRecord],
     mx_at_apex: &[&DNSRecord],
     spf_txt_at_apex: &[String],
@@ -1498,7 +1903,7 @@ fn audit_email(
             "Single MX record at apex",
             "Having only one MX can be a single point of failure. Consider adding a secondary MX (or ensuring provider HA).",
         ));
-    } else if mx_at_apex.len() > 10 {
+    } else if mx_at_apex.len() > limits.mx_many_at_apex_limit as usize {
         items.push(item(
             "mx-too-many",
             AuditCategory::Email,
@@ -1694,7 +2099,7 @@ fn audit_email(
 
         // Lookup estimate
         if let Some(count) = lookup_estimate {
-            if count >= 10 {
+            if count >= limits.spf_lookup_warn_count {
                 items.push(item(
                     "spf-lookups-estimate",
                     AuditCategory::Email,
@@ -1888,7 +2293,7 @@ mod tests {
                 security,
                 hygiene,
             },
-            domain_expires_at: None,
+            ..AuditOptions::default()
         }
     }
 
@@ -2744,5 +3149,841 @@ mod tests {
         );
 
         assert!(!details.contains("port out of range"), "got: {details}");
+    }
+
+    // ── Configuration ───────────────────────────────────────────────────────
+    //
+    // Three mechanisms, and one property that matters more than any of them:
+    // an absent or empty config must produce exactly the findings this audit
+    // produced before it was configurable. Every default below is checked
+    // twice — once as a value in the spec table, and once as the text a user
+    // actually reads, written out here rather than derived from the table, so
+    // that a default and the sentence describing it cannot drift together.
+
+    fn record_with_ttl(record_type: &str, name: &str, content: &str, ttl: u32) -> DNSRecord {
+        let mut r = record(record_type, name, content);
+        r.ttl = Some(ttl);
+        r
+    }
+
+    fn thresholds(pairs: &[(&str, f64)]) -> HashMap<String, f64> {
+        pairs
+            .iter()
+            .map(|(key, value)| ((*key).to_string(), *value))
+            .collect()
+    }
+
+    fn checks(pairs: &[(&str, AuditCheckSettings)]) -> HashMap<String, AuditCheckSettings> {
+        pairs
+            .iter()
+            .map(|(id, settings)| ((*id).to_string(), settings.clone()))
+            .collect()
+    }
+
+    fn disabled() -> AuditCheckSettings {
+        AuditCheckSettings {
+            enabled: Some(false),
+            severity: None,
+        }
+    }
+
+    fn reported_at(severity: AuditSeverity) -> AuditCheckSettings {
+        AuditCheckSettings {
+            enabled: None,
+            severity: Some(severity),
+        }
+    }
+
+    /// A hygiene-only audit with some thresholds overridden.
+    fn hygiene_thresholds(pairs: &[(&str, f64)]) -> AuditOptions {
+        AuditOptions {
+            thresholds: thresholds(pairs),
+            ..options(false, false, true)
+        }
+    }
+
+    fn maybe_finding<'a>(items: &'a [AuditItem], id: &str) -> Option<&'a AuditItem> {
+        items.iter().find(|item| item.id == id)
+    }
+
+    /// Everything a reader of one finding can see, in one comparable line.
+    fn snapshot(items: &[AuditItem]) -> Vec<String> {
+        items
+            .iter()
+            .map(|item| {
+                format!(
+                    "{}|{}|{}|{}|{}",
+                    item.id,
+                    item.category.as_str(),
+                    item.severity.as_str(),
+                    item.title,
+                    item.details
+                )
+            })
+            .chain(items.iter().filter_map(|item| {
+                item.suggestion.as_ref().map(|s| {
+                    format!(
+                        "{}|suggests|{}|{}|{}",
+                        item.id, s.record_type, s.name, s.content
+                    )
+                })
+            }))
+            .collect()
+    }
+
+    /// A zone that reaches as many checks at once as can be compared exactly.
+    ///
+    /// Findings whose `details` list several lines gathered out of a `HashMap`
+    /// — the CNAME conflict list with more than one offending name, TXT sprawl
+    /// with more than one — are deliberately not triggered here: their line
+    /// order is whatever the map iterates in, so they cannot be pinned by
+    /// equality. One conflicting name with one other record type is stable.
+    fn configurable_zone() -> Vec<DNSRecord> {
+        vec![
+            mx("mail1.example.com", 10),
+            mx("mail2.example.com", 10),
+            record("A", "mail1.example.com", "1.1.1.1"),
+            record("A", ZONE, "192.0.2.5"),
+            record("NS", ZONE, "ns1.example.com"),
+            record("CAA", ZONE, "0 issue \"letsencrypt.org\""),
+            record("TXT", ZONE, "v=spf1 include:_spf.example.net mx ~all"),
+            record("TXT", "_dmarc.example.com", "v=DMARC1; p=none;"),
+            record(
+                "SOA",
+                ZONE,
+                "ns.example.com. hostmaster.example.com. 2024010101 7200 700 604800 3600",
+            ),
+            record("CNAME", "a.example.com", "b.example.com"),
+            record("CNAME", "b.example.com", "c.example.com"),
+            record("CNAME", "alias.example.com", "elsewhere.example.net"),
+            record("A", "alias.example.com", "198.51.100.7"),
+            record_with_ttl("A", "slow.example.com", "203.0.113.9", 100_000),
+            record("SRV", "_sip._tcp.example.com", "10 5 5060 sip.example.com"),
+        ]
+    }
+
+    #[test]
+    fn an_absent_config_runs_the_audit_this_app_has_always_run() {
+        let records = configurable_zone();
+        let baseline = snapshot(&run_domain_audit(ZONE, &records, &AuditOptions::default()));
+
+        // Every shape a stored config can arrive in that asks for no change:
+        // the categories spelled out, every threshold set to its own default,
+        // a check entry that says nothing, and entries this build has never
+        // heard of.
+        let every_default: Vec<(&str, f64)> = AUDIT_THRESHOLDS
+            .iter()
+            .map(|spec| (spec.key, f64::from(spec.default)))
+            .collect();
+        let no_op_configs = [
+            options(true, true, true),
+            AuditOptions {
+                thresholds: thresholds(&every_default),
+                ..Default::default()
+            },
+            AuditOptions {
+                checks: checks(&[("caa-analysis", AuditCheckSettings::default())]),
+                ..Default::default()
+            },
+            AuditOptions {
+                checks: checks(&[("no-such-check", disabled())]),
+                thresholds: thresholds(&[("noSuchThreshold", 1.0)]),
+                ..Default::default()
+            },
+            AuditOptions {
+                // Out of range in both directions, and not a number at all.
+                thresholds: thresholds(&[
+                    ("nsMinimumAtApex", 1.0),
+                    ("ttlHighAboveSeconds", 99_999_999.0),
+                    ("cnameChainWarnHops", f64::NAN),
+                ]),
+                ..Default::default()
+            },
+        ];
+
+        for (index, config) in no_op_configs.iter().enumerate() {
+            assert_eq!(
+                snapshot(&run_domain_audit(ZONE, &records, config)),
+                baseline,
+                "config {index} asked for no change but got one"
+            );
+        }
+    }
+
+    /// The sentences the shipped defaults render, written out rather than built
+    /// from the table. Every one of these numbers used to be a literal in the
+    /// line beside it; this is what pins that the move to a threshold did not
+    /// change a word of what a user reads.
+    #[test]
+    fn the_default_bands_render_the_text_they_always_rendered() {
+        let records = vec![
+            record_with_ttl("A", "fast.example.com", "198.51.100.1", 15),
+            record_with_ttl("NS", ZONE, "ns1.example.com", 120),
+            record_with_ttl(
+                "SOA",
+                ZONE,
+                "ns.example.com. hostmaster.example.com. 2024010101 7200 700 604800 3600",
+                1800,
+            ),
+        ];
+        let items = run_domain_audit(ZONE, &records, &options(false, false, true));
+
+        let critical = &finding(&items, "ttl-critical").details;
+        assert!(
+            critical.contains(
+                "A fast.example.com: TTL 15s is dangerously low (<30s should only be temporary)"
+            ),
+            "got: {critical}"
+        );
+        assert!(
+            critical.contains("TTL <30s should only be used temporarily before DNS changes."),
+            "got: {critical}"
+        );
+
+        let hygiene = &finding(&items, "ttl-hygiene").details;
+        assert!(
+            hygiene.contains("NS example.com: TTL 120s is low (often 300+)."),
+            "got: {hygiene}"
+        );
+        assert!(
+            hygiene.contains("SOA example.com: TTL 1800s is low (often 3600+)."),
+            "got: {hygiene}"
+        );
+
+        assert_eq!(
+            finding(&items, "ns-single").details.lines().next(),
+            Some("Best practice requires ≥2 authoritative name servers for redundancy.")
+        );
+        assert_eq!(
+            finding(&items, "ns-single").title,
+            "Single NS record at apex"
+        );
+
+        let chains = run_domain_audit(
+            ZONE,
+            &[
+                record("CNAME", "a.example.com", "b.example.com"),
+                record("CNAME", "b.example.com", "c.example.com"),
+                record("CNAME", "c.example.com", "d.example.com"),
+            ],
+            &options(false, false, true),
+        );
+        assert!(
+            finding(&chains, "cname-chains-warn")
+                .details
+                .contains("CNAME chain is 3 hops (best practice ≤2)"),
+            "got: {}",
+            finding(&chains, "cname-chains-warn").details
+        );
+        assert_eq!(
+            finding(&items, "cname-chains").details,
+            "No excessive CNAME chains detected (all ≤2 hops)."
+        );
+    }
+
+    #[test]
+    fn the_default_expiry_bands_render_the_text_they_always_rendered() {
+        let soon = (chrono::Utc::now() + chrono::Duration::days(7)).to_rfc3339();
+        let items = run_domain_audit(
+            ZONE,
+            &[],
+            &AuditOptions {
+                domain_expires_at: Some(soon),
+                ..options(false, false, true)
+            },
+        );
+
+        assert_eq!(
+            finding(&items, "domain-expiry").title,
+            "Domain expiry critical (<15 days)"
+        );
+        assert_eq!(
+            finding(&items, "domain-expiry").severity,
+            AuditSeverity::Fail
+        );
+    }
+
+    // ── Per-check enable / disable ──────────────────────────────────────────
+
+    #[test]
+    fn a_check_switched_off_is_the_only_finding_that_disappears() {
+        let records = configurable_zone();
+        let baseline = snapshot(&run_domain_audit(ZONE, &records, &AuditOptions::default()));
+        let without_caa = snapshot(&run_domain_audit(
+            ZONE,
+            &records,
+            &AuditOptions {
+                checks: checks(&[("caa-analysis", disabled())]),
+                ..Default::default()
+            },
+        ));
+
+        let expected: Vec<String> = baseline
+            .iter()
+            .filter(|line| !line.starts_with("caa-analysis|"))
+            .cloned()
+            .collect();
+        assert!(
+            expected.len() < baseline.len(),
+            "the fixture must emit caa-analysis for this to mean anything"
+        );
+        assert_eq!(without_caa, expected);
+    }
+
+    #[test]
+    fn switching_off_one_variant_leaves_its_siblings_reporting() {
+        // `cname-chains-warn` and `cname-chains-fail` are separate ids, so they
+        // configure separately — the unit is the finding, not the subject.
+        let records = vec![
+            record("CNAME", "a.example.com", "b.example.com"),
+            record("CNAME", "b.example.com", "c.example.com"),
+            record("CNAME", "c.example.com", "d.example.com"),
+        ];
+        let items = run_domain_audit(
+            ZONE,
+            &records,
+            &AuditOptions {
+                checks: checks(&[("cname-chains-warn", disabled())]),
+                ..options(false, false, true)
+            },
+        );
+
+        assert!(maybe_finding(&items, "cname-chains-warn").is_none());
+        assert!(maybe_finding(&items, "cname-chains").is_none());
+        assert_eq!(
+            maybe_finding(&items, "soa-missing").map(|item| item.severity),
+            Some(AuditSeverity::Info),
+            "an unrelated finding must survive"
+        );
+    }
+
+    #[test]
+    fn an_explicitly_enabled_check_still_reports() {
+        let items = run_domain_audit(
+            ZONE,
+            &configurable_zone(),
+            &AuditOptions {
+                checks: checks(&[(
+                    "caa-analysis",
+                    AuditCheckSettings {
+                        enabled: Some(true),
+                        severity: None,
+                    },
+                )]),
+                ..Default::default()
+            },
+        );
+
+        assert!(maybe_finding(&items, "caa-analysis").is_some());
+    }
+
+    // ── Per-check severity override ─────────────────────────────────────────
+
+    #[test]
+    fn a_finding_can_be_reported_at_a_lower_severity() {
+        let items = run_domain_audit(
+            ZONE,
+            &configurable_zone(),
+            &AuditOptions {
+                checks: checks(&[("caa-analysis", reported_at(AuditSeverity::Info))]),
+                ..Default::default()
+            },
+        );
+
+        assert_eq!(
+            finding(&items, "caa-analysis").severity,
+            AuditSeverity::Info
+        );
+    }
+
+    #[test]
+    fn a_finding_can_be_reported_at_a_higher_severity() {
+        let items = run_domain_audit(
+            ZONE,
+            &configurable_zone(),
+            &AuditOptions {
+                checks: checks(&[("caa-analysis", reported_at(AuditSeverity::Fail))]),
+                ..Default::default()
+            },
+        );
+
+        assert_eq!(
+            finding(&items, "caa-analysis").severity,
+            AuditSeverity::Fail
+        );
+    }
+
+    #[test]
+    fn an_overridden_finding_says_exactly_what_it_said_before() {
+        // Only the severity moves. The explanation still applies, the
+        // suggestion survives, and the UI's own per-zone override marker —
+        // which it recovers out of `details` — is not written here.
+        let records = configurable_zone();
+        let before = finding(
+            &run_domain_audit(ZONE, &records, &AuditOptions::default()),
+            "caa-analysis",
+        )
+        .clone();
+        let items = run_domain_audit(
+            ZONE,
+            &records,
+            &AuditOptions {
+                checks: checks(&[("caa-analysis", reported_at(AuditSeverity::Info))]),
+                ..Default::default()
+            },
+        );
+        let after = finding(&items, "caa-analysis");
+
+        assert_eq!(before.severity, AuditSeverity::Warn);
+        assert_eq!(after.severity, AuditSeverity::Info);
+        assert_eq!(after.title, before.title);
+        assert_eq!(after.details, before.details);
+        assert!(!after.details.contains("Original severity:"));
+        assert_eq!(
+            after.suggestion.as_ref().map(|s| s.content.clone()),
+            before.suggestion.as_ref().map(|s| s.content.clone())
+        );
+    }
+
+    #[test]
+    fn a_passing_finding_is_never_promoted_by_an_override() {
+        // A healthy check has nothing to report, so an override asking for
+        // `fail` must not invent a failure — and must not attach the
+        // explanation a real failure would carry.
+        let items = run_domain_audit(
+            ZONE,
+            &[
+                record("CAA", ZONE, "0 issue \"letsencrypt.org\""),
+                record("CAA", ZONE, "0 iodef \"mailto:security@example.com\""),
+            ],
+            &AuditOptions {
+                checks: checks(&[("caa-analysis", reported_at(AuditSeverity::Fail))]),
+                ..options(false, true, false)
+            },
+        );
+        let caa = finding(&items, "caa-analysis");
+
+        assert_eq!(caa.severity, AuditSeverity::Pass);
+        assert_eq!(caa.details, "CAA present and looks reasonable.");
+    }
+
+    #[test]
+    fn pass_is_not_an_accepted_override() {
+        // Forcing `pass` would leave a live problem labelled healthy, with the
+        // text describing it hidden behind the UI's "show passed" filter.
+        // Silencing a check is `enabled: false`, which removes the finding.
+        let items = run_domain_audit(
+            ZONE,
+            &configurable_zone(),
+            &AuditOptions {
+                checks: checks(&[("caa-analysis", reported_at(AuditSeverity::Pass))]),
+                ..Default::default()
+            },
+        );
+
+        assert_eq!(
+            finding(&items, "caa-analysis").severity,
+            AuditSeverity::Warn
+        );
+    }
+
+    // ── Thresholds: each one reaches the check it belongs to ────────────────
+
+    #[test]
+    fn every_threshold_spec_is_read_by_the_resolver() {
+        // A key in the table that nothing resolves is a setting the UI would
+        // offer and the audit would ignore.
+        for spec in AUDIT_THRESHOLDS {
+            assert!(
+                spec.min <= spec.default && spec.default <= spec.max,
+                "{}: default {} is outside its own bounds {}..={}",
+                spec.key,
+                spec.default,
+                spec.min,
+                spec.max
+            );
+            assert!(
+                spec.min < spec.max,
+                "{}: bounds leave nothing to configure",
+                spec.key
+            );
+
+            let at_min = AuditThresholds::resolve(&thresholds(&[(spec.key, f64::from(spec.min))]));
+            let at_max = AuditThresholds::resolve(&thresholds(&[(spec.key, f64::from(spec.max))]));
+            assert_ne!(
+                at_min, at_max,
+                "{} is in the table but no resolved field reads it",
+                spec.key
+            );
+        }
+    }
+
+    #[test]
+    fn the_expiry_bands_follow_their_thresholds() {
+        let in_twenty_days = (chrono::Utc::now() + chrono::Duration::days(20)).to_rfc3339();
+        let audit = |pairs: &[(&str, f64)]| {
+            let items = run_domain_audit(
+                ZONE,
+                &[],
+                &AuditOptions {
+                    domain_expires_at: Some(in_twenty_days.clone()),
+                    thresholds: thresholds(pairs),
+                    ..options(false, false, true)
+                },
+            );
+            finding(&items, "domain-expiry").severity
+        };
+
+        assert_eq!(audit(&[]), AuditSeverity::Warn);
+        assert_eq!(
+            audit(&[("domainExpiryCriticalDays", 30.0)]),
+            AuditSeverity::Fail
+        );
+        assert_eq!(
+            audit(&[("domainExpiryWarnDays", 10.0)]),
+            AuditSeverity::Pass
+        );
+    }
+
+    #[test]
+    fn the_ttl_bands_follow_their_thresholds() {
+        let ttl_finding = |ttl: u32, record_type: &str, pairs: &[(&str, f64)], id: &str| {
+            let items = run_domain_audit(
+                ZONE,
+                &[record_with_ttl(
+                    record_type,
+                    "host.example.com",
+                    "1.1.1.1",
+                    ttl,
+                )],
+                &hygiene_thresholds(pairs),
+            );
+            maybe_finding(&items, id).map(|item| item.details.clone())
+        };
+
+        // Critical: 45s is an outlier by default, a failure at a raised floor.
+        assert!(ttl_finding(45, "A", &[], "ttl-critical").is_none());
+        assert!(ttl_finding(
+            45,
+            "A",
+            &[("ttlCriticalBelowSeconds", 60.0)],
+            "ttl-critical"
+        )
+        .is_some_and(|details| details.contains("(<60s should only be temporary)")));
+
+        // Low, high, and the two record-type-specific floors.
+        assert!(ttl_finding(90, "A", &[], "ttl-hygiene")
+            .is_some_and(|details| details.contains("No obvious TTL outliers")));
+        assert!(
+            ttl_finding(90, "A", &[("ttlLowBelowSeconds", 120.0)], "ttl-hygiene")
+                .is_some_and(|details| details.contains("TTL 90s is very low"))
+        );
+        assert!(ttl_finding(
+            100_000,
+            "A",
+            &[("ttlHighAboveSeconds", 200_000.0)],
+            "ttl-hygiene"
+        )
+        .is_some_and(|details| details.contains("No obvious TTL outliers")));
+        assert!(ttl_finding(100_000, "A", &[], "ttl-hygiene")
+            .is_some_and(|details| details.contains("is very high")));
+        assert!(ttl_finding(
+            400,
+            "NS",
+            &[("ttlDelegationLowBelowSeconds", 600.0)],
+            "ttl-hygiene"
+        )
+        .is_some_and(|details| details.contains("TTL 400s is low (often 600+).")));
+        assert!(ttl_finding(
+            1800,
+            "SOA",
+            &[("ttlSoaLowBelowSeconds", 900.0)],
+            "ttl-hygiene"
+        )
+        .is_some_and(|details| details.contains("No obvious TTL outliers")));
+    }
+
+    #[test]
+    fn the_cname_chain_bands_follow_their_thresholds() {
+        let records = vec![
+            record("CNAME", "a.example.com", "b.example.com"),
+            record("CNAME", "b.example.com", "c.example.com"),
+        ];
+        let at = |pairs: &[(&str, f64)]| {
+            let items = run_domain_audit(ZONE, &records, &hygiene_thresholds(pairs));
+            ["cname-chains", "cname-chains-warn", "cname-chains-fail"]
+                .iter()
+                .filter_map(|id| maybe_finding(&items, id).map(|item| item.id.clone()))
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(at(&[]), vec!["cname-chains"]);
+        assert_eq!(
+            at(&[("cnameChainWarnHops", 2.0)]),
+            vec!["cname-chains-warn"]
+        );
+        assert_eq!(
+            at(&[("cnameChainWarnHops", 2.0), ("cnameChainFailHops", 2.0)]),
+            vec!["cname-chains-fail"]
+        );
+
+        let warned = run_domain_audit(
+            ZONE,
+            &records,
+            &hygiene_thresholds(&[("cnameChainWarnHops", 2.0)]),
+        );
+        assert!(
+            finding(&warned, "cname-chains-warn")
+                .details
+                .contains("(best practice ≤1)"),
+            "the advice has to follow the threshold it came from: {}",
+            finding(&warned, "cname-chains-warn").details
+        );
+    }
+
+    #[test]
+    fn the_txt_sprawl_limit_follows_its_threshold() {
+        let records: Vec<DNSRecord> = (0..4)
+            .map(|n| record("TXT", "many.example.com", &format!("note-{n}")))
+            .collect();
+
+        let items = run_domain_audit(ZONE, &records, &hygiene_thresholds(&[]));
+        assert!(maybe_finding(&items, "txt-sprawl").is_none());
+
+        let tightened = run_domain_audit(
+            ZONE,
+            &records,
+            &hygiene_thresholds(&[("txtRecordsPerNameLimit", 3.0)]),
+        );
+        assert!(finding(&tightened, "txt-sprawl")
+            .details
+            .contains("many.example.com: 4 TXT records"));
+    }
+
+    #[test]
+    fn the_ns_minimum_follows_its_threshold() {
+        let records = vec![
+            record("NS", ZONE, "ns1.example.com"),
+            record("NS", ZONE, "ns2.example.com"),
+        ];
+
+        let items = run_domain_audit(ZONE, &records, &hygiene_thresholds(&[]));
+        assert_eq!(
+            finding(&items, "ns-redundancy").severity,
+            AuditSeverity::Pass
+        );
+
+        let stricter = run_domain_audit(
+            ZONE,
+            &records,
+            &hygiene_thresholds(&[("nsMinimumAtApex", 3.0)]),
+        );
+        let ns = finding(&stricter, "ns-single");
+        assert_eq!(ns.severity, AuditSeverity::Fail);
+        assert_eq!(
+            ns.title, "Too few NS records at apex",
+            "with two records present, \"Single NS record at apex\" would be false"
+        );
+        assert!(ns
+            .details
+            .contains("requires ≥3 authoritative name servers"));
+    }
+
+    #[test]
+    fn the_mx_and_spf_and_caa_limits_follow_their_thresholds() {
+        let mail = vec![
+            mx("mail1.example.com", 10),
+            mx("mail2.example.com", 20),
+            mx("mail3.example.com", 30),
+            record("TXT", ZONE, "v=spf1 mx a -all"),
+        ];
+        let email = |pairs: &[(&str, f64)]| {
+            run_domain_audit(
+                ZONE,
+                &mail,
+                &AuditOptions {
+                    thresholds: thresholds(pairs),
+                    ..options(true, false, false)
+                },
+            )
+        };
+
+        assert!(maybe_finding(&email(&[]), "mx-too-many").is_none());
+        assert_eq!(
+            maybe_finding(&email(&[("mxManyAtApexLimit", 2.0)]), "mx-too-many")
+                .map(|item| item.severity),
+            Some(AuditSeverity::Warn)
+        );
+
+        assert_eq!(
+            finding(&email(&[]), "spf-lookups-estimate").severity,
+            AuditSeverity::Info
+        );
+        assert_eq!(
+            finding(
+                &email(&[("spfLookupWarnCount", 2.0)]),
+                "spf-lookups-estimate"
+            )
+            .severity,
+            AuditSeverity::Warn
+        );
+
+        let caa_records = vec![
+            record("CAA", ZONE, "0 issue \"letsencrypt.org\""),
+            record("CAA", ZONE, "0 issue \"digicert.com\""),
+            record("CAA", ZONE, "0 iodef \"mailto:security@example.com\""),
+        ];
+        let caa = |pairs: &[(&str, f64)]| {
+            let items = run_domain_audit(
+                ZONE,
+                &caa_records,
+                &AuditOptions {
+                    thresholds: thresholds(pairs),
+                    ..options(false, true, false)
+                },
+            );
+            finding(&items, "caa-analysis").clone()
+        };
+
+        assert_eq!(caa(&[]).severity, AuditSeverity::Pass);
+        let tightened = caa(&[("caaIssuerLimit", 1.0)]);
+        assert_eq!(tightened.severity, AuditSeverity::Warn);
+        assert!(tightened.details.contains("CAA allows many issuers (2)"));
+    }
+
+    // ── Threshold resolution rules ──────────────────────────────────────────
+
+    #[test]
+    fn an_out_of_range_threshold_leaves_the_default_in_place() {
+        for spec in AUDIT_THRESHOLDS {
+            for value in [
+                f64::from(spec.min) - 1.0,
+                f64::from(spec.max) + 1.0,
+                f64::NAN,
+                f64::INFINITY,
+                -1.0,
+            ] {
+                let resolved = AuditThresholds::resolve(&thresholds(&[(spec.key, value)]));
+                assert_eq!(
+                    resolved,
+                    AuditThresholds::default(),
+                    "{} accepted {value}",
+                    spec.key
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_fractional_threshold_is_truncated_rather_than_rejected() {
+        // Every JSON number is a float on the TypeScript side, so `30.0` and
+        // `30` arrive indistinguishably; rejecting fractions would mean the two
+        // implementations disagreed about the same stored file.
+        let resolved = AuditThresholds::resolve(&thresholds(&[("ttlLowBelowSeconds", 90.7)]));
+
+        assert_eq!(resolved.ttl_low_below_seconds, 90);
+    }
+
+    // ── Reading a config a newer build wrote ────────────────────────────────
+
+    fn parse(json: &str) -> AuditOptions {
+        serde_json::from_str(json).expect("stored audit config should always parse")
+    }
+
+    #[test]
+    fn a_config_from_a_newer_build_keeps_the_fields_this_one_understands() {
+        let options = parse(
+            r#"{
+                "includeCategories": { "email": false },
+                "checks": {
+                    "caa-analysis": { "severity": "info" },
+                    "check-from-the-future": { "enabled": false, "mood": "cross" }
+                },
+                "thresholds": { "nsMinimumAtApex": 4, "thresholdFromTheFuture": 7 },
+                "somethingElseEntirely": [1, 2, 3]
+            }"#,
+        );
+
+        assert!(!options.include_categories.email);
+        assert!(options.include_categories.security, "unnamed stays on");
+        assert!(options.include_categories.hygiene, "unnamed stays on");
+        assert_eq!(
+            options.checks["caa-analysis"].severity,
+            Some(AuditSeverity::Info)
+        );
+        assert_eq!(options.checks["check-from-the-future"].enabled, Some(false));
+        assert_eq!(
+            AuditThresholds::resolve(&options.thresholds).ns_minimum_at_apex,
+            4
+        );
+    }
+
+    #[test]
+    fn values_of_the_wrong_shape_are_ignored_rather_than_fatal() {
+        // None of these may fail the parse: one unreadable field would discard
+        // every other choice the user had stored.
+        let options = parse(
+            r#"{
+                "includeCategories": { "email": "yes", "security": null, "hygiene": false },
+                "checks": { "caa-analysis": { "enabled": "maybe", "severity": "catastrophic" } },
+                "thresholds": { "nsMinimumAtApex": "four", "cnameChainWarnHops": null },
+                "domainExpiresAt": 1757
+            }"#,
+        );
+
+        assert!(options.include_categories.email, "not false, so it runs");
+        assert!(options.include_categories.security, "not false, so it runs");
+        assert!(!options.include_categories.hygiene);
+        assert_eq!(options.checks["caa-analysis"].enabled, None);
+        assert_eq!(options.checks["caa-analysis"].severity, None);
+        assert_eq!(
+            AuditThresholds::resolve(&options.thresholds),
+            AuditThresholds::default()
+        );
+        assert_eq!(options.domain_expires_at, None);
+    }
+
+    #[test]
+    fn whole_sections_of_the_wrong_shape_are_ignored() {
+        let options = parse(r#"{ "includeCategories": true, "checks": [], "thresholds": "none" }"#);
+
+        assert!(options.include_categories.email);
+        assert!(options.include_categories.security);
+        assert!(options.include_categories.hygiene);
+        assert!(options.checks.is_empty());
+        assert!(options.thresholds.is_empty());
+    }
+
+    #[test]
+    fn an_empty_object_is_the_default_config() {
+        let options = parse("{}");
+        let records = configurable_zone();
+
+        assert_eq!(
+            snapshot(&run_domain_audit(ZONE, &records, &options)),
+            snapshot(&run_domain_audit(ZONE, &records, &AuditOptions::default()))
+        );
+    }
+
+    #[test]
+    fn a_config_this_crate_wrote_reads_back_the_same_way() {
+        let written = AuditOptions {
+            checks: checks(&[
+                ("caa-analysis", disabled()),
+                ("ns-single", reported_at(AuditSeverity::Info)),
+            ]),
+            thresholds: thresholds(&[("nsMinimumAtApex", 3.0)]),
+            ..Default::default()
+        };
+
+        let json = serde_json::to_string(&written).expect("options should serialize");
+        let read: AuditOptions = serde_json::from_str(&json).expect("and read back");
+
+        assert_eq!(read.checks["caa-analysis"].enabled, Some(false));
+        assert_eq!(read.checks["ns-single"].severity, Some(AuditSeverity::Info));
+        assert_eq!(
+            AuditThresholds::resolve(&read.thresholds).ns_minimum_at_apex,
+            3
+        );
     }
 }

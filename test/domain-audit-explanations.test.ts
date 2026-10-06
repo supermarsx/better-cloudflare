@@ -282,8 +282,13 @@ test("the Rust table is applied only to non-passing findings", () => {
     source,
     /if item\.severity == AuditSeverity::Pass \{\s*\n\s*return;/,
   );
+  // What is pinned is that every finding in the assembled list passes through
+  // `explain_finding`, not the exact shape of the loop body: the same loop also
+  // applies the per-check severity override, and the next thing to run per
+  // finding would go here too. The bound keeps the match local to this loop
+  // rather than letting it find an `explain_finding` call anywhere below.
   assert.match(
     source,
-    /for item in &mut items \{\s*\n\s*explain_finding\(item\);/,
+    /for item in &mut items \{[\s\S]{0,300}?\n\s*explain_finding\(item\);/,
   );
 });
