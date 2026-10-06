@@ -1181,6 +1181,10 @@ async fn legacy_direct_and_chunked_values_read_and_migrate() {
     );
 }
 
+/// How long a thread gets to reach the guarded read before the helper calls
+/// it a hang. See the note at the call site: liveness, not timing.
+const READ_BARRIER_TIMEOUT: Duration = Duration::from_secs(30);
+
 fn run_concurrently(
     backend: &Arc<FakeBackend>,
     key: &str,
@@ -1213,12 +1217,22 @@ fn run_concurrently(
     });
     start.wait();
 
+    // A liveness bound, not an assertion about timing: it only catches a
+    // mechanism that never arrives at all, and the real check is the overlap
+    // measured below. Two seconds of wall clock was not that bound — ten
+    // tests share this helper, and on a loaded machine (a CI runner, or
+    // several cargo builds at once) threads have failed to be scheduled
+    // inside it, turning a correct implementation red. Generous enough that
+    // only a hang trips it, and still far inside the suite's watchdog.
     if !backend
         .read_serialization
-        .wait_for_first(Duration::from_secs(2))
+        .wait_for_first(READ_BARRIER_TIMEOUT)
     {
         backend.read_serialization.release();
-        panic!("neither mutation reached the guarded backend read within 2 seconds");
+        panic!(
+            "neither mutation reached the guarded backend read within {}s",
+            READ_BARRIER_TIMEOUT.as_secs()
+        );
     }
     let overlapped = backend
         .read_serialization
