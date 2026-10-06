@@ -14,7 +14,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "Better Cloudflare DNS Manager",
+        "title": "Better Cloudflare",
         "width": 1280,
         "height": 800,
         "minWidth": 800,

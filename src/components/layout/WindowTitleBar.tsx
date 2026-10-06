@@ -16,6 +16,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
+import { APP_TITLE } from "@/lib/app-identity";
 import { storageManager } from "@/lib/storage/storage";
 import { TauriClient } from "@/lib/api/tauri-client";
 import { reportRuntimeError } from "@/lib/errors/runtime-reporting";
@@ -462,7 +463,10 @@ export function WindowTitleBar() {
         {...dragRegion}
         onContextMenu={handleWindowContextMenu}
       >
-        {t("Better Cloudflare Console", "Better Cloudflare Console")}
+        {/* The product's name, not a translatable phrase, and it has to match
+            `productName` in `tauri.conf.json` — the window manager's title and
+            this bar sit inches apart. `test/appIdentity.test.ts` pins both. */}
+        {APP_TITLE}
       </div>
       <div className="titlebar-actions flex h-full items-center gap-1 pr-2">
         <Tooltip
