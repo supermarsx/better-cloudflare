@@ -42,6 +42,7 @@ bc-ai-chat = { path = "crates/bc-ai-chat" }
 bc-ai-tools = { path = "crates/bc-ai-tools" }
 bc-ai-agent = { path = "crates/bc-ai-agent" }
 bc-notify = { path = "crates/bc-notify" }
+bc-update = { path = "crates/bc-update" }
 
 # Windows-only: reach the raw WebView2 `ICoreWebView2` to observe failed
 # top-level navigations (src/startup_guard.rs). Both crates are already in the

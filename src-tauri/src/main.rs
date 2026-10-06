@@ -13,6 +13,7 @@ mod registrar_commands;
 mod session;
 mod startup_guard;
 mod storage;
+mod update_commands;
 
 use crate::app_config::AppConfigStore;
 use crate::mcp_server::McpServerManager;
@@ -303,6 +304,7 @@ fn main() {
             // Domain Audit
             commands::run_domain_audit,
             commands::lookup_domain_registry,
+            update_commands::update_check,
             // Biometric Authentication
             commands::biometric_status,
             commands::biometric_authenticate,

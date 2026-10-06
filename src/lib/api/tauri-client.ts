@@ -1239,6 +1239,23 @@ export class TauriClient {
   }
 
   /**
+   * Ask GitHub whether a newer release exists.
+   *
+   * Checking only -- nothing is downloaded and nothing is replaced. The
+   * project's releases are unsigned, so a real self-updater would need a
+   * signing key first; this reports and links instead.
+   *
+   * Runs in the host so the request leaves from there rather than the web
+   * view, and so the response is projected before it reaches the renderer:
+   * the release notes are never read.
+   */
+  static async checkForUpdate(
+    includePrereleases: boolean,
+  ): Promise<UpdateCheck> {
+    return invoke("update_check", { includePrereleases });
+  }
+
+  /**
    * Look up a domain's registry record.
    *
    * The audit needs an expiry date and only the registry has one. This goes
@@ -2551,6 +2568,47 @@ export interface RecordChangePayload {
   recordName: string;
   before?: RecordChangeSnapshot;
   after?: RecordChangeSnapshot;
+}
+
+/** What an update check concluded. */
+export type UpdateStatus =
+  /** The running build is the newest release. */
+  | "upToDate"
+  /** A newer release exists; `latest` names it. */
+  | "updateAvailable"
+  /**
+   * The running build carries no release stamp, so nothing can be compared.
+   * A local or self-made build reports this -- it is not a failure, and it is
+   * deliberately not treated as "out of date".
+   */
+  | "unknownVersion"
+  /** The releases list held nothing that qualified. */
+  | "noReleases";
+
+/** The newest release that qualified, projected by the host. */
+export interface LatestRelease {
+  /** The `YY.N` tag, e.g. `26.14`. */
+  tag: string;
+  /** Its page on github.com. Validated by the host before it is returned. */
+  url: string;
+  /** RFC 3339 */
+  publishedAt: string;
+  prerelease: boolean;
+}
+
+/**
+ * The result of one update check (`bc_update::UpdateCheck`).
+ *
+ * A projection, not a passthrough: the host reads five fields from each
+ * release and never the body, which is unbounded author-written prose.
+ */
+export interface UpdateCheck {
+  /** The running build's release tag, or `null` when it was never stamped. */
+  current: string | null;
+  latest: LatestRelease | null;
+  status: UpdateStatus;
+  /** RFC 3339 */
+  checkedAt: string;
 }
 
 /**

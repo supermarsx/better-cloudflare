@@ -17,6 +17,7 @@ members = [
     "src-tauri/crates/bc-ai-tools",
     "src-tauri/crates/bc-ai-agent",
     "src-tauri/crates/bc-notify",
+    "src-tauri/crates/bc-update",
 ]
 resolver = "2"
 

@@ -582,6 +582,7 @@ dependencies = [
  "bc-spf",
  "chrono",
  "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -711,6 +712,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "bc-update"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "tokio",
+ "url",
+]
+
+[[package]]
 name = "better-cloudflare"
 version = "0.0.0"
 dependencies = [
@@ -733,6 +747,7 @@ dependencies = [
  "bc-spf",
  "bc-storage",
  "bc-topology",
+ "bc-update",
  "chrono",
  "dirs",
  "rfd",

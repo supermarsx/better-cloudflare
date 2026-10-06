@@ -1,0 +1,38 @@
+[package]
+name = "bc-update"
+version = "0.1.0"
+edition = "2021"
+description = "Check-only update notifier for Better Cloudflare: ask GitHub whether a newer YY.N release exists"
+
+[dependencies]
+chrono = { version = "0.4", features = ["serde"] }
+# TLS is pinned to native-tls deliberately, for the same reason bc-notify pins
+# it: reqwest 0.13 kept the `default-tls` feature name but redefined it from
+# native-tls to rustls + aws-lc, so leaving defaults on would silently relink
+# the binary and swap the trust store. The rest of 0.12's default set is
+# restated by hand for the same reason. `json` is absent because this crate
+# reads the body itself, bounded, rather than through `Response::json`.
+reqwest = { version = "0.13", default-features = false, features = [
+    "charset",
+    "http2",
+    "system-proxy",
+    "native-tls",
+] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+url = "2"
+
+[dev-dependencies]
+# `net`, `io-util` and `sync` are for the one-shot HTTP stub the fetch tests
+# serve from: the response-size bound, the rate-limit status mapping and the
+# "no credentials, exactly one request" guarantees can only be pinned against
+# a real socket, and a test server is cheaper than a second HTTP dependency.
+tokio = { version = "1", features = [
+    "io-util",
+    "macros",
+    "net",
+    "rt-multi-thread",
+    "sync",
+    "time",
+] }
