@@ -1820,3 +1820,562 @@ fn legacy_preferences_json_without_propagation_keys_still_loads() {
     let round_trip: Preferences = serde_json::from_str(&json).expect("round trip");
     assert_eq!(round_trip, with_new);
 }
+
+// ── Retained records ────────────────────────────────────────────────────────
+
+fn at(text: &str) -> chrono::DateTime<chrono::Utc> {
+    chrono::DateTime::parse_from_rfc3339(text)
+        .expect("test timestamp")
+        .with_timezone(&chrono::Utc)
+}
+
+fn retained(reason: &str, name: &str, expiring_after: Option<u32>) -> Value {
+    let removed = at("2026-01-01T00:00:00Z");
+    RetainedRecord::new(reason, "zone-1", "example.com")
+        .origin_record_id(&format!("cf-{name}"))
+        .snapshot(RecordSnapshot {
+            record_type: "A".to_string(),
+            name: name.to_string(),
+            content: "203.0.113.1".to_string(),
+            ttl: Some(1),
+            priority: None,
+            proxied: Some(true),
+            comment: None,
+        })
+        .local_tags(&["infra"])
+        .removed_at(removed)
+        .expiring_after(expiring_after, removed)
+        .into_value()
+}
+
+/// Unwrap a retain the test expected to be accepted.
+fn expect_retained(outcome: RetainOutcome) -> (String, Vec<Value>, Vec<Evicted>) {
+    match outcome {
+        RetainOutcome::Retained {
+            entry_id,
+            purged,
+            evicted,
+        } => (entry_id, purged, evicted),
+        RetainOutcome::StoreFull {
+            held, protected, ..
+        } => panic!(
+            "expected the record to be retained, but the store refused: \
+             {held} held, {protected} protected"
+        ),
+    }
+}
+
+#[tokio::test]
+async fn an_empty_retained_store_reads_as_an_empty_list_not_an_error() {
+    let storage = Storage::new(false);
+    assert!(storage
+        .get_retained_records()
+        .await
+        .expect("an absent store is simply empty")
+        .is_empty());
+}
+
+#[tokio::test]
+async fn a_retained_record_round_trips_through_the_store() {
+    let storage = Storage::new(false);
+    let entry = retained(RetentionReason::DISABLED, "www.example.com", None);
+    let (entry_id, _, _) = expect_retained(
+        storage
+            .retain_record(
+                entry.clone(),
+                MAX_RETAINED_ENTRIES,
+                at("2026-01-01T00:00:00Z"),
+            )
+            .await
+            .expect("retain the record"),
+    );
+
+    let held = storage
+        .get_retained_records()
+        .await
+        .expect("read the store");
+    assert_eq!(held.len(), 1);
+    assert_eq!(held[0], entry, "stored verbatim, byte for byte");
+
+    let parsed = RetainedRecord::of(&held[0]).expect("an object always parses");
+    assert_eq!(parsed.entry_id, entry_id);
+    assert_eq!(parsed.reason_kind(), RetentionReason::Disabled);
+    assert_eq!(parsed.snapshot.content, "203.0.113.1");
+    assert_eq!(parsed.local_tags, vec!["infra".to_string()]);
+    assert_eq!(
+        parsed.expires_at, None,
+        "a disable is indefinite; nothing will purge it"
+    );
+}
+
+#[tokio::test]
+async fn forgetting_an_entry_is_idempotent_and_hands_the_entry_back() {
+    let storage = Storage::new(false);
+    let (entry_id, _, _) = expect_retained(
+        storage
+            .retain_record(
+                retained(RetentionReason::DELETED, "gone.example.com", Some(30)),
+                MAX_RETAINED_ENTRIES,
+                at("2026-01-01T00:00:00Z"),
+            )
+            .await
+            .expect("retain"),
+    );
+
+    let dropped = storage
+        .forget_retained_record(&entry_id)
+        .await
+        .expect("forget");
+    assert_eq!(
+        RetainedRecord::of(&dropped.expect("the entry"))
+            .expect("parses")
+            .entry_id,
+        entry_id
+    );
+    assert!(storage
+        .get_retained_records()
+        .await
+        .expect("read")
+        .is_empty());
+
+    assert!(
+        storage
+            .forget_retained_record(&entry_id)
+            .await
+            .expect("forgetting twice is not a failure")
+            .is_none(),
+        "a second click must not look like an error to the user"
+    );
+}
+
+#[tokio::test]
+async fn purging_the_store_honours_the_clock_it_is_given() {
+    let storage = Storage::new(false);
+    for (reason, name, days) in [
+        (RetentionReason::DELETED, "soon.example.com", Some(1)),
+        (RetentionReason::DELETED, "later.example.com", Some(90)),
+        (RetentionReason::DISABLED, "parked.example.com", None),
+    ] {
+        storage
+            .retain_record(
+                retained(reason, name, days),
+                MAX_RETAINED_ENTRIES,
+                at("2026-01-01T00:00:00Z"),
+            )
+            .await
+            .expect("retain");
+    }
+
+    let purged = storage
+        .purge_retained_records(at("2026-01-05T00:00:00Z"))
+        .await
+        .expect("purge");
+    assert_eq!(purged.len(), 1);
+    assert_eq!(purged[0]["name"], json!("soon.example.com"));
+
+    let held = storage.get_retained_records().await.expect("read");
+    assert_eq!(held.len(), 2);
+    assert!(
+        storage
+            .purge_retained_records(at("2026-01-05T00:00:00Z"))
+            .await
+            .expect("purge again")
+            .is_empty(),
+        "purging is not a countdown; the same clock takes the same entries"
+    );
+}
+
+#[tokio::test]
+async fn retaining_sweeps_what_has_already_expired() {
+    let storage = Storage::new(false);
+    storage
+        .retain_record(
+            retained(RetentionReason::DELETED, "old.example.com", Some(1)),
+            MAX_RETAINED_ENTRIES,
+            at("2026-01-01T00:00:00Z"),
+        )
+        .await
+        .expect("retain the first");
+
+    let (_, purged, _) = expect_retained(
+        storage
+            .retain_record(
+                retained(RetentionReason::DELETED, "new.example.com", Some(30)),
+                MAX_RETAINED_ENTRIES,
+                at("2026-06-01T00:00:00Z"),
+            )
+            .await
+            .expect("retain the second"),
+    );
+
+    assert_eq!(
+        purged.len(),
+        1,
+        "an idle bin does not need sweeping before it can be written to"
+    );
+    assert_eq!(purged[0]["name"], json!("old.example.com"));
+    let held = storage.get_retained_records().await.expect("read");
+    assert_eq!(held.len(), 1);
+    assert_eq!(held[0]["name"], json!("new.example.com"));
+}
+
+#[tokio::test]
+async fn a_full_store_forgets_an_old_entry_rather_than_refusing_the_write() {
+    let storage = Storage::new(false);
+    let limit = MIN_RETAINED_ENTRY_LIMIT;
+    for index in 0..limit {
+        storage
+            .retain_record(
+                retained(
+                    RetentionReason::DELETED,
+                    &format!("r{index}.example.com"),
+                    Some(90),
+                ),
+                limit,
+                at("2026-01-01T00:00:00Z"),
+            )
+            .await
+            .expect("retain");
+    }
+
+    let (_, _, evicted) = expect_retained(
+        storage
+            .retain_record(
+                retained(RetentionReason::DELETED, "newest.example.com", Some(90)),
+                limit,
+                at("2026-01-01T00:00:00Z"),
+            )
+            .await
+            .expect("a bin full of bin entries must never fail a delete"),
+    );
+
+    assert_eq!(evicted.len(), 1);
+    assert_eq!(evicted[0].entry["name"], json!("r0.example.com"));
+    assert_eq!(evicted[0].cause, EvictionCause::EntryLimit);
+    let held = storage.get_retained_records().await.expect("read");
+    assert_eq!(held.len(), limit);
+    assert_eq!(
+        held.last().expect("the newest")["name"],
+        json!("newest.example.com"),
+        "the entry the user just made must be the one that survives"
+    );
+}
+
+#[tokio::test]
+async fn an_oversized_entry_is_refused_before_it_reaches_the_keyring() {
+    let storage = Storage::new(false);
+    let mut entry = retained(RetentionReason::DELETED, "big.example.com", Some(30));
+    entry["smuggled"] = json!("x".repeat(retention::MAX_RETAINED_ENTRY_BYTES));
+    assert!(matches!(
+        storage
+            .retain_record(entry, MAX_RETAINED_ENTRIES, at("2026-01-01T00:00:00Z"))
+            .await,
+        Err(StorageError::LimitExceeded)
+    ));
+}
+
+#[tokio::test]
+async fn an_entry_without_an_id_is_refused_rather_than_stored_unaddressable() {
+    let storage = Storage::new(false);
+    assert!(matches!(
+        storage
+            .retain_record(
+                json!({ "reason": "deleted" }),
+                MAX_RETAINED_ENTRIES,
+                Utc::now()
+            )
+            .await,
+        Err(StorageError::CorruptData(_))
+    ));
+}
+
+#[tokio::test]
+async fn clearing_the_store_hands_back_everything_it_dropped() {
+    let storage = Storage::new(false);
+    for index in 0..3 {
+        storage
+            .retain_record(
+                retained(
+                    RetentionReason::DISABLED,
+                    &format!("r{index}.example.com"),
+                    None,
+                ),
+                MAX_RETAINED_ENTRIES,
+                at("2026-01-01T00:00:00Z"),
+            )
+            .await
+            .expect("retain");
+    }
+
+    let cleared = storage.clear_retained_records().await.expect("clear");
+    assert_eq!(
+        cleared.len(),
+        3,
+        "every entry it drops is a record that exists nowhere else, so the \
+         caller gets them to record"
+    );
+    assert!(storage
+        .get_retained_records()
+        .await
+        .expect("read")
+        .is_empty());
+}
+
+#[tokio::test]
+async fn a_store_full_of_disabled_records_refuses_rather_than_forget_one() {
+    let storage = Storage::new(false);
+    let limit = MIN_RETAINED_ENTRY_LIMIT;
+    for index in 0..limit {
+        storage
+            .retain_record(
+                retained(
+                    RetentionReason::DISABLED,
+                    &format!("d{index}.example.com"),
+                    None,
+                ),
+                limit,
+                at("2026-01-01T00:00:00Z"),
+            )
+            .await
+            .expect("retain");
+    }
+
+    let outcome = storage
+        .retain_record(
+            retained(RetentionReason::DELETED, "newest.example.com", Some(30)),
+            limit,
+            at("2026-01-01T00:00:00Z"),
+        )
+        .await
+        .expect("a refusal is an outcome, not a storage error");
+
+    match outcome {
+        RetainOutcome::StoreFull {
+            held,
+            protected,
+            purged,
+            ..
+        } => {
+            assert_eq!(held, limit);
+            assert_eq!(protected, limit, "every held entry is a disabled record");
+            assert!(purged.is_empty(), "nothing was due");
+        }
+        RetainOutcome::Retained { .. } => panic!(
+            "the store must not make room by forgetting a disabled record: it              is the only copy of something already gone from the provider"
+        ),
+    }
+
+    let held = storage.get_retained_records().await.expect("read");
+    assert_eq!(held.len(), limit, "nothing was evicted");
+    assert!(
+        held.iter()
+            .all(|entry| entry["reason"] == json!("disabled")),
+        "and every disabled record is still there"
+    );
+    assert!(
+        !held
+            .iter()
+            .any(|entry| entry["name"] == json!("newest.example.com")),
+        "the newcomer was refused, not squeezed in"
+    );
+}
+
+#[tokio::test]
+async fn a_refusal_still_sweeps_what_was_already_due() {
+    let storage = Storage::new(false);
+    let limit = MIN_RETAINED_ENTRY_LIMIT;
+    // One expired bin entry and a full complement of disabled records.
+    storage
+        .retain_record(
+            retained(RetentionReason::DELETED, "due.example.com", Some(1)),
+            limit,
+            at("2026-01-01T00:00:00Z"),
+        )
+        .await
+        .expect("retain");
+    for index in 0..limit {
+        storage
+            .retain_record(
+                retained(
+                    RetentionReason::DISABLED,
+                    &format!("d{index}.example.com"),
+                    None,
+                ),
+                limit + 1,
+                at("2026-01-01T00:00:00Z"),
+            )
+            .await
+            .expect("retain");
+    }
+
+    // The sweep frees exactly one slot, so this one is accepted.
+    let (_, purged, _) = expect_retained(
+        storage
+            .retain_record(
+                retained(RetentionReason::DELETED, "fits.example.com", Some(365)),
+                limit + 1,
+                at("2026-06-01T00:00:00Z"),
+            )
+            .await
+            .expect("retain"),
+    );
+    assert_eq!(purged.len(), 1, "the expired bin entry was room");
+    assert_eq!(purged[0]["name"], json!("due.example.com"));
+
+    // Now the store is full of disabled records plus one live bin entry, so the
+    // bin entry is given up and the next one still fits.
+    let (_, _, evicted) = expect_retained(
+        storage
+            .retain_record(
+                retained(RetentionReason::DELETED, "next.example.com", Some(365)),
+                limit + 1,
+                at("2026-06-01T00:00:00Z"),
+            )
+            .await
+            .expect("retain"),
+    );
+    assert_eq!(evicted.len(), 1);
+    assert_eq!(evicted[0].entry["name"], json!("fits.example.com"));
+
+    // And the one after that has nothing expendable left to take.
+    assert!(
+        matches!(
+            storage
+                .retain_record(
+                    retained(RetentionReason::DELETED, "refused.example.com", Some(365)),
+                    limit,
+                    at("2026-06-01T00:00:00Z"),
+                )
+                .await
+                .expect("a refusal is an outcome"),
+            RetainOutcome::StoreFull { .. }
+        ),
+        "with only disabled records left, the bin refuses"
+    );
+}
+
+#[tokio::test]
+async fn a_refusal_keeps_the_sweep_it_did_on_the_way_to_refusing() {
+    // The realistic shape: the user lowered the entry cap below what the store
+    // already holds. The sweep is still correct on its own terms and must be
+    // written, even though the newcomer is turned away.
+    let storage = Storage::new(false);
+    let limit = MIN_RETAINED_ENTRY_LIMIT;
+    storage
+        .retain_record(
+            retained(RetentionReason::DELETED, "due.example.com", Some(1)),
+            limit + 1,
+            at("2026-01-01T00:00:00Z"),
+        )
+        .await
+        .expect("retain");
+    for index in 0..limit {
+        storage
+            .retain_record(
+                retained(
+                    RetentionReason::DISABLED,
+                    &format!("d{index}.example.com"),
+                    None,
+                ),
+                limit + 1,
+                at("2026-01-01T00:00:00Z"),
+            )
+            .await
+            .expect("retain");
+    }
+    assert_eq!(
+        storage.get_retained_records().await.expect("read").len(),
+        limit + 1
+    );
+
+    // Now with the cap back down to `limit`: the expired entry is swept, and
+    // the ten disabled records that remain still leave no room.
+    let outcome = storage
+        .retain_record(
+            retained(RetentionReason::DELETED, "refused.example.com", Some(365)),
+            limit,
+            at("2026-06-01T00:00:00Z"),
+        )
+        .await
+        .expect("a refusal is an outcome");
+
+    match outcome {
+        RetainOutcome::StoreFull {
+            purged,
+            held,
+            protected,
+            ..
+        } => {
+            assert_eq!(
+                purged.len(),
+                1,
+                "the sweep happened and must be reported, not discarded"
+            );
+            assert_eq!(purged[0]["name"], json!("due.example.com"));
+            assert_eq!(held, limit);
+            assert_eq!(protected, limit);
+        }
+        RetainOutcome::Retained { .. } => {
+            panic!("ten protected entries under a cap of ten leaves no room")
+        }
+    }
+
+    let held = storage.get_retained_records().await.expect("read");
+    assert_eq!(
+        held.len(),
+        limit,
+        "the swept entry really is gone from storage"
+    );
+    assert!(
+        !held
+            .iter()
+            .any(|entry| entry["name"] == json!("refused.example.com")),
+        "and the newcomer was not stored"
+    );
+}
+
+#[tokio::test]
+async fn a_store_written_by_a_newer_build_survives_a_read_and_a_write_here() {
+    let storage = Storage::new(false);
+    let future = json!([{
+        "entry_id": "ret_future",
+        "reason": "quarantined_by_policy",
+        "zone_id": "zone-1",
+        "zone_name": "example.com",
+        "type": "A",
+        "name": "future.example.com",
+        "content": "203.0.113.7",
+        "policy_id": "pol-9",
+    }]);
+    storage
+        .store_secret(
+            "retained_records",
+            &serde_json::to_string(&future).expect("serialize"),
+        )
+        .await
+        .expect("plant a newer build's store");
+
+    let (_, purged, evicted) = expect_retained(
+        storage
+            .retain_record(
+                retained(RetentionReason::DELETED, "ours.example.com", Some(30)),
+                MAX_RETAINED_ENTRIES,
+                at("2026-01-01T00:00:00Z"),
+            )
+            .await
+            .expect("this build can still write into it"),
+    );
+    assert!(purged.is_empty() && evicted.is_empty());
+
+    let held = storage.get_retained_records().await.expect("read");
+    assert_eq!(held.len(), 2);
+    assert_eq!(
+        held[0]["policy_id"],
+        json!("pol-9"),
+        "a field this build does not understand is still there afterwards"
+    );
+    assert_eq!(
+        RetainedRecord::of(&held[0]).expect("parses").reason_kind(),
+        RetentionReason::Unknown
+    );
+}

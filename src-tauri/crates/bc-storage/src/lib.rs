@@ -15,7 +15,14 @@
 //! The audit log is the one store with more than one kind of writer — a
 //! person in the app, an MCP client, the AI assistant — so its entry shape and
 //! its retention rule live in [`audit`].
+//!
+//! [`retention`] holds records that are **gone from Cloudflare** and kept here
+//! so they can be created again: a disabled record and a recycle-bin entry are
+//! the same mechanism with different lifetimes. Read that module's header
+//! before touching it — Cloudflare has no dormant state for a DNS record, and
+//! everything there is named so nobody concludes otherwise.
 
+use chrono::{DateTime, Utc};
 use keyring::Entry;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
@@ -24,9 +31,15 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, Weak};
 use thiserror::Error;
 
 pub mod audit;
+pub mod retention;
 
 pub use audit::{AuditActor, AuditEntry, AuditOutcome, AuditTrail, RecordingAuditTrail};
 pub use bc_crypto::EncryptionConfig;
+pub use retention::{
+    DestinationReport, Evicted, EvictionCause, ExistingRecord, RecordSnapshot, RestoreObstacle,
+    RetainedRecord, RetentionReason, DEFAULT_RETENTION_DAYS, MAX_RETAINED_ENTRIES,
+    MAX_RETENTION_DAYS, MIN_RETAINED_ENTRY_LIMIT, MIN_RETENTION_DAYS,
+};
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
@@ -44,6 +57,12 @@ const MAX_CHUNK_COUNT: usize = 1000;
 const MAX_MANIFEST_BYTES: usize = 256;
 const SERVICE_NAME: &str = "better-cloudflare";
 const MAX_AUDIT_ENTRIES: usize = 1000;
+/// The one logical secret the retained-record store lives in.
+///
+/// Its own secret rather than a field of the preferences, so a retained TXT
+/// record competes for bytes with other retained records and with nothing else.
+/// A bin that can make saving a preference fail is a bin nobody should ship.
+const RETAINED_RECORDS_KEY: &str = "retained_records";
 type LogicalLockRegistry = Mutex<HashMap<String, Weak<Mutex<()>>>>;
 static LOGICAL_LOCKS: OnceLock<LogicalLockRegistry> = OnceLock::new();
 
@@ -375,6 +394,48 @@ pub struct Preferences {
     pub mcp_enabled_tools: Option<Vec<String>>,
     pub theme: Option<String>,
     pub locale: Option<String>,
+}
+
+// ── Retained records ────────────────────────────────────────────────────────
+
+/// What one call to [`Storage::retain_record`] decided.
+///
+/// `purged` and `evicted` are handed back rather than swallowed because both
+/// mean a retained record is gone for good, and a record this application
+/// forgets must not be a record it forgot silently. The caller puts them in the
+/// audit trail.
+#[derive(Debug)]
+pub enum RetainOutcome {
+    /// The record is kept. The caller may now remove it from the provider.
+    Retained {
+        /// The id the new entry is addressed by from now on.
+        entry_id: String,
+        /// Entries whose expiry had passed, swept in the same transaction.
+        purged: Vec<Value>,
+        /// Recycle-bin or expired entries given up to make room.
+        evicted: Vec<Evicted>,
+    },
+    /// **Nothing was stored, and the caller must not delete anything.**
+    ///
+    /// The store is at its bound and everything left in it is protected — see
+    /// [`retention::is_protected`]. Making room would mean giving up a disabled
+    /// record, which is the only copy of something that no longer exists at the
+    /// provider, so the new entry is refused instead.
+    ///
+    /// Refusing costs nothing recoverable: the record stays live and the user
+    /// can empty the bin and try again. Evicting a disable would be data loss
+    /// caused by the feature.
+    StoreFull {
+        /// Expired entries swept before the refusal. The sweep was correct on
+        /// its own terms and is kept.
+        purged: Vec<Value>,
+        /// Entries still held.
+        held: usize,
+        /// How many of those may never be given up.
+        protected: usize,
+        /// Serialised size of what is held.
+        bytes_held: usize,
+    },
 }
 
 // ── Error ───────────────────────────────────────────────────────────────────
@@ -1155,6 +1216,136 @@ impl Storage {
             audit::evict_to_cap(entries);
             Ok(())
         })
+    }
+
+    // ── Retained records ────────────────────────────────────────────────
+
+    /// Every retained record, oldest first.
+    ///
+    /// Returned as raw `Value`s, not as parsed [`RetainedRecord`]s, because the
+    /// store has to survive an entry this build cannot fully read: a caller
+    /// parses each one with [`RetainedRecord::of`], which cannot fail on an
+    /// object, and the raw form is what gets written back.
+    ///
+    /// Nothing is filtered here. Expired-but-not-yet-purged entries are still
+    /// in the list; a caller that is showing a bin applies the same clock it
+    /// would purge with, so what the user sees and what a purge would take
+    /// agree.
+    pub async fn get_retained_records(&self) -> Result<Vec<Value>, StorageError> {
+        match self.get_secret(RETAINED_RECORDS_KEY).await {
+            Ok(json) => deserialize_json(&json, "invalid retained record store"),
+            Err(StorageError::NotFound) => Ok(Vec::new()),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Retain one record, and report what that cost.
+    ///
+    /// Call this **before** deleting the record from Cloudflare, never after.
+    /// The destructive step must not be able to run without the copy already
+    /// safe, and a caller whose delete then fails removes the entry again with
+    /// [`Self::forget_retained_record`]. That ordering makes the worst case an
+    /// entry for a record that still exists — which the restore path reports as
+    /// `already_present`, and which a user can discard — instead of a record
+    /// that exists nowhere.
+    ///
+    /// Expired entries are purged in the same transaction, so a long-idle bin
+    /// does not have to be swept before it can be written to.
+    pub async fn retain_record(
+        &self,
+        entry: Value,
+        max_entries: usize,
+        now: DateTime<Utc>,
+    ) -> Result<RetainOutcome, StorageError> {
+        let entry_id = retention::entry_id_of(&entry)
+            .ok_or(StorageError::CorruptData("retained record has no entry id"))?
+            .to_string();
+        let incoming_bytes = serialize_json(&entry)?.len();
+        if incoming_bytes > retention::MAX_RETAINED_ENTRY_BYTES {
+            return Err(StorageError::LimitExceeded);
+        }
+        self.mutate_json_list(
+            RETAINED_RECORDS_KEY,
+            true,
+            move |entries: &mut Vec<Value>| {
+                // Sweep first: an entry that is already due is room, not a
+                // reason to refuse.
+                let purged = retention::purge_expired(entries, now);
+                if !retention::fits_after_eviction(entries, incoming_bytes, max_entries, now) {
+                    // The only way in would be through a record that exists
+                    // nowhere else. Refuse, and leave the swept store written:
+                    // the purge was correct on its own terms.
+                    return Ok(RetainOutcome::StoreFull {
+                        purged,
+                        held: entries.len(),
+                        protected: entries
+                            .iter()
+                            .filter(|entry| retention::is_protected(entry, now))
+                            .count(),
+                        bytes_held: serialize_json(entries).map(|raw| raw.len()).unwrap_or(0),
+                    });
+                }
+                entries.push(entry);
+                let evicted = retention::evict_to_cap(entries, max_entries, now);
+                Ok(RetainOutcome::Retained {
+                    entry_id,
+                    purged,
+                    evicted,
+                })
+            },
+        )
+    }
+
+    /// Drop one entry by its [`RetainedRecord::entry_id`], and hand it back.
+    ///
+    /// `Ok(None)` when no such entry is held — a restore that already removed
+    /// it, or a second click. Idempotent on purpose: the alternative is a
+    /// caller that has to distinguish "gone" from "never there" to avoid
+    /// showing an error for a success.
+    pub async fn forget_retained_record(
+        &self,
+        entry_id: &str,
+    ) -> Result<Option<Value>, StorageError> {
+        let entry_id = entry_id.to_string();
+        self.mutate_json_list(
+            RETAINED_RECORDS_KEY,
+            true,
+            move |entries: &mut Vec<Value>| {
+                let found = entries
+                    .iter()
+                    .position(|entry| retention::entry_id_of(entry) == Some(entry_id.as_str()));
+                Ok(found.map(|index| entries.remove(index)))
+            },
+        )
+    }
+
+    /// Drop every entry whose expiry has passed by `now`, and hand them back so
+    /// the caller can record them.
+    ///
+    /// The clock is an argument the whole way down, so a thirty-day retention
+    /// is testable without waiting thirty days.
+    pub async fn purge_retained_records(
+        &self,
+        now: DateTime<Utc>,
+    ) -> Result<Vec<Value>, StorageError> {
+        self.mutate_json_list(
+            RETAINED_RECORDS_KEY,
+            true,
+            move |entries: &mut Vec<Value>| Ok(retention::purge_expired(entries, now)),
+        )
+    }
+
+    /// Discard the whole store, and hand back what was in it.
+    ///
+    /// For an explicit "empty the bin". Every entry it drops is a record that
+    /// exists nowhere else, so a caller offers this behind a confirmation and
+    /// records the count.
+    pub async fn clear_retained_records(&self) -> Result<Vec<Value>, StorageError> {
+        self.mutate_json_list(
+            RETAINED_RECORDS_KEY,
+            true,
+            move |entries: &mut Vec<Value>| Ok(std::mem::take(entries)),
+        )
     }
 
     // ── Encryption settings ─────────────────────────────────────────────

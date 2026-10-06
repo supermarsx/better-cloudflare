@@ -5,6 +5,10 @@ use crate::storage::Storage;
 pub mod audit;
 pub mod auth;
 pub mod dns;
+/// Records removed from Cloudflare and kept here — disables and the recycle
+/// bin. Not glob-re-exported, so its wire types stay behind
+/// `commands::retention::`.
+pub mod retention;
 pub mod services;
 
 pub use audit::*;

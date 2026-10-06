@@ -307,6 +307,12 @@ fn main() {
             commands::lookup_domain_registry,
             update_commands::update_check,
             diagnostics_commands::app_host_facts,
+            commands::retention::retain_dns_record,
+            commands::retention::list_retained_records,
+            commands::retention::restore_retained_record,
+            commands::retention::purge_retained_records,
+            commands::retention::forget_retained_record,
+            commands::retention::clear_retained_records,
             // Biometric Authentication
             commands::biometric_status,
             commands::biometric_authenticate,

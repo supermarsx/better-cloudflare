@@ -135,6 +135,23 @@ export interface BrowserPreferenceData extends BrowserSessionSettingsProfile {
   propagationAttempts?: number;
   propagationConsensusPercent?: number;
   propagationWatchIntervalS?: number;
+  /**
+   * Recycle bin — whether a deletion is retained so it can be restored.
+   * Absent means on; the preference is only written when it is changed.
+   *
+   * Only the four settings live here. The retained records themselves are in
+   * their own OS-keyring secret, written by `bc_storage::retention`, because a
+   * retained TXT record is unbounded user data and everything in this object
+   * shares one 2 MB ceiling. A bin stored here could grow until saving a tag
+   * started failing. See `src/lib/records/retention.ts`.
+   */
+  recycleBinEnabled?: boolean;
+  /** Days a binned deletion is kept. Clamped to 1-365 on read and write. */
+  recycleBinRetentionDays?: number;
+  /** Entries the bin holds before it gives up its oldest. Clamped to 10-1000. */
+  recycleBinMaxEntries?: number;
+  /** Whether expired entries are swept without being asked. Absent means on. */
+  recycleBinAutoPurge?: boolean;
 }
 
 /**
@@ -339,6 +356,10 @@ const BROWSER_PREFERENCE_SCHEMA = {
   propagationAttempts: "number",
   propagationConsensusPercent: "number",
   propagationWatchIntervalS: "number",
+  recycleBinEnabled: "boolean",
+  recycleBinRetentionDays: "number",
+  recycleBinMaxEntries: "number",
+  recycleBinAutoPurge: "boolean",
 } as const satisfies Record<keyof BrowserPreferenceData, PreferenceKind>;
 
 function isRecord(value: unknown): value is Record<string, unknown> {

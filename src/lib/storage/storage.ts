@@ -35,6 +35,11 @@ import {
   type PropagationSettings,
 } from "../dns/propagation-resolvers";
 import { reportRuntimeError } from "../errors/runtime-reporting";
+import {
+  clampRetainedEntryLimit,
+  clampRetentionDays,
+  type RecycleBinSettings,
+} from "../records/retention";
 
 const STORAGE_KEY = "cloudflare-dns-manager";
 const STORAGE_RECOVERY_KEY = `${STORAGE_KEY}:recovery`;
@@ -2401,6 +2406,99 @@ export class StorageManager {
     if (!this.data.auditOverrides) return;
     delete this.data.auditOverrides[zoneId];
     this.save();
+  }
+
+  // ── Recycle bin ───────────────────────────────────────────────────────────
+  //
+  // Settings only. The retained records live in their own OS-keyring secret
+  // (`bc_storage::retention`), not in this object: a retained TXT record is
+  // unbounded user data, everything here shares one MAX_STORAGE_BYTES ceiling,
+  // and a bin that grows inside that budget eventually breaks saving a tag.
+  // See `src/lib/records/retention.ts`.
+
+  /**
+   * Whether deleting a record retains a restorable copy.
+   *
+   * Defaults to on. A bin that is off by default is a bin nobody discovers
+   * until the first time they needed it. Turning it off makes a deletion
+   * immediate and final, which is what the Cloudflare dashboard does.
+   *
+   * This does not govern disabling a record: a disable is retention by
+   * definition, and it has no expiry to configure.
+   */
+  setRecycleBinEnabled(enabled: boolean): void {
+    this.data.recycleBinEnabled = enabled;
+    this.save();
+    this.dispatchPreferencesChanged({ recycleBinEnabled: enabled });
+  }
+
+  getRecycleBinEnabled(): boolean {
+    return this.data.recycleBinEnabled !== false;
+  }
+
+  /**
+   * Days a binned deletion stays restorable, clamped to 1-365.
+   *
+   * Clamped on read as well as write, because a hand-edited profile carrying
+   * zero would otherwise bin every deletion into something already expired.
+   * Changing this only affects deletions made afterwards: an entry's expiry is
+   * stamped when it is binned, so the date the user was shown is the date the
+   * purge honours.
+   */
+  setRecycleBinRetentionDays(days: number): void {
+    const clamped = clampRetentionDays(days);
+    this.data.recycleBinRetentionDays = clamped;
+    this.save();
+    this.dispatchPreferencesChanged({ recycleBinRetentionDays: clamped });
+  }
+
+  getRecycleBinRetentionDays(): number {
+    return clampRetentionDays(this.data.recycleBinRetentionDays);
+  }
+
+  /**
+   * Entries the bin holds before it gives up its oldest, clamped to 10-1000.
+   *
+   * The ceiling is the native hard bound; the floor is ten because a bin of one
+   * loses the record you deleted just before the one you meant to undo.
+   */
+  setRecycleBinMaxEntries(entries: number): void {
+    const clamped = clampRetainedEntryLimit(entries);
+    this.data.recycleBinMaxEntries = clamped;
+    this.save();
+    this.dispatchPreferencesChanged({ recycleBinMaxEntries: clamped });
+  }
+
+  getRecycleBinMaxEntries(): number {
+    return clampRetainedEntryLimit(this.data.recycleBinMaxEntries);
+  }
+
+  /**
+   * Whether expired entries are swept without being asked. Defaults to on.
+   *
+   * Off does not keep an expired entry restorable -- the native layer refuses a
+   * restore past the expiry whichever way this is set, so that the list and the
+   * purge can never disagree. It only decides whether the application removes
+   * them for you or waits to be told.
+   */
+  setRecycleBinAutoPurge(enabled: boolean): void {
+    this.data.recycleBinAutoPurge = enabled;
+    this.save();
+    this.dispatchPreferencesChanged({ recycleBinAutoPurge: enabled });
+  }
+
+  getRecycleBinAutoPurge(): boolean {
+    return this.data.recycleBinAutoPurge !== false;
+  }
+
+  /** Every recycle-bin setting at once, for the native calls that need them. */
+  getRecycleBinSettings(): RecycleBinSettings {
+    return {
+      enabled: this.getRecycleBinEnabled(),
+      retentionDays: this.getRecycleBinRetentionDays(),
+      maxEntries: this.getRecycleBinMaxEntries(),
+      autoPurge: this.getRecycleBinAutoPurge(),
+    };
   }
 }
 /** Shared UI storage manager; tests may create isolated instances. */
