@@ -201,9 +201,19 @@ Biometric unlock only appears on this screen on macOS, where Touch ID is the sol
 
 ## Biometrics
 
-**macOS Touch ID only.**
+**macOS Touch ID and Windows Hello are implemented and tested. Linux is implemented but has never been run on real hardware.**
 
-`bc-biometrics` compiles a `macos` module on macOS and a `fallback` module everywhere else; the fallback returns `PlatformNotSupported` for every operation and reports `available: false`. Windows Hello and Linux are **not implemented** — the `BiometricType::WindowsHello` enum variant exists but is unreachable, and a doc comment in that crate overstates support.
+`bc-biometrics` compiles a per-platform module — `macos`, `windows` or `linux` — and a `fallback` elsewhere that returns `PlatformNotSupported` for every operation and reports `available: false`.
+
+| Platform | Prompt                                                                              | State                  |
+| -------- | ----------------------------------------------------------------------------------- | ---------------------- |
+| macOS    | `LocalAuthentication` Touch ID                                                      | Implemented and tested |
+| Windows  | `UserConsentVerifier`, parented to the window through `IUserConsentVerifierInterop` | Implemented and tested |
+| Linux    | fprintd over D-Bus, claiming the reader for one verification                        | Compile-verified only  |
+
+> **Limit: the two tested platforms do not offer the same guarantee.** On macOS the stored secret is bound to biometric verification, so the secret itself is unreachable without it. On Windows the credential is protected by the user's logon credentials and the Hello prompt gates access at the application level. Both are a real prompt in front of a real secret, but only the macOS one ties the secret to the biometric.
+
+> **Limit: Linux is unverified.** The fprintd and Secret Service paths build for `x86_64-unknown-linux-gnu` and are covered by unit tests, but have never been executed against a fingerprint reader. Treat Linux quick-unlock as untested rather than working.
 
 ## MCP server
 
