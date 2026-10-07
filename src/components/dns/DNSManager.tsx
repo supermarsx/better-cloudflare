@@ -112,6 +112,7 @@ import {
   RETENTION_REASON_DELETED,
   RETENTION_REASON_DISABLED,
   retentionDaysForReason,
+  retentionReasonKind,
   shouldRetainDeletion,
   sortRetainedRecords,
   type RestoredRecord,
@@ -120,6 +121,7 @@ import {
   type RetainedRecord,
   type RetainedRecordSnapshot,
   type RetainedStoreView,
+  type RetentionReasonKind,
 } from "@/lib/records/retention";
 import { SettingsSearch } from "./SettingsSearch";
 import {
@@ -728,10 +730,31 @@ const ACTION_TAB_LABELS: Record<TabKind, string> = {
 };
 
 /**
+ * One record on the history stack that the recycle bin is holding.
+ *
+ * Both halves go stale the moment they are used — a retain mints a new entry
+ * id and kills the record id, a restore mints a new record id and consumes the
+ * entry — so every step re-points the op it is paired with through
+ * {@link repointPairedDnsOp}. Carrying the record as well as the entry id is
+ * what lets a message name the record after its id has died.
+ */
+interface RetainedHistoryItem {
+  record: DNSRecord;
+  entryId: string;
+}
+
+/**
  * A history entry stores the operation it performed (`forward`) and the one
  * that reverses it (`reverse`); both are *executed* verbatim, so a single
  * applier serves undo and redo. Bulk operations (paste, import, bulk delete,
  * bulk edit) push one entry covering every record instead of one per record.
+ *
+ * `retain`/`restore` are the pair a binned deletion and a disable push, and
+ * they are the reason neither pushes a `delete`/`create` pair: the record is
+ * not gone, it is in the bin, so the way back is the bin's own restore. A
+ * `delete` op's redo calls `deleteDNSRecord`, which would hand the history
+ * stack the power to destroy a record with no copy — exactly the power
+ * retention exists to take away from it.
  */
 type DNSOp =
   | { kind: "create"; zoneId: string; record: DNSRecord }
@@ -739,7 +762,24 @@ type DNSOp =
   | { kind: "delete"; zoneId: string; recordId: string; record: DNSRecord }
   | { kind: "bulk-create"; zoneId: string; records: DNSRecord[] }
   | { kind: "bulk-update"; zoneId: string; records: DNSRecord[] }
-  | { kind: "bulk-delete"; zoneId: string; records: DNSRecord[] };
+  | { kind: "bulk-delete"; zoneId: string; records: DNSRecord[] }
+  | {
+      /** Remove from Cloudflare and keep a copy: what a binned delete did. */
+      kind: "retain";
+      zoneId: string;
+      zoneName: string;
+      /** `"deleted"` or `"disabled"`, so a message uses the right word. */
+      reason: string;
+      items: RetainedHistoryItem[];
+    }
+  | {
+      /** Put the kept copies back: what reverses a `retain`. */
+      kind: "restore";
+      zoneId: string;
+      zoneName: string;
+      reason: string;
+      items: RetainedHistoryItem[];
+    };
 
 /** How many individual failures a bulk toast names before it summarises. */
 const BULK_FAILURE_DETAIL_LIMIT = 3;
@@ -794,11 +834,23 @@ function describeBulkUpdateFailures(
  * Recreating a record does not restore its Cloudflare id — the API mints a new
  * one — so the delete that reverses a create goes stale the moment the create
  * is replayed. Returns `null` when nothing needs re-pointing.
+ *
+ * `retained` is the same hazard for the retention pair, in both directions: a
+ * retain mints an entry id its paired `restore` has to be told about, and a
+ * restore mints a record id its paired `retain` has to be told about. Both
+ * arrive as the fresh pairing, so one branch serves both.
  */
 function repointPairedDnsOp(
   paired: DNSOp,
   created: readonly DNSRecord[],
+  retained: readonly RetainedHistoryItem[] = [],
 ): DNSOp | null {
+  if (paired.kind === "retain" || paired.kind === "restore") {
+    // Only what actually happened: a step that put back two of three records
+    // leaves a paired op naming those two, never the one still in the bin.
+    if (!retained.length) return null;
+    return { ...paired, items: [...retained] };
+  }
   const withIds = created.filter((record) => record?.id);
   if (!withIds.length) return null;
   if (paired.kind === "delete") {
@@ -1014,6 +1066,46 @@ interface RetainAttempt {
   record: DNSRecord;
   decision?: RetainDecision;
   error?: string;
+}
+
+/**
+ * Just enough of a bin entry to say what restoring it did.
+ *
+ * Not a {@link RetainedRecord}: a restore is also reached from the undo stack,
+ * which never read the store and holds only the record it binned and the entry
+ * id it got back. Both callers can supply this much, so the reporting is one
+ * function rather than two that could disagree.
+ */
+interface RetainedEntryRef {
+  zoneId: string;
+  zoneName: string;
+  /** Decides whether putting it back is called a restore or a re-enable. */
+  reasonKind: RetentionReasonKind;
+  /** `TYPE name`, for naming the record after its id has died. */
+  label: string;
+}
+
+/** How the bin's own list addresses an entry it is reporting on. */
+function retainedEntryRef(entry: RetainedRecord): RetainedEntryRef {
+  return {
+    zoneId: entry.zoneId,
+    zoneName: entry.zoneName,
+    reasonKind: entry.reasonKind,
+    label: describeRetainedRecord(entry),
+  };
+}
+
+/** How the undo stack addresses an entry it is putting back. */
+function historyEntryRef(
+  op: { zoneId: string; zoneName: string; reason: string },
+  item: RetainedHistoryItem,
+): RetainedEntryRef {
+  return {
+    zoneId: op.zoneId,
+    zoneName: op.zoneName,
+    reasonKind: retentionReasonKind(op.reason),
+    label: `${item.record.type} ${item.record.name}`,
+  };
 }
 
 /**
@@ -2286,9 +2378,321 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     [],
   );
 
+  /* ── The recycle bin's primitives ─────────────────────────────────────
+   *
+   * Above the undo applier rather than beside the rest of the bin, because
+   * `applyDnsOp` names these three in its dependency array: a `useCallback`
+   * dep list is evaluated during the render that creates it, so a callback
+   * declared further down the component would still be in its temporal dead
+   * zone. The rest of the bin's handlers stay below, with the UI they serve.
+   */
+
+  /**
+   * Say what a restore did, for every one of the nine statuses it can report.
+   *
+   * A generic "restore failed" would throw away the distinction the command
+   * went to the trouble of making: only three of these are failures of this
+   * application, four of them leave the entry restorable, and two of them mean
+   * the record is already live. Returns `true` when a record was created.
+   */
+  const applyRestoreOutcome = useCallback(
+    (outcome: RestoreOutcome, entry: RetainedEntryRef): boolean => {
+      const label = entry.label;
+      switch (outcome.status) {
+        case "restored": {
+          const record = restoredRecordToDnsRecord(outcome.record);
+          const notes: string[] = [];
+          notes.push(
+            record.id
+              ? t(
+                  "It is live again with a new record id ({{id}}); the id it had before is gone for good.",
+                  {
+                    id: record.id,
+                    defaultValue: `It is live again with a new record id (${record.id}); the id it had before is gone for good.`,
+                  },
+                )
+              : t(
+                  "It is live again with a new record id; the id it had before is gone for good.",
+                  "It is live again with a new record id; the id it had before is gone for good.",
+                ),
+          );
+          if (record.id && outcome.localTags.length > 0) {
+            // The tags were keyed by the id that died with the record, so this
+            // is the only moment they can be re-attached.
+            storageManager.setRecordTags(
+              entry.zoneId,
+              record.id,
+              outcome.localTags,
+            );
+            notes.push(
+              t("{{count}} tag(s) re-attached.", {
+                count: outcome.localTags.length,
+                defaultValue: `${outcome.localTags.length} tag(s) re-attached.`,
+              }),
+            );
+          }
+          if (outcome.sharesNameWith.length > 0) {
+            notes.push(
+              t("It sits alongside {{count}} other record(s) at this name.", {
+                count: outcome.sharesNameWith.length,
+                defaultValue: `It sits alongside ${outcome.sharesNameWith.length} other record(s) at this name.`,
+              }),
+            );
+          }
+          if (outcome.destinationUnverified) {
+            notes.push(
+              t(
+                "The zone was too large to scan first, so Cloudflare alone judged whether it could be created.",
+                "The zone was too large to scan first, so Cloudflare alone judged whether it could be created.",
+              ),
+            );
+          }
+          if (!outcome.entryCleared) {
+            notes.push(
+              t(
+                "The record was created but its bin entry could not be removed — forget it here so it is not restored a second time.",
+                "The record was created but its bin entry could not be removed — forget it here so it is not restored a second time.",
+              ),
+            );
+          }
+          if (record.id) {
+            updateTabByZone(entry.zoneId, (prev) => ({
+              ...prev,
+              records: [record, ...prev.records],
+            }));
+          }
+          toast({
+            title:
+              entry.reasonKind === "disabled"
+                ? t("Re-enabled {{record}}", {
+                    record: label,
+                    defaultValue: `Re-enabled ${label}`,
+                  })
+                : t("Restored {{record}}", {
+                    record: label,
+                    defaultValue: `Restored ${label}`,
+                  }),
+            description: notes.join(" "),
+          });
+          return true;
+        }
+        case "blocked": {
+          const existing = `${outcome.existing.type} ${outcome.existing.name} → ${outcome.existing.content}`;
+          const description =
+            outcome.obstacle === "already_present"
+              ? t(
+                  "{{record}} already exists at Cloudflare ({{existing}}), so nothing was created. The entry is still in the recycle bin; forget it if the live record is the one you want.",
+                  {
+                    record: label,
+                    existing,
+                    defaultValue: `${label} already exists at Cloudflare (${existing}), so nothing was created. The entry is still in the recycle bin; forget it if the live record is the one you want.`,
+                  },
+                )
+              : outcome.obstacle === "cname_collision"
+                ? t(
+                    "A CNAME at this name cannot coexist with {{record}} ({{existing}}). Remove or rename the CNAME, then restore again. The entry is still in the recycle bin.",
+                    {
+                      record: label,
+                      existing,
+                      defaultValue: `A CNAME at this name cannot coexist with ${label} (${existing}). Remove or rename the CNAME, then restore again. The entry is still in the recycle bin.`,
+                    },
+                  )
+                : t(
+                    "Something in the zone is in the way of {{record}} ({{obstacle}}: {{existing}}). The entry is still in the recycle bin.",
+                    {
+                      record: label,
+                      obstacle: outcome.obstacle,
+                      existing,
+                      defaultValue: `Something in the zone is in the way of ${label} (${outcome.obstacle}: ${existing}). The entry is still in the recycle bin.`,
+                    },
+                  );
+          toast({
+            title: t("Not restored", "Not restored"),
+            description,
+            variant: "destructive",
+          });
+          return false;
+        }
+        case "zone_unavailable": {
+          toast({
+            title: t("Zone did not answer", "Zone did not answer"),
+            description: t(
+              "Cloudflare could not be reached for zone {{zone}} ({{message}}). Nothing was lost: {{record}} is still in the recycle bin and still restorable — try again when the zone answers.",
+              {
+                zone: entry.zoneName || outcome.zoneId,
+                message: outcome.message,
+                record: label,
+                defaultValue: `Cloudflare could not be reached for zone ${entry.zoneName || outcome.zoneId} (${outcome.message}). Nothing was lost: ${label} is still in the recycle bin and still restorable — try again when the zone answers.`,
+              },
+            ),
+            variant: "destructive",
+          });
+          return false;
+        }
+        case "provider_refused": {
+          toast({
+            title: t("Cloudflare refused it", "Cloudflare refused it"),
+            description: t(
+              "Cloudflare would not create {{record}}: {{message}}. The entry is still in the recycle bin.",
+              {
+                record: label,
+                message: outcome.message,
+                defaultValue: `Cloudflare would not create ${label}: ${outcome.message}. The entry is still in the recycle bin.`,
+              },
+            ),
+            variant: "destructive",
+          });
+          return false;
+        }
+        case "invalid": {
+          toast({
+            title: t("Entry cannot be sent", "Entry cannot be sent"),
+            description: t(
+              "{{record}} cannot be created as it stands: {{issues}}. The entry is still in the recycle bin.",
+              {
+                record: label,
+                issues: outcome.issues.join("; "),
+                defaultValue: `${label} cannot be created as it stands: ${outcome.issues.join("; ")}. The entry is still in the recycle bin.`,
+              },
+            ),
+            variant: "destructive",
+          });
+          return false;
+        }
+        case "incomplete": {
+          toast({
+            title: t("Entry is incomplete", "Entry is incomplete"),
+            description: t(
+              "This entry is missing {{missing}}, so it cannot be re-created. It is still in the recycle bin, but a record this incomplete can only be entered again by hand.",
+              {
+                missing: outcome.missing.join(", "),
+                defaultValue: `This entry is missing ${outcome.missing.join(", ")}, so it cannot be re-created. It is still in the recycle bin, but a record this incomplete can only be entered again by hand.`,
+              },
+            ),
+            variant: "destructive",
+          });
+          return false;
+        }
+        case "expired": {
+          toast({
+            title: t("Entry has expired", "Entry has expired"),
+            description: outcome.expiresAt
+              ? t(
+                  "{{record}} was only kept until {{date}} and can no longer be restored. Nothing in Cloudflare has it any more either.",
+                  {
+                    record: label,
+                    date: outcome.expiresAt,
+                    defaultValue: `${label} was only kept until ${outcome.expiresAt} and can no longer be restored. Nothing in Cloudflare has it any more either.`,
+                  },
+                )
+              : t(
+                  "{{record}} has passed its expiry and can no longer be restored.",
+                  {
+                    record: label,
+                    defaultValue: `${label} has passed its expiry and can no longer be restored.`,
+                  },
+                ),
+            variant: "destructive",
+          });
+          return false;
+        }
+        case "not_found": {
+          toast({
+            title: t("Entry is gone", "Entry is gone"),
+            description: t(
+              "There is no longer an entry for {{record}} — it was forgotten, swept after expiry, or already restored somewhere else.",
+              {
+                record: label,
+                defaultValue: `There is no longer an entry for ${label} — it was forgotten, swept after expiry, or already restored somewhere else.`,
+              },
+            ),
+            variant: "destructive",
+          });
+          return false;
+        }
+      }
+    },
+    [t, toast, updateTabByZone],
+  );
+
+  /**
+   * Remove records from Cloudflare and keep a copy of each, one at a time.
+   *
+   * One call per record because the native command is per record, and because
+   * a `store_full` refusal is per record too: the first refusal does not mean
+   * the rest failed, and a record the store refused is **still live**.
+   */
+  const retainRecordsToStore = useCallback(
+    async (
+      zoneId: string,
+      zoneName: string,
+      records: readonly DNSRecord[],
+      reason: string,
+    ): Promise<RetainAttempt[]> => {
+      const settings = storageManager.getRecycleBinSettings();
+      const retentionDays = retentionDaysForReason(reason, settings);
+      const attempts: RetainAttempt[] = [];
+      for (const record of records) {
+        // Read the tags before the call: they are keyed by the provider id it
+        // is about to end, so after it there is nothing left to read them by.
+        const localTags = storageManager.getRecordTags(zoneId, record.id);
+        try {
+          const decision = await recordRetention.retain({
+            apiKey,
+            email,
+            zoneId,
+            zoneName,
+            recordId: record.id,
+            record: retainedSnapshotOf(record),
+            reason,
+            retentionDays,
+            localTags,
+            maxEntries: settings.maxEntries,
+          });
+          attempts.push({ record, decision });
+        } catch (error) {
+          attempts.push({ record, error: retentionFailureMessage(error) });
+        }
+      }
+      return attempts;
+    },
+    [apiKey, email],
+  );
+
+  /**
+   * Take the records that were really retained out of the table.
+   *
+   * Only those: a `store_full` refusal and a rejected call both leave the
+   * record live at Cloudflare, so its row has to stay, exactly as a refused
+   * bulk delete's rows do.
+   */
+  const applyRetainedRemovals = useCallback(
+    (zoneId: string, attempts: readonly RetainAttempt[]): RetainAttempt[] => {
+      const retained = attempts.filter(
+        (attempt) => attempt.decision?.status === "retained",
+      );
+      if (retained.length > 0) {
+        const removedIds = new Set(retained.map((a) => a.record.id));
+        // The tags are inside the entry now; the id they were keyed by is dead.
+        for (const id of removedIds) storageManager.clearRecordTags(zoneId, id);
+        updateTabByZone(zoneId, (prev) => ({
+          ...prev,
+          records: prev.records.filter((r) => !removedIds.has(r.id)),
+          selectedIds: prev.selectedIds.filter((id) => !removedIds.has(id)),
+        }));
+      }
+      return retained;
+    },
+    [updateTabByZone],
+  );
+
   /* ── Undo / Redo ────────────────────────────────────── */
   const applyDnsOp = useCallback(
-    async (op: DNSOp, onCreated?: (record: DNSRecord) => void) => {
+    async (
+      op: DNSOp,
+      onCreated?: (record: DNSRecord) => void,
+      onRetained?: (items: RetainedHistoryItem[]) => void,
+    ) => {
       switch (op.kind) {
         case "create": {
           const created = await createDNSRecord(op.zoneId, op.record);
@@ -2376,9 +2780,91 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
           }
           break;
         }
+        case "retain": {
+          // Re-doing a binned delete or a disable. Through `retain_dns_record`
+          // again and never `deleteDNSRecord`: a redo that destroyed the
+          // record would hand the history stack exactly the power retention
+          // exists to take away from it.
+          const records = op.items.map((item) => item.record);
+          const attempts = await retainRecordsToStore(
+            op.zoneId,
+            op.zoneName,
+            records,
+            op.reason,
+          );
+          const kept = applyRetainedRemovals(op.zoneId, attempts);
+          const items: RetainedHistoryItem[] = [];
+          for (const attempt of kept) {
+            if (attempt.decision?.status !== "retained") continue;
+            items.push({
+              record: attempt.record,
+              entryId: attempt.decision.entryId,
+            });
+          }
+          // Reported before the throw below, so the paired `restore` op names
+          // the entries that really exist rather than the ones intended.
+          onRetained?.(items);
+          if (items.length < records.length) {
+            const stillLive = records.length - items.length;
+            throw new Error(
+              `${stillLive} record(s) could not be moved to the recycle bin, so they are still live at Cloudflare. Make room in the bin, or delete them without keeping a copy.`,
+            );
+          }
+          break;
+        }
+        case "restore": {
+          const items: RetainedHistoryItem[] = [];
+          const refused: string[] = [];
+          try {
+            for (const item of op.items) {
+              const ref = historyEntryRef(op, item);
+              const outcome = await recordRetention.restore({
+                apiKey,
+                email,
+                entryId: item.entryId,
+              });
+              // `applyRestoreOutcome` says which of the nine endings this was
+              // and puts a restored record back in the table. `sharesNameWith`
+              // is not one of the failures: landing beside records that have
+              // appeared since is the zone being busier, not the undo losing.
+              if (applyRestoreOutcome(outcome, ref)) {
+                if (outcome.status === "restored") {
+                  items.push({
+                    record: restoredRecordToDnsRecord(outcome.record),
+                    entryId: item.entryId,
+                  });
+                }
+              } else {
+                refused.push(ref.label);
+              }
+            }
+          } finally {
+            onRetained?.(items);
+          }
+          if (refused.length > 0) {
+            // Declining, not falling back to a create: an entry that was
+            // forgotten, swept or already restored by hand is not something a
+            // create could reproduce, and a second copy of a live record is
+            // not an undo.
+            throw new Error(
+              `The recycle bin no longer holds what it would take to put ${refused.join(", ")} back.`,
+            );
+          }
+          break;
+        }
       }
     },
-    [createDNSRecord, deleteDNSRecord, updateDNSRecord, updateTabByZone],
+    [
+      apiKey,
+      applyRestoreOutcome,
+      applyRetainedRemovals,
+      createDNSRecord,
+      deleteDNSRecord,
+      email,
+      retainRecordsToStore,
+      updateDNSRecord,
+      updateTabByZone,
+    ],
   );
 
   /**
@@ -2394,10 +2880,21 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       entry: UndoRedoEntry<DNSOp>,
     ) => {
       const created: DNSRecord[] = [];
+      let retained: RetainedHistoryItem[] = [];
       try {
-        await applyDnsOp(op, (record) => created.push(record));
+        await applyDnsOp(
+          op,
+          (record) => created.push(record),
+          (items) => {
+            retained = items;
+          },
+        );
       } finally {
-        const repointed = repointPairedDnsOp(entry[pairedKey], created);
+        const repointed = repointPairedDnsOp(
+          entry[pairedKey],
+          created,
+          retained,
+        );
         // The hook moves this exact entry object between stacks, so patching
         // it here is what the next undo/redo will read.
         if (repointed) entry[pairedKey] = repointed;
@@ -2431,6 +2928,59 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
         description,
         forward: { kind: "bulk-create", zoneId, records: [...withIds] },
         reverse: { kind: "bulk-delete", zoneId, records: [...withIds] },
+      });
+    },
+    [pushUndo],
+  );
+
+  /**
+   * Record a binned deletion or a disable as one undoable step.
+   *
+   * The pair is `retain`/`restore`, never `delete`/`create`: the records are
+   * not gone, they are in the bin, so Ctrl+Z puts them back through the bin's
+   * own restore and a redo re-retains rather than reaching the plain delete.
+   *
+   * Pushing *nothing* would be worse than either, which is why this exists:
+   * the stack would still be holding whatever came before, so Ctrl+Z after a
+   * deletion would silently undo an unrelated earlier step on a record the
+   * user was not looking at. A mis-aimed undo is worse than an absent one,
+   * because nothing about it looks wrong.
+   */
+  const pushRetainUndo = useCallback(
+    (
+      zoneId: string,
+      zoneName: string,
+      reason: string,
+      retained: readonly RetainAttempt[],
+      describe: (count: number) => string,
+    ): void => {
+      const items: RetainedHistoryItem[] = [];
+      for (const attempt of retained) {
+        if (attempt.decision?.status !== "retained") continue;
+        items.push({
+          record: attempt.record,
+          entryId: attempt.decision.entryId,
+        });
+      }
+      // Nothing was kept, so there is nothing to put back and no step to
+      // record. The records are still live and have already been reported.
+      if (!items.length) return;
+      pushUndo({
+        description: describe(items.length),
+        forward: {
+          kind: "retain",
+          zoneId,
+          zoneName,
+          reason,
+          items: [...items],
+        },
+        reverse: {
+          kind: "restore",
+          zoneId,
+          zoneName,
+          reason,
+          items: [...items],
+        },
       });
     },
     [pushUndo],
@@ -6747,234 +7297,6 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     void loadRecycleBin();
   }, [loadRecycleBin]);
 
-  /**
-   * Say what a restore did, for every one of the nine statuses it can report.
-   *
-   * A generic "restore failed" would throw away the distinction the command
-   * went to the trouble of making: only three of these are failures of this
-   * application, four of them leave the entry restorable, and two of them mean
-   * the record is already live. Returns `true` when a record was created.
-   */
-  const applyRestoreOutcome = useCallback(
-    (outcome: RestoreOutcome, entry: RetainedRecord): boolean => {
-      const label = describeRetainedRecord(entry);
-      switch (outcome.status) {
-        case "restored": {
-          const record = restoredRecordToDnsRecord(outcome.record);
-          const notes: string[] = [];
-          notes.push(
-            record.id
-              ? t(
-                  "It is live again with a new record id ({{id}}); the id it had before is gone for good.",
-                  {
-                    id: record.id,
-                    defaultValue: `It is live again with a new record id (${record.id}); the id it had before is gone for good.`,
-                  },
-                )
-              : t(
-                  "It is live again with a new record id; the id it had before is gone for good.",
-                  "It is live again with a new record id; the id it had before is gone for good.",
-                ),
-          );
-          if (record.id && outcome.localTags.length > 0) {
-            // The tags were keyed by the id that died with the record, so this
-            // is the only moment they can be re-attached.
-            storageManager.setRecordTags(
-              entry.zoneId,
-              record.id,
-              outcome.localTags,
-            );
-            notes.push(
-              t("{{count}} tag(s) re-attached.", {
-                count: outcome.localTags.length,
-                defaultValue: `${outcome.localTags.length} tag(s) re-attached.`,
-              }),
-            );
-          }
-          if (outcome.sharesNameWith.length > 0) {
-            notes.push(
-              t("It sits alongside {{count}} other record(s) at this name.", {
-                count: outcome.sharesNameWith.length,
-                defaultValue: `It sits alongside ${outcome.sharesNameWith.length} other record(s) at this name.`,
-              }),
-            );
-          }
-          if (outcome.destinationUnverified) {
-            notes.push(
-              t(
-                "The zone was too large to scan first, so Cloudflare alone judged whether it could be created.",
-                "The zone was too large to scan first, so Cloudflare alone judged whether it could be created.",
-              ),
-            );
-          }
-          if (!outcome.entryCleared) {
-            notes.push(
-              t(
-                "The record was created but its bin entry could not be removed — forget it here so it is not restored a second time.",
-                "The record was created but its bin entry could not be removed — forget it here so it is not restored a second time.",
-              ),
-            );
-          }
-          if (record.id) {
-            updateTabByZone(entry.zoneId, (prev) => ({
-              ...prev,
-              records: [record, ...prev.records],
-            }));
-          }
-          toast({
-            title:
-              entry.reasonKind === "disabled"
-                ? t("Re-enabled {{record}}", {
-                    record: label,
-                    defaultValue: `Re-enabled ${label}`,
-                  })
-                : t("Restored {{record}}", {
-                    record: label,
-                    defaultValue: `Restored ${label}`,
-                  }),
-            description: notes.join(" "),
-          });
-          return true;
-        }
-        case "blocked": {
-          const existing = `${outcome.existing.type} ${outcome.existing.name} → ${outcome.existing.content}`;
-          const description =
-            outcome.obstacle === "already_present"
-              ? t(
-                  "{{record}} already exists at Cloudflare ({{existing}}), so nothing was created. The entry is still in the recycle bin; forget it if the live record is the one you want.",
-                  {
-                    record: label,
-                    existing,
-                    defaultValue: `${label} already exists at Cloudflare (${existing}), so nothing was created. The entry is still in the recycle bin; forget it if the live record is the one you want.`,
-                  },
-                )
-              : outcome.obstacle === "cname_collision"
-                ? t(
-                    "A CNAME at this name cannot coexist with {{record}} ({{existing}}). Remove or rename the CNAME, then restore again. The entry is still in the recycle bin.",
-                    {
-                      record: label,
-                      existing,
-                      defaultValue: `A CNAME at this name cannot coexist with ${label} (${existing}). Remove or rename the CNAME, then restore again. The entry is still in the recycle bin.`,
-                    },
-                  )
-                : t(
-                    "Something in the zone is in the way of {{record}} ({{obstacle}}: {{existing}}). The entry is still in the recycle bin.",
-                    {
-                      record: label,
-                      obstacle: outcome.obstacle,
-                      existing,
-                      defaultValue: `Something in the zone is in the way of ${label} (${outcome.obstacle}: ${existing}). The entry is still in the recycle bin.`,
-                    },
-                  );
-          toast({
-            title: t("Not restored", "Not restored"),
-            description,
-            variant: "destructive",
-          });
-          return false;
-        }
-        case "zone_unavailable": {
-          toast({
-            title: t("Zone did not answer", "Zone did not answer"),
-            description: t(
-              "Cloudflare could not be reached for zone {{zone}} ({{message}}). Nothing was lost: {{record}} is still in the recycle bin and still restorable — try again when the zone answers.",
-              {
-                zone: entry.zoneName || outcome.zoneId,
-                message: outcome.message,
-                record: label,
-                defaultValue: `Cloudflare could not be reached for zone ${entry.zoneName || outcome.zoneId} (${outcome.message}). Nothing was lost: ${label} is still in the recycle bin and still restorable — try again when the zone answers.`,
-              },
-            ),
-            variant: "destructive",
-          });
-          return false;
-        }
-        case "provider_refused": {
-          toast({
-            title: t("Cloudflare refused it", "Cloudflare refused it"),
-            description: t(
-              "Cloudflare would not create {{record}}: {{message}}. The entry is still in the recycle bin.",
-              {
-                record: label,
-                message: outcome.message,
-                defaultValue: `Cloudflare would not create ${label}: ${outcome.message}. The entry is still in the recycle bin.`,
-              },
-            ),
-            variant: "destructive",
-          });
-          return false;
-        }
-        case "invalid": {
-          toast({
-            title: t("Entry cannot be sent", "Entry cannot be sent"),
-            description: t(
-              "{{record}} cannot be created as it stands: {{issues}}. The entry is still in the recycle bin.",
-              {
-                record: label,
-                issues: outcome.issues.join("; "),
-                defaultValue: `${label} cannot be created as it stands: ${outcome.issues.join("; ")}. The entry is still in the recycle bin.`,
-              },
-            ),
-            variant: "destructive",
-          });
-          return false;
-        }
-        case "incomplete": {
-          toast({
-            title: t("Entry is incomplete", "Entry is incomplete"),
-            description: t(
-              "This entry is missing {{missing}}, so it cannot be re-created. It is still in the recycle bin, but a record this incomplete can only be entered again by hand.",
-              {
-                missing: outcome.missing.join(", "),
-                defaultValue: `This entry is missing ${outcome.missing.join(", ")}, so it cannot be re-created. It is still in the recycle bin, but a record this incomplete can only be entered again by hand.`,
-              },
-            ),
-            variant: "destructive",
-          });
-          return false;
-        }
-        case "expired": {
-          toast({
-            title: t("Entry has expired", "Entry has expired"),
-            description: outcome.expiresAt
-              ? t(
-                  "{{record}} was only kept until {{date}} and can no longer be restored. Nothing in Cloudflare has it any more either.",
-                  {
-                    record: label,
-                    date: outcome.expiresAt,
-                    defaultValue: `${label} was only kept until ${outcome.expiresAt} and can no longer be restored. Nothing in Cloudflare has it any more either.`,
-                  },
-                )
-              : t(
-                  "{{record}} has passed its expiry and can no longer be restored.",
-                  {
-                    record: label,
-                    defaultValue: `${label} has passed its expiry and can no longer be restored.`,
-                  },
-                ),
-            variant: "destructive",
-          });
-          return false;
-        }
-        case "not_found": {
-          toast({
-            title: t("Entry is gone", "Entry is gone"),
-            description: t(
-              "There is no longer an entry for {{record}} — it was forgotten, swept after expiry, or already restored somewhere else.",
-              {
-                record: label,
-                defaultValue: `There is no longer an entry for ${label} — it was forgotten, swept after expiry, or already restored somewhere else.`,
-              },
-            ),
-            variant: "destructive",
-          });
-          return false;
-        }
-      }
-    },
-    [t, toast, updateTabByZone],
-  );
-
   /** Restore one entry. Serves the bin's Restore and its Re-enable alike. */
   const restoreRetainedEntry = useCallback(
     async (entry: RetainedRecord) => {
@@ -6986,7 +7308,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
           email,
           entryId: entry.entryId,
         });
-        applyRestoreOutcome(outcome, entry);
+        applyRestoreOutcome(outcome, retainedEntryRef(entry));
       } catch (error) {
         toast({
           title: t("Restore failed", "Restore failed"),
@@ -7095,77 +7417,6 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       await loadRecycleBin({ sweep: false });
     }
   }, [loadRecycleBin, t, toast]);
-
-  /**
-   * Remove records from Cloudflare and keep a copy of each, one at a time.
-   *
-   * One call per record because the native command is per record, and because
-   * a `store_full` refusal is per record too: the first refusal does not mean
-   * the rest failed, and a record the store refused is **still live**.
-   */
-  const retainRecordsToStore = useCallback(
-    async (
-      zoneId: string,
-      zoneName: string,
-      records: readonly DNSRecord[],
-      reason: string,
-    ): Promise<RetainAttempt[]> => {
-      const settings = storageManager.getRecycleBinSettings();
-      const retentionDays = retentionDaysForReason(reason, settings);
-      const attempts: RetainAttempt[] = [];
-      for (const record of records) {
-        // Read the tags before the call: they are keyed by the provider id it
-        // is about to end, so after it there is nothing left to read them by.
-        const localTags = storageManager.getRecordTags(zoneId, record.id);
-        try {
-          const decision = await recordRetention.retain({
-            apiKey,
-            email,
-            zoneId,
-            zoneName,
-            recordId: record.id,
-            record: retainedSnapshotOf(record),
-            reason,
-            retentionDays,
-            localTags,
-            maxEntries: settings.maxEntries,
-          });
-          attempts.push({ record, decision });
-        } catch (error) {
-          attempts.push({ record, error: retentionFailureMessage(error) });
-        }
-      }
-      return attempts;
-    },
-    [apiKey, email],
-  );
-
-  /**
-   * Take the records that were really retained out of the table.
-   *
-   * Only those: a `store_full` refusal and a rejected call both leave the
-   * record live at Cloudflare, so its row has to stay, exactly as a refused
-   * bulk delete's rows do.
-   */
-  const applyRetainedRemovals = useCallback(
-    (zoneId: string, attempts: readonly RetainAttempt[]): RetainAttempt[] => {
-      const retained = attempts.filter(
-        (attempt) => attempt.decision?.status === "retained",
-      );
-      if (retained.length > 0) {
-        const removedIds = new Set(retained.map((a) => a.record.id));
-        // The tags are inside the entry now; the id they were keyed by is dead.
-        for (const id of removedIds) storageManager.clearRecordTags(zoneId, id);
-        updateTabByZone(zoneId, (prev) => ({
-          ...prev,
-          records: prev.records.filter((r) => !removedIds.has(r.id)),
-          selectedIds: prev.selectedIds.filter((id) => !removedIds.has(id)),
-        }));
-      }
-      return retained;
-    },
-    [updateTabByZone],
-  );
 
   /** Name the records a retain pass left live, and why, for one toast. */
   const describeRetainRefusals = useCallback(
@@ -7309,11 +7560,20 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       }
       if (deleted.length > 0) {
         const deletedIds = new Set(deleted);
+        const deletedRecords = records.filter((r) => deletedIds.has(r.id));
         updateTabByZone(zoneId, (prev) => ({
           ...prev,
           records: prev.records.filter((r) => !deletedIds.has(r.id)),
           selectedIds: prev.selectedIds.filter((id) => !deletedIds.has(id)),
         }));
+        // The one deletion in this file with no copy anywhere, so the only one
+        // whose undo is a create. It still has to go on the stack: without it,
+        // Ctrl+Z would undo whatever step came before instead.
+        pushUndo({
+          description: `Delete ${deletedRecords.length} record(s) from ${zoneId} with no copy kept`,
+          forward: { kind: "bulk-delete", zoneId, records: deletedRecords },
+          reverse: { kind: "bulk-create", zoneId, records: deletedRecords },
+        });
         toast({
           title: t("Deleted, nothing kept", "Deleted, nothing kept"),
           description: t(
@@ -7334,7 +7594,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
         });
       }
     },
-    [deleteDNSRecord, t, toast, updateTabByZone],
+    [deleteDNSRecord, pushUndo, t, toast, updateTabByZone],
   );
 
   /**
@@ -7363,9 +7623,17 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       attempts,
       retained,
     );
+    pushRetainUndo(
+      prompt.zoneId,
+      prompt.zoneName,
+      prompt.reason,
+      retained,
+      (count) => `Retry: keep ${count} record(s) from ${prompt.zoneName}`,
+    );
   }, [
     applyRetainedRemovals,
     emptyRecycleBin,
+    pushRetainUndo,
     reportRetainPass,
     retainRecordsToStore,
     storeFullPrompt,
@@ -7378,6 +7646,20 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     setStoreFullPrompt(null);
     await deleteRecordsWithoutCopy(prompt.zoneId, prompt.records);
   }, [deleteRecordsWithoutCopy, storeFullPrompt]);
+
+  /**
+   * Ask about disabling these records.
+   *
+   * The one entry point, shared by the row menu and the toolbar, so the two
+   * cannot drift into offering different confirmations for the same action.
+   */
+  const requestDisableRecords = useCallback(
+    (zoneId: string, zoneName: string, records: readonly DNSRecord[]) => {
+      if (!records.length) return;
+      setDisablePrompt({ zoneId, zoneName, records: [...records] });
+    },
+    [],
+  );
 
   /** Disable, once the user has read what disabling actually does. */
   const confirmDisableRecords = useCallback(async () => {
@@ -7398,9 +7680,19 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       attempts,
       retained,
     );
+    // Undoable for the same reason a binned delete is: a disable that left the
+    // stack untouched would make the next Ctrl+Z hit an unrelated step.
+    pushRetainUndo(
+      prompt.zoneId,
+      prompt.zoneName,
+      RETENTION_REASON_DISABLED,
+      retained,
+      (count) => `Disable ${count} record(s) in ${prompt.zoneName}`,
+    );
   }, [
     applyRetainedRemovals,
     disablePrompt,
+    pushRetainUndo,
     reportRetainPass,
     retainRecordsToStore,
   ]);
@@ -7410,9 +7702,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
    *
    * With the bin on this is a retain, not a delete followed by a retain: the
    * native command keeps the copy before it removes the record, so the
-   * destructive half cannot run on its own. No history entry is pushed for a
-   * binned deletion — the bin entry *is* the way back, and a second one would
-   * let a redo call the plain delete and destroy the record with no copy left.
+   * destructive half cannot run on its own. The history entry it pushes is a
+   * `retain`/`restore` pair rather than the `delete`/`create` pair the bin-off
+   * path uses, so Ctrl+Z puts the record back out of the bin and a redo
+   * re-retains instead of reaching the plain delete. See {@link pushRetainUndo}.
    */
   const handleDeleteRecord = async (recordId: string) => {
     if (!activeTab) return;
@@ -7436,6 +7729,14 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
         RETENTION_REASON_DELETED,
         attempts,
         retained,
+      );
+      pushRetainUndo(
+        activeTab.zoneId,
+        activeTab.zoneName,
+        RETENTION_REASON_DELETED,
+        retained,
+        () =>
+          `Delete ${deletedRecord.type} ${deletedRecord.name} to the recycle bin`,
       );
       return;
     }
@@ -7493,9 +7794,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
    *
    * With the bin on, the same honesty rule is enforced one record at a time
    * through `retain_dns_record` instead — `delete_bulk_dns_records` cannot be
-   * used there, because it deletes without keeping anything — and, as with a
-   * single binned delete, no history entry is pushed: the bin entries are the
-   * way back, and a redo of a history entry would call the plain delete.
+   * used there, because it deletes without keeping anything — and the history
+   * entry is a `retain`/`restore` pair over the records that were really kept,
+   * so an undo puts exactly those back. See {@link pushRetainUndo}.
    */
   const handleBulkDelete = async () => {
     if (!activeTab || activeTab.kind !== "zone") return;
@@ -7523,6 +7824,14 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
         RETENTION_REASON_DELETED,
         attempts,
         retained,
+      );
+      pushRetainUndo(
+        zoneId,
+        zoneName,
+        RETENTION_REASON_DELETED,
+        retained,
+        (count) =>
+          `Delete ${count} record(s) from ${zoneName} to the recycle bin`,
       );
       return;
     }
@@ -9078,13 +9387,13 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                           size="sm"
                           variant="outline"
                           onClick={() =>
-                            setDisablePrompt({
-                              zoneId: activeTab.zoneId,
-                              zoneName: activeTab.zoneName,
-                              records: activeTab.records.filter((record) =>
+                            requestDisableRecords(
+                              activeTab.zoneId,
+                              activeTab.zoneName,
+                              activeTab.records.filter((record) =>
                                 activeTab.selectedIds.includes(record.id),
                               ),
-                            })
+                            )
                           }
                           disabled={!activeTab.selectedIds.length}
                         >
@@ -9332,6 +9641,19 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                   }))
                                 }
                                 onDelete={() => handleDeleteRecord(record.id)}
+                                // Desktop only: on the web there is no store
+                                // to hold the only copy, so the item is not
+                                // offered rather than offered and refused.
+                                onDisable={
+                                  isDesktop()
+                                    ? () =>
+                                        requestDisableRecords(
+                                          activeTab.zoneId,
+                                          activeTab.zoneName,
+                                          [record],
+                                        )
+                                    : undefined
+                                }
                                 onToggleProxy={(next) =>
                                   handleToggleProxy(record, next)
                                 }

@@ -87,6 +87,7 @@ import {
   Copy,
   CopyPlus,
   Edit2,
+  PowerOff,
   Trash2,
   Save,
   X,
@@ -108,6 +109,7 @@ const RECORD_ACTION_ICONS: Record<RecordActionId, LucideIcon> = {
   copy: Copy,
   "open-in-browser": ExternalLink,
   clone: CopyPlus,
+  disable: PowerOff,
   delete: Trash2,
 };
 
@@ -394,6 +396,13 @@ export interface RecordRowProps {
   onCopy?: () => void | Promise<void>;
   /** Clone this record (pre-fill the add dialog with this record's data) */
   onClone?: () => void | Promise<void>;
+  /**
+   * Open the disable confirmation for this record.
+   *
+   * Omitted where there is no store to hold the only copy, which hides the
+   * menu item rather than offering a disable that could not keep anything.
+   */
+  onDisable?: () => void | Promise<void>;
   /** Toggle Cloudflare proxy status for supported types. */
   onToggleProxy?: (next: boolean) => void | Promise<void>;
   /** Optional SPF simulation helper for TXT/SPF assistants. */
@@ -426,6 +435,7 @@ export function RecordRow({
   onSelectChange,
   onCopy,
   onClone,
+  onDisable,
   onToggleProxy,
   simulateSPF,
   getSPFGraph,
@@ -835,9 +845,18 @@ export function RecordRow({
         onDelete,
         onCopy,
         onClone,
+        onDisable,
         onOpenInBrowser: recordBrowserUrl ? openRecordInBrowser : undefined,
       }),
-    [onClone, onCopy, onDelete, onEdit, openRecordInBrowser, recordBrowserUrl],
+    [
+      onClone,
+      onCopy,
+      onDelete,
+      onDisable,
+      onEdit,
+      openRecordInBrowser,
+      recordBrowserUrl,
+    ],
   );
 
   // Radix menu items compose `onClick` ahead of their internal select handler,

@@ -43,6 +43,7 @@ import {
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 
 import { DNSManager } from "../src/components/dns/DNSManager";
+import { buildRecordActions } from "../src/components/dns/record-actions";
 import { SETTINGS_SUBTABS } from "../src/components/dns/settings-search";
 import { Toaster } from "../src/components/ui/toaster";
 import { resetToastRuntimeForTests } from "../src/hooks/use-toast";
@@ -171,6 +172,8 @@ interface Harness {
   ipc: IpcCall[];
   deletedRecordIds: string[];
   bulkDeleteCalls: string[][];
+  /** Ids `createDNSRecord` minted — how an undo that fell back to a create shows. */
+  createdIds: string[];
   calls: (command: string) => IpcCall[];
 }
 
@@ -190,6 +193,7 @@ function mockRuntime(options: HarnessOptions = {}): Harness {
   const ipc: IpcCall[] = [];
   const deletedRecordIds: string[] = [];
   const bulkDeleteCalls: string[][] = [];
+  const createdIds: string[] = [];
   let entries = options.entries ?? [];
   let expiredPendingPurge = options.expiredPendingPurge ?? 0;
   let retainIndex = 0;
@@ -302,7 +306,11 @@ function mockRuntime(options: HarnessOptions = {}): Harness {
       _email: string | undefined,
       zoneId: string,
       input: Record<string, unknown>,
-    ) => ({ id: "created-0", zone_id: zoneId, ...input }) as TauriDNSRecord,
+    ) => {
+      const id = `created-${createdIds.length}`;
+      createdIds.push(id);
+      return { id, zone_id: zoneId, ...input } as TauriDNSRecord;
+    },
   );
 
   globalThis.fetch = async () =>
@@ -315,6 +323,7 @@ function mockRuntime(options: HarnessOptions = {}): Harness {
     ipc,
     deletedRecordIds,
     bulkDeleteCalls,
+    createdIds,
     calls: (command) => ipc.filter((call) => call.command === command),
   };
 }
@@ -368,16 +377,39 @@ function recordRowTexts(): string[] {
 }
 
 /** Delete one row through its context menu, the way the row menu does. */
-async function deleteFirstRowFromMenu(): Promise<void> {
+/**
+ * Run one row-menu action.
+ *
+ * Only ever called while the zone holds a single record: a closed Radix menu
+ * leaves its items inline under this harness's flattened portals, so with two
+ * rows on screen a document-wide query for an action cannot say which row's
+ * menu it found.
+ */
+async function runRowMenuAction(action: string): Promise<HTMLElement> {
   const table = await recordsTable();
-  const row = table.querySelector("[data-record-row]");
-  assert.ok(row, "the zone must render at least one record row");
-  fireEvent.keyDown(row, { key: "F10", shiftKey: true });
+  const rows = table.querySelectorAll("[data-record-row]");
+  assert.equal(rows.length, 1, "the row menu is only driven on a single row");
+  fireEvent.keyDown(rows[0], { key: "F10", shiftKey: true });
   const item = document.querySelector<HTMLElement>(
-    '[data-record-action="delete"]',
+    `[data-record-action="${action}"]`,
   );
-  assert.ok(item, "the row menu must offer a delete action");
+  assert.ok(item, `the row menu must offer a ${action} action`);
   fireEvent.click(item);
+  return item;
+}
+
+async function deleteFirstRowFromMenu(): Promise<void> {
+  await runRowMenuAction("delete");
+}
+
+/** Ctrl+Z, on the document, which is where the manager listens for it. */
+function pressUndo(): void {
+  fireEvent.keyDown(document.body, { key: "z", ctrlKey: true });
+}
+
+/** Ctrl+Shift+Z. */
+function pressRedo(): void {
+  fireEvent.keyDown(document.body, { key: "z", ctrlKey: true, shiftKey: true });
 }
 
 async function selectAllRecords(expected: number): Promise<void> {
@@ -1099,4 +1131,335 @@ test("every way a restore can end is reported in its own words", async () => {
     fireEvent.click(restoreButton());
     await screen.findByText(expected);
   }
+});
+
+// ── Undo and redo ───────────────────────────────────────────────────────────
+//
+// A binned deletion has to go on the history stack, and it has to go on as a
+// `retain`/`restore` pair. Pushing a `delete`/`create` pair would let a redo
+// destroy the record with no copy; pushing *nothing* is worse still, because
+// the stack keeps whatever came before and the next Ctrl+Z silently undoes an
+// unrelated step on a record the user is not looking at.
+
+/** Put a `created-0` row and one `create`/`delete` history entry on the stack. */
+async function cloneTheOnlyRow(harness: Harness): Promise<void> {
+  await runRowMenuAction("clone");
+  await waitFor(() => assert.deepEqual(harness.createdIds, ["created-0"]));
+  await waitFor(() => assert.equal(recordRowTexts().length, 2));
+}
+
+test("undo after a binned delete restores from the bin, and the earlier step is untouched", async () => {
+  const harness = await renderManager({
+    records: [
+      record({
+        id: "rec-a",
+        type: "A",
+        name: "alpha.bin.test",
+        content: "1.1.1.1",
+      }),
+    ],
+    restore: [
+      {
+        ...RESTORED,
+        entryId: "entry-0",
+        record: { ...RESTORED.record, id: "back-0", name: "alpha.bin.test" },
+        // Records have appeared at this name since. That is the zone being
+        // busier, not the undo failing, so it must still count as restored.
+        sharesNameWith: [
+          {
+            recordId: "someone-elses",
+            type: "A",
+            name: "alpha.bin.test",
+            content: "9.9.9.9",
+          },
+        ],
+      },
+      {
+        ...RESTORED,
+        entryId: "entry-1",
+        record: {
+          ...RESTORED.record,
+          id: "back-1",
+          name: "alpha.bin.test-copy",
+        },
+      },
+    ],
+  });
+
+  // An earlier, unrelated history entry whose reverse is a delete — which is
+  // how a mis-aimed Ctrl+Z would give itself away.
+  await cloneTheOnlyRow(harness);
+
+  await selectAllRecords(2);
+  await confirmBulkDelete(2);
+  await waitFor(() =>
+    assert.equal(harness.calls(RETENTION_COMMANDS.retain).length, 2),
+  );
+  await waitFor(() => assert.deepEqual(recordRowTexts(), []));
+
+  pressUndo();
+
+  // Settle on the undo having reached the host by *either* route, so the first
+  // thing asserted is which step it undid. The clone entry's reverse is a
+  // delete, so a mis-aimed Ctrl+Z shows up as a delete call — and that is the
+  // headline, not "the undo did not restore".
+  await waitFor(() =>
+    assert.ok(
+      harness.deletedRecordIds.length +
+        harness.calls(RETENTION_COMMANDS.restore).length >
+        0,
+      "the undo did not reach the host at all",
+    ),
+  );
+  assert.deepEqual(
+    harness.deletedRecordIds,
+    [],
+    "Ctrl+Z after a binned delete must restore from the bin — a delete call here means it undid an earlier, unrelated step instead",
+  );
+
+  const restores = harness.calls(RETENTION_COMMANDS.restore);
+  assert.equal(restores.length, 2, "the undo must restore both bin entries");
+  assert.deepEqual(
+    restores.map((call) => call.args.entryId),
+    ["entry-0", "entry-1"],
+  );
+  // Both records are live again, under the new ids the restore minted.
+  await waitFor(() => assert.equal(recordRowTexts().length, 2));
+  assert.ok(document.querySelector('[data-record-row="back-0"]'));
+  assert.ok(document.querySelector('[data-record-row="back-1"]'));
+  assert.ok(
+    await screen.findByText(/alongside 1 other record\(s\) at this name/u),
+  );
+
+  // And the clone's forward half was not replayed either.
+  assert.deepEqual(harness.createdIds, ["created-0"]);
+
+  // And the earlier entry is still there, in its turn: the binned deletion was
+  // consumed by the undo above (so `sharesNameWith` was not read as a failure),
+  // leaving the clone as the next thing Ctrl+Z reaches.
+  pressUndo();
+  await waitFor(() =>
+    assert.deepEqual(harness.deletedRecordIds, ["created-0"]),
+  );
+});
+
+test("redo re-retains the restored ids instead of deleting them", async () => {
+  const harness = await renderManager({
+    records: [
+      record({
+        id: "rec-a",
+        type: "A",
+        name: "alpha.bin.test",
+        content: "1.1.1.1",
+      }),
+    ],
+    restore: [
+      {
+        ...RESTORED,
+        entryId: "entry-0",
+        record: { ...RESTORED.record, id: "back-0", name: "alpha.bin.test" },
+      },
+      {
+        ...RESTORED,
+        entryId: "entry-1",
+        record: { ...RESTORED.record, id: "back-1", name: "alpha.bin.test" },
+      },
+    ],
+  });
+
+  await deleteFirstRowFromMenu();
+  await waitFor(() =>
+    assert.equal(harness.calls(RETENTION_COMMANDS.retain).length, 1),
+  );
+  pressUndo();
+  await waitFor(() =>
+    assert.equal(harness.calls(RETENTION_COMMANDS.restore).length, 1),
+  );
+
+  pressRedo();
+
+  // Settle on the redo having reached the host by *either* route, so the first
+  // thing asserted afterwards is which route it took. Waiting on the retain
+  // count instead would report "the redo did not retain" for a redo that
+  // deleted, which is the wrong half of the story to lead with.
+  await waitFor(() =>
+    assert.ok(
+      harness.deletedRecordIds.length +
+        harness.calls(RETENTION_COMMANDS.retain).length >
+        1,
+      "the redo did not reach the host at all",
+    ),
+  );
+  assert.deepEqual(
+    harness.deletedRecordIds,
+    [],
+    "a redo must go through retain_dns_record — reaching delete_dns_record here destroys the record with no copy kept",
+  );
+
+  const retains = harness.calls(RETENTION_COMMANDS.retain);
+  assert.equal(retains.length, 2, "the redo must retain again");
+  // The second retain names the id the *restore* minted, not the dead one the
+  // history entry was built with.
+  assert.deepEqual(
+    retains.map((call) => call.args.recordId),
+    ["rec-a", "back-0"],
+  );
+  await waitFor(() => assert.deepEqual(recordRowTexts(), []));
+
+  // The other direction of the same hazard: the redo minted a fresh entry id,
+  // so the next undo has to ask for that one rather than the spent `entry-0`.
+  pressUndo();
+  const restores = await waitFor(() => {
+    const calls = harness.calls(RETENTION_COMMANDS.restore);
+    assert.equal(calls.length, 2);
+    return calls;
+  });
+  assert.deepEqual(
+    restores.map((call) => call.args.entryId),
+    ["entry-0", "entry-1"],
+  );
+});
+
+test("an undo whose bin entry is gone declines instead of creating a copy", async () => {
+  const harness = await renderManager({
+    records: [
+      record({
+        id: "rec-a",
+        type: "A",
+        name: "alpha.bin.test",
+        content: "1.1.1.1",
+      }),
+    ],
+    restore: [{ status: "not_found", entryId: "entry-0" }],
+  });
+
+  await deleteFirstRowFromMenu();
+  await waitFor(() =>
+    assert.equal(harness.calls(RETENTION_COMMANDS.retain).length, 1),
+  );
+
+  pressUndo();
+  await screen.findByText(/no longer an entry for A alpha\.bin\.test/u);
+
+  // A create would put back something that is not the record — a new id, no
+  // bin entry, and a second copy if the entry had merely been restored by
+  // hand. Declining is the honest answer.
+  assert.deepEqual(
+    harness.createdIds,
+    [],
+    "a declined undo must not fall back to creating the record again",
+  );
+  assert.deepEqual(harness.deletedRecordIds, []);
+  assert.deepEqual(recordRowTexts(), []);
+
+  // The entry stays on the stack, so the same step is what Ctrl+Z retries —
+  // it has not quietly moved on to an earlier one.
+  pressUndo();
+  await waitFor(() =>
+    assert.equal(harness.calls(RETENTION_COMMANDS.restore).length, 2),
+  );
+  assert.deepEqual(
+    harness.calls(RETENTION_COMMANDS.restore).map((call) => call.args.entryId),
+    ["entry-0", "entry-0"],
+  );
+});
+
+test("undo after a disable re-enables the record", async () => {
+  const harness = await renderManager({
+    records: [
+      record({
+        id: "rec-a",
+        type: "A",
+        name: "alpha.bin.test",
+        content: "1.1.1.1",
+      }),
+    ],
+    restore: [
+      {
+        ...RESTORED,
+        entryId: "entry-0",
+        record: { ...RESTORED.record, id: "back-0", name: "alpha.bin.test" },
+      },
+    ],
+  });
+
+  await selectAllRecords(1);
+  fireEvent.click(screen.getByRole("button", { name: "Disable" }));
+  const dialog = await screen.findByTestId("disable-record-confirm");
+  fireEvent.click(
+    within(dialog).getByRole("button", {
+      name: /Delete from Cloudflare, keep the only copy/u,
+    }),
+  );
+  await waitFor(() =>
+    assert.equal(harness.calls(RETENTION_COMMANDS.retain).length, 1),
+  );
+
+  pressUndo();
+  // The reason travels with the history entry, so the word is the one the bin
+  // would have used: a disabled record is re-enabled, not restored.
+  assert.ok(await screen.findByText(/Re-enabled A alpha\.bin\.test/u));
+  assert.deepEqual(harness.deletedRecordIds, []);
+  await waitFor(() =>
+    assert.ok(document.querySelector('[data-record-row="back-0"]')),
+  );
+});
+
+// ── The row menu ────────────────────────────────────────────────────────────
+
+test("the row menu offers Disable, and it opens the same confirmation", async () => {
+  await renderManager({
+    records: [
+      record({
+        id: "rec-a",
+        type: "A",
+        name: "alpha.bin.test",
+        content: "1.1.1.1",
+      }),
+    ],
+  });
+
+  // Where a user looks for it: beside Delete, which is what it is on
+  // Cloudflare's side.
+  const item = await runRowMenuAction("disable");
+  assert.equal(item.textContent?.trim(), "Disable");
+
+  const dialog = await screen.findByTestId("disable-record-confirm");
+  assert.match(
+    dialog.textContent ?? "",
+    /Cloudflare has no disabled state for a DNS record/u,
+  );
+  assert.match(dialog.textContent ?? "", /A alpha\.bin\.test/u);
+});
+
+test("buildRecordActions omits Disable where there is no store to keep a copy", () => {
+  // The browser build supplies no handler, because there is no keyring to hold
+  // the only copy. The item is then absent rather than present and refused.
+  const withStore = buildRecordActions({
+    onEdit: () => {},
+    onDelete: () => {},
+    onDisable: () => {},
+  });
+  assert.deepEqual(
+    withStore.map((action) => action.id),
+    ["edit", "copy", "disable", "delete"],
+  );
+  // One separator, above the destructive pair rather than between them.
+  assert.deepEqual(
+    withStore.filter((action) => action.separatorBefore).map((a) => a.id),
+    ["disable"],
+  );
+
+  const withoutStore = buildRecordActions({
+    onEdit: () => {},
+    onDelete: () => {},
+  });
+  assert.deepEqual(
+    withoutStore.map((action) => action.id),
+    ["edit", "copy", "delete"],
+  );
+  assert.deepEqual(
+    withoutStore.filter((action) => action.separatorBefore).map((a) => a.id),
+    ["delete"],
+  );
 });

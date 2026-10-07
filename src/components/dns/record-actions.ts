@@ -7,7 +7,7 @@
 
 /** Stable action ids, also emitted as `data-record-action` for tests. */
 export type RecordActionId =
-  "edit" | "copy" | "open-in-browser" | "clone" | "delete";
+  "edit" | "copy" | "open-in-browser" | "clone" | "disable" | "delete";
 
 export interface RecordAction {
   id: RecordActionId;
@@ -28,12 +28,22 @@ export interface RecordActionHandlers {
   onClone?: () => void | Promise<void>;
   /** Only provided when the record has a resolvable Cloudflare URL. */
   onOpenInBrowser?: () => void;
+  /**
+   * Open the disable confirmation. Omitted where retention has no store — in
+   * the browser build there is no keyring to hold the only copy, so there is
+   * no honest way to offer the action at all.
+   *
+   * Destructive, and grouped with delete rather than with edit, because on
+   * Cloudflare it *is* a delete: the record is removed there and kept locally.
+   * The confirmation is where that is spelled out.
+   */
+  onDisable?: () => void | Promise<void>;
 }
 
 /**
  * Build the ordered action list for a record row. Actions whose handler is not
- * supplied are either omitted (browser/clone, which are contextual) or rendered
- * disabled (copy, which is always meaningful to show).
+ * supplied are either omitted (browser/clone/disable, which are contextual) or
+ * rendered disabled (copy, which is always meaningful to show).
  */
 export function buildRecordActions(
   handlers: RecordActionHandlers,
@@ -67,10 +77,24 @@ export function buildRecordActions(
     });
   }
 
+  if (handlers.onDisable) {
+    actions.push({
+      id: "disable",
+      label: "Disable",
+      separatorBefore: true,
+      destructive: true,
+      run: () => {
+        void handlers.onDisable?.();
+      },
+    });
+  }
+
   actions.push({
     id: "delete",
     label: "Delete",
-    separatorBefore: true,
+    // The separator belongs above whichever of the two destructive items comes
+    // first, and never between them: they are one group.
+    separatorBefore: !handlers.onDisable,
     destructive: true,
     run: () => {
       void handlers.onDelete();
