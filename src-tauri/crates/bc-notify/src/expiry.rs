@@ -6,9 +6,7 @@ use chrono::{DateTime, NaiveDate, Utc};
 use serde_json::{json, Value};
 
 use crate::model::{format_ts, parse_ts, Notification, NotificationKind, Severity};
-use crate::settings::{
-    NotificationSettings, StaleExpiryAction, MAX_MILESTONES, MILESTONE_RANGE,
-};
+use crate::settings::{NotificationSettings, StaleExpiryAction, MAX_MILESTONES, MILESTONE_RANGE};
 
 /// Milestone value that stands for "expired" (days left <= 0). Always on.
 pub const EXPIRED_MILESTONE: u32 = 0;
@@ -287,7 +285,15 @@ pub fn refresh_expiry_notification(
     // Day granularity, matching `milestone_key` and `record_expiry`: a registry
     // that re-states the same day at a different hour has not changed anything.
     if expires_at.date_naive() != notice.expires_at.date_naive() {
-        return supersede(settings, notification, &notice, expires_at, days, source, now);
+        return supersede(
+            settings,
+            notification,
+            &notice,
+            expires_at,
+            days,
+            source,
+            now,
+        );
     }
     if !settings.expiry.refresh_countdown {
         return ExpiryRefresh::Unchanged;

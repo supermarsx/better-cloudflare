@@ -657,6 +657,11 @@
       }
     },
     {
+      "name": "expiry: non-boolean refresh switches fall back to on",
+      "input": { "expiry": { "refreshCountdown": "yes", "recheckDate": 1 } },
+      "expectedNormalized": "$defaults"
+    },
+    {
       "name": "expiry: resolve is accepted as a stale action",
       "input": { "expiry": { "onDateChange": "resolve" } },
       "expectedNormalized": {

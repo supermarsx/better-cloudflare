@@ -18,7 +18,7 @@ use crate::model::{format_ts, Notification, NotificationKind, NotificationQuery,
 use crate::rdap::is_valid_hostname;
 use crate::settings::{
     AuditMinSeverity, ExpirySource, MinSeverity, NotificationSettings, QuietBehaviour,
-    SeverityMode, ToastMinSeverity, ZoneMode, ZoneOverride,
+    SeverityMode, StaleExpiryAction, ToastMinSeverity, ZoneMode, ZoneOverride,
 };
 use crate::store::{AuditFindingState, NotifyStore};
 use crate::{
@@ -700,6 +700,237 @@ fn quiet_hours_do_not_stop_a_refresh_from_telling_the_truth() {
     );
     assert_eq!(only_item(&store).payload["daysLeft"], json!(15));
     assert_eq!(store.held_count(), 0);
+}
+
+// ── the refresh settings ─────────────────────────────────────────────────────
+
+#[test]
+fn refresh_countdown_off_pins_the_wording_but_not_a_date_that_moved() {
+    let (_dir, mut store) = temp_store();
+    let mut settings = NotificationSettings::default();
+    settings.expiry.refresh_countdown = false;
+    let expires = now() + Duration::days(20);
+    record_expiry(&mut store, "example.com", Some(expires), "rdap", now());
+    assert_eq!(
+        evaluate(&mut store, &settings, now()).notifications_created,
+        1
+    );
+    let first = only_item(&store);
+    assert_eq!(first.payload["daysLeft"], json!(20));
+
+    // Five days on the figure is stale, and stays stale by request.
+    let later = now() + Duration::days(5);
+    let report = evaluate(&mut store, &settings, later);
+    assert_eq!(report.notifications_refreshed, 0);
+    assert_eq!(only_item(&store).payload["daysLeft"], json!(20));
+    assert_eq!(only_item(&store).title, first.title);
+
+    // "Do not tick the countdown" is not "keep telling me something untrue":
+    // a renewal is still dealt with under `on_date_change`.
+    record_expiry(
+        &mut store,
+        "example.com",
+        Some(expires + Duration::days(365)),
+        "rdap",
+        later,
+    );
+    let report = evaluate(&mut store, &settings, later);
+    assert_eq!(report.notifications_superseded, 1);
+    assert!(store.list(&NotificationQuery::default()).is_empty());
+}
+
+#[test]
+fn on_date_change_resolve_leaves_the_record_read_in_the_inbox() {
+    let (_dir, mut store) = temp_store();
+    let mut settings = NotificationSettings::default();
+    settings.expiry.on_date_change = StaleExpiryAction::Resolve;
+    let expires = now() + Duration::days(12);
+    record_expiry(&mut store, "example.com", Some(expires), "rdap", now());
+    assert_eq!(
+        evaluate(&mut store, &settings, now()).notifications_created,
+        1
+    );
+    let first = only_item(&store);
+
+    record_expiry(
+        &mut store,
+        "example.com",
+        Some(expires + Duration::days(365)),
+        "rdap",
+        now(),
+    );
+    let report = evaluate(&mut store, &settings, now());
+    assert_eq!(report.notifications_superseded, 1);
+
+    let item = only_item(&store);
+    assert_eq!(item.id, first.id);
+    assert!(
+        !item.is_archived(),
+        "resolve keeps it where the user can see it"
+    );
+    assert!(item.read_at.is_some(), "but out of the unread count");
+    assert_eq!(store.unread_count(), 0);
+    assert_eq!(item.title, "example.com was renewed");
+    assert_eq!(item.payload["superseded"], json!(true));
+
+    // Its payload now holds the current date, so a pass that did not know a
+    // withdrawal is final would overwrite the wording with a countdown.
+    let body = item.body.clone();
+    let report = evaluate(&mut store, &settings, now() + Duration::days(1));
+    assert_eq!(report.notifications_refreshed, 0);
+    assert_eq!(report.notifications_superseded, 0);
+    assert_eq!(only_item(&store).body, body, "a withdrawal is final");
+}
+
+#[test]
+fn on_date_change_update_repoints_the_notice_and_its_dedupe_key() {
+    let (_dir, mut store) = temp_store();
+    let mut settings = NotificationSettings::default();
+    settings.expiry.on_date_change = StaleExpiryAction::Update;
+    let expires = now() + Duration::days(12);
+    record_expiry(&mut store, "example.com", Some(expires), "rdap", now());
+    assert_eq!(
+        evaluate(&mut store, &settings, now()).notifications_created,
+        1
+    );
+    let first = only_item(&store);
+    store
+        .mark_read(std::slice::from_ref(&first.id), true)
+        .expect("mark read");
+
+    // One day later, inside the same 14-day band: the milestone the ledger
+    // re-emits is the very one this notice stands for.
+    let moved = expires + Duration::days(1);
+    record_expiry(&mut store, "example.com", Some(moved), "rdap", now());
+    let report = evaluate(&mut store, &settings, now());
+    assert_eq!(
+        report.notifications_refreshed, 1,
+        "an update is a refresh, not a withdrawal"
+    );
+    assert_eq!(report.notifications_superseded, 0);
+    assert_eq!(
+        report.notifications_created, 0,
+        "the re-pointed key absorbs the re-emission of the same milestone"
+    );
+
+    let item = only_item(&store);
+    assert_eq!(item.id, first.id);
+    assert_eq!(item.title, "example.com expires in 13 days");
+    assert_eq!(item.severity, Severity::Warning);
+    assert_eq!(item.payload["expiresAt"], json!(format_ts(moved)));
+    assert_eq!(item.payload["daysLeft"], json!(13));
+    assert_eq!(
+        item.payload["milestone"],
+        json!(14),
+        "its threshold is unchanged"
+    );
+    assert_eq!(
+        item.payload.get("superseded"),
+        None,
+        "nothing was withdrawn, so nothing says so"
+    );
+    assert!(!item.is_archived());
+    assert!(
+        item.read_at.is_some(),
+        "update does not undo what the user did with it"
+    );
+    assert_eq!(
+        item.dedupe_key,
+        format!("expiry:example.com:{}:14", moved.date_naive()),
+    );
+    assert_ne!(item.dedupe_key, first.dedupe_key);
+}
+
+#[test]
+fn update_on_an_earlier_date_leaves_one_row_per_threshold() {
+    // The documented cost of `update`: the notice is re-pointed at its own
+    // threshold while the nearer threshold the new date crosses raises its own.
+    // `archive` and `resolve` leave one row where this leaves two.
+    let (_dir, mut store) = temp_store();
+    let mut settings = NotificationSettings::default();
+    settings.expiry.on_date_change = StaleExpiryAction::Update;
+    record_expiry(
+        &mut store,
+        "example.com",
+        Some(now() + Duration::days(20)),
+        "rdap",
+        now(),
+    );
+    assert_eq!(
+        evaluate(&mut store, &settings, now()).notifications_created,
+        1
+    );
+    record_expiry(
+        &mut store,
+        "example.com",
+        Some(now() + Duration::days(10)),
+        "rdap",
+        now(),
+    );
+    let report = evaluate(&mut store, &settings, now());
+    assert_eq!(report.notifications_refreshed, 1);
+    assert_eq!(report.notifications_created, 1);
+
+    let items = store.list(&NotificationQuery::default());
+    assert_eq!(items.len(), 2);
+    let mut milestones: Vec<u64> = items
+        .iter()
+        .filter_map(|item| item.payload["milestone"].as_u64())
+        .collect();
+    milestones.sort_unstable();
+    assert_eq!(milestones, vec![14, 30]);
+    for item in &items {
+        assert_eq!(
+            item.payload["daysLeft"],
+            json!(10),
+            "both rows state the same date"
+        );
+    }
+}
+
+#[tokio::test]
+async fn recheck_date_off_pins_a_known_date_and_still_learns_an_unknown_one() {
+    let (_dir, mut store) = temp_store();
+    let mut settings = NotificationSettings::default();
+    settings.expiry.source = ExpirySource::Registrar;
+    settings.expiry.recheck_date = false;
+    let source = FakeSource::new(&[("z1", "example.com"), ("z2", "other.com")]);
+    let rdap = RdapClient {
+        http: reqwest::Client::new(),
+        base_url: "http://127.0.0.1:9/domain/".into(),
+        min_interval: std::time::Duration::ZERO,
+    };
+    let held = now() + Duration::days(10);
+    record_expiry(&mut store, "example.com", Some(held), "registrar", now());
+    let offered = (now() + Duration::days(400)).to_rfc3339();
+    let domains = vec![
+        domain_info("example.com", &offered),
+        domain_info("other.com", &offered),
+    ];
+
+    let report = run_expiry_pass_with(&source, &domains, &mut store, &settings, now(), &rdap).await;
+    assert_eq!(report.errors, 0, "{:?}", report.error_messages);
+    assert_eq!(
+        report.zones_checked, 2,
+        "a zone whose date we decline to re-read was still checked"
+    );
+    assert_eq!(
+        store.state().expiry["example.com"].expires_at.as_deref(),
+        Some(format_ts(held).as_str()),
+        "a date already known is pinned"
+    );
+    assert!(
+        store.state().expiry["other.com"].expires_at.is_some(),
+        "a domain with no date yet is still looked up"
+    );
+
+    // Turned back on, the same pass takes the date the registrar offers.
+    settings.expiry.recheck_date = true;
+    run_expiry_pass_with(&source, &domains, &mut store, &settings, now(), &rdap).await;
+    assert_ne!(
+        store.state().expiry["example.com"].expires_at.as_deref(),
+        Some(format_ts(held).as_str()),
+    );
 }
 
 // ── diff ─────────────────────────────────────────────────────────────────────

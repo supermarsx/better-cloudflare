@@ -46,9 +46,7 @@ pub use rdap::{
     fetch_rdap_expiry, fetch_rdap_registration, is_valid_hostname, normalize_domain, RdapError,
     RdapRegistration,
 };
-pub use settings::{
-    AuditMinSeverity, NotificationSettings, QuietBehaviour, StaleExpiryAction,
-};
+pub use settings::{AuditMinSeverity, NotificationSettings, QuietBehaviour, StaleExpiryAction};
 pub use store::{
     AuditFindingState, DomainExpiryState, NotifyState, NotifyStore, StoreError, ZoneAuditState,
     ZoneState,
