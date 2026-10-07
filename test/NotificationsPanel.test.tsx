@@ -296,18 +296,18 @@ test("the inbox lists items grouped by day with a status line and unread count",
     /Last checked 10 min ago · 4 zones · Next in 5 min/,
   );
 
-  // Unread items are marked for styling and the Inbox segment shows the count.
+  // Unread items are marked for styling and the card title shows the count.
   const [expiry] = items;
   assert.equal(expiry.getAttribute("data-unread"), "true");
   assert.equal(expiry.getAttribute("data-severity"), "critical");
-  // The count sits in a sibling <span> separated only by a CSS margin, not by
-  // a whitespace text node, so the accessible name concatenates to
-  // "Inbox(1)". jsdom <= 28 inserted a space here and 29 no longer does,
-  // matching what browsers actually compute. The assertion is that the count
-  // reaches the accessible name at all, so the separator stays flexible.
-  assert.ok(
-    screen.getByRole("button", { name: /Inbox\s*\(1\)/ }),
-    "the Inbox segment carries the unread count",
+  // The count used to ride on the "Inbox" segment of an Inbox/Settings
+  // control. That control went when the settings moved to a Session settings
+  // subtab — one segment is not a choice — so the count moved to the title,
+  // which is still the first thing somebody opening this tab looks at.
+  assert.match(
+    screen.getByTestId("notifications-unread-count").textContent ?? "",
+    /1 unread/u,
+    "the card title must still carry the unread count",
   );
 
   // A record change renders the field-level before → after diff.
@@ -423,21 +423,31 @@ test("search narrows the list and reports an empty filter state", async () => {
   );
 });
 
-test("the Settings segment swaps the inbox for the settings sections", async () => {
+test("the panel is the inbox and nothing else", async () => {
   installBackend();
   renderPanel();
   await screen.findAllByTestId("notification-item");
 
-  fireEvent.click(
-    within(
-      screen.getByRole("toolbar", { name: "Notification views" }),
-    ).getByRole("button", { name: "Settings" }),
-  );
+  // The settings are a subtab of Session settings now, so the Inbox/Settings
+  // segmented control this panel used to carry is gone with them. Asserting
+  // their absence here is the half that catches a re-introduction: two copies
+  // of one preference, in two places, is how they come to disagree.
+  // `assert.ok` on the comparison throughout, never `assert.equal` on a DOM
+  // node: a failing node comparison deep-inspects a jsdom element and
+  // exhausts the test process instead of printing a diff.
   assert.ok(
-    screen.getByRole("toolbar", { name: "Notification settings sections" }),
+    screen.queryByRole("toolbar", { name: "Notification views" }) === null,
+    "the view toolbar must be gone with the settings it switched to",
   );
-  assert.equal(screen.queryByTestId("notifications-inbox"), null);
-  await screen.findByTestId("notifications-settings-service");
+  assert.ok(screen.queryByRole("button", { name: "Settings" }) === null);
+  assert.ok(
+    screen.queryByRole("toolbar", {
+      name: "Notification settings sections",
+    }) === null,
+  );
+  assert.ok(screen.queryByTestId("notifications-settings") === null);
+  // The inbox itself is not behind anything any more.
+  assert.ok(screen.getByTestId("notifications-inbox"));
 });
 
 test("every control in the inbox has an accessible name", async () => {

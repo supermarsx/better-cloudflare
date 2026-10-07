@@ -42,6 +42,18 @@ export interface NotificationsSettingsProps {
   onResume: () => Promise<void>;
   onOpenZone?: (zoneId: string) => void;
   initialSection?: NotificationsSettingsSection;
+  /**
+   * The open section, when the host wants to own it.
+   *
+   * Pass both this and {@link onSectionChange} and the nav becomes
+   * controlled; omit both and the panel keeps its own, starting at
+   * {@link initialSection}. The Session settings tab passes them because it
+   * unmounts this panel whenever another subtab is opened, and a section
+   * choice that resets every time the user looks at Columns is a section
+   * choice that cannot be kept.
+   */
+  section?: NotificationsSettingsSection;
+  onSectionChange?: (section: NotificationsSettingsSection) => void;
 }
 
 export function NotificationsSettings({
@@ -51,10 +63,17 @@ export function NotificationsSettings({
   onResume,
   onOpenZone,
   initialSection = "service",
+  section: controlledSection,
+  onSectionChange,
 }: NotificationsSettingsProps) {
   const { t } = useI18n();
-  const [section, setSection] =
+  const [ownSection, setOwnSection] =
     useState<NotificationsSettingsSection>(initialSection);
+  const section = controlledSection ?? ownSection;
+  const selectSection = (next: NotificationsSettingsSection) => {
+    setOwnSection(next);
+    onSectionChange?.(next);
+  };
   const [confirmReset, setConfirmReset] = useState(false);
   const { settings, update, reset, reload, saveState, error } =
     useNotificationSettings();
@@ -91,7 +110,7 @@ export function NotificationsSettings({
               className="ui-segment"
               data-active={section === entry.id}
               aria-pressed={section === entry.id}
-              onClick={() => setSection(entry.id)}
+              onClick={() => selectSection(entry.id)}
             >
               {t(entry.label, entry.label)}
             </button>

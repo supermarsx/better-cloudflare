@@ -1,6 +1,7 @@
 /**
  * "Expiry" sub-section: editable milestone chips, expired notice, data
- * source and the severity thresholds used when the kind severity is "auto".
+ * source, the severity thresholds used when the kind severity is "auto", and
+ * what happens to a notice the registry has since outrun.
  */
 import { useState, type KeyboardEvent } from "react";
 import { X } from "lucide-react";
@@ -18,9 +19,11 @@ import {
 import { useI18n } from "@/hooks/use-i18n";
 import {
   NOTIFICATION_SETTING_LIMITS,
+  STALE_EXPIRY_ACTIONS,
   type ExpirySource,
   type NotificationSettings,
   type NotificationSettingsInput,
+  type StaleExpiryAction,
 } from "@/lib/notifications/notification-settings";
 
 import {
@@ -40,6 +43,17 @@ const SOURCES: readonly { value: ExpirySource; label: string }[] = [
   { value: "rdap", label: "RDAP only" },
   { value: "registrar", label: "Registrar only" },
 ];
+
+/**
+ * Labels for `expiry.onDateChange`, keyed so the option list stays
+ * {@link STALE_EXPIRY_ACTIONS} — the array the clamp validates against — and
+ * a fourth action added to the mirror cannot quietly go unlabelled.
+ */
+const STALE_EXPIRY_ACTION_LABELS: Record<StaleExpiryAction, string> = {
+  archive: "Archive it",
+  resolve: "Mark it read, in the inbox",
+  update: "Keep it, counting down to the new date",
+};
 
 export function NotificationsSettingsExpiry({
   settings,
@@ -270,6 +284,95 @@ export function NotificationsSettingsExpiry({
             update({ expiry: { severityByMilestone: { criticalAtOrBelow } } })
           }
         />
+      </SettingsSection>
+
+      <SettingsSection
+        title={t("Keeping notices current", "Keeping notices current")}
+        description={t(
+          "A notice says “expires in 30 days” because that was true when it was written. These decide how hard the app works to keep it true.",
+          "A notice says “expires in 30 days” because that was true when it was written. These decide how hard the app works to keep it true.",
+        )}
+        testId="notifications-settings-expiry-refresh"
+      >
+        <SwitchRow
+          id="ntf-refresh-countdown"
+          label={t("Refresh the countdown", "Refresh the countdown")}
+          description={t(
+            "Re-states the days left, wording and severity from the date already held, on every pass. Costs no lookup. Off pins every open notice to the words it was written with.",
+            "Re-states the days left, wording and severity from the date already held, on every pass. Costs no lookup. Off pins every open notice to the words it was written with.",
+          )}
+          checked={expiry.refreshCountdown}
+          onCheckedChange={(refreshCountdown) =>
+            update({ expiry: { refreshCountdown } })
+          }
+        />
+        <SwitchRow
+          id="ntf-recheck-date"
+          label={t("Re-read the date", "Re-read the date")}
+          description={t(
+            "Asks the registry again for a domain whose date is already known — the half that spends a rate-limited lookup. A domain with no date yet is always looked up. How often is the expiry poll interval, declining anything younger than the RDAP cache window.",
+            "Asks the registry again for a domain whose date is already known — the half that spends a rate-limited lookup. A domain with no date yet is always looked up. How often is the expiry poll interval, declining anything younger than the RDAP cache window.",
+          )}
+          checked={expiry.recheckDate}
+          onCheckedChange={(recheckDate) => update({ expiry: { recheckDate } })}
+        />
+        <SettingRow
+          htmlFor="ntf-on-date-change"
+          label={t("When the date has changed", "When the date has changed")}
+          description={
+            <>
+              {t(
+                "An open notice the registry has outrun no longer applies. None of the three deletes anything.",
+                "An open notice the registry has outrun no longer applies. None of the three deletes anything.",
+              )}
+              {/* The cost of `update`, stated where the choice is made. It is
+                  the one option that can multiply rows, and a user who picks
+                  it deliberately deserves to know that before they wonder why
+                  one domain has three. */}
+              {expiry.onDateChange === "update" ? (
+                <span
+                  data-testid="ntf-on-date-change-cost"
+                  className="mt-1 block"
+                >
+                  {t(
+                    "Keeping it costs more rows: a date that moved earlier still crosses a nearer milestone, so one domain can end up with one notice per threshold, where archiving or reading leaves one.",
+                    "Keeping it costs more rows: a date that moved earlier still crosses a nearer milestone, so one domain can end up with one notice per threshold, where archiving or reading leaves one.",
+                  )}
+                </span>
+              ) : null}
+            </>
+          }
+        >
+          <Select
+            value={expiry.onDateChange}
+            onValueChange={(value) =>
+              update({ expiry: { onDateChange: value as StaleExpiryAction } })
+            }
+          >
+            <SelectTrigger
+              id="ntf-on-date-change"
+              aria-label={t(
+                "When the date has changed",
+                "When the date has changed",
+              )}
+              className="h-8 w-64 text-xs"
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {/* Radix consumes `value`, so `data-value` is what reaches the
+                  DOM for a test to pick an option by. */}
+              {STALE_EXPIRY_ACTIONS.map((action) => (
+                <SelectItem key={action} value={action} data-value={action}>
+                  {t(
+                    STALE_EXPIRY_ACTION_LABELS[action],
+                    STALE_EXPIRY_ACTION_LABELS[action],
+                  )}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </SettingRow>
       </SettingsSection>
     </div>
   );

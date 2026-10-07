@@ -1,8 +1,13 @@
 /**
- * The Notifications workspace tab. Two segmented views share the card:
- * the inbox (scope / kind / zone / search filters, items grouped by day) and
- * the settings (see `NotificationsSettings`). Desktop only — the web build
+ * The Notifications workspace tab: the inbox, and nothing else. Scope / kind /
+ * zone / search filters, items grouped by day. Desktop only — the web build
  * renders a short notice, mirroring the audit log.
+ *
+ * The notification *settings* used to share this card behind a Settings
+ * segment. They are now a subtab of Session settings, where the rest of the
+ * application's settings are and where "find a setting" can see them — the
+ * same move the assistant's settings made. This panel is the inbox, so a
+ * segmented control with one segment in it would be furniture.
  */
 import { useMemo, useState } from "react";
 import { CheckCheck, Archive, RefreshCw, Search } from "lucide-react";
@@ -47,9 +52,6 @@ import {
 import type { DomainInfo } from "@/types/registrar";
 
 import { NotificationItem } from "./NotificationItem";
-import { NotificationsSettings } from "./NotificationsSettings";
-
-export type NotificationsView = "inbox" | "settings";
 
 export interface NotificationsPanelProps {
   onOpenZone: (zoneId: string) => void;
@@ -63,7 +65,6 @@ export interface NotificationsPanelProps {
    * whose site is known.
    */
   registrarDomains?: readonly DomainInfo[];
-  initialView?: NotificationsView;
   /** Injectable clock for deterministic relative times in tests. */
   now?: Date;
 }
@@ -139,11 +140,9 @@ export function NotificationsPanel({
   onRevealRecord,
   onOpenRegistry,
   registrarDomains,
-  initialView = "inbox",
   now,
 }: NotificationsPanelProps) {
   const { t } = useI18n();
-  const [view, setView] = useState<NotificationsView>(initialView);
   const [scope, setScope] = useState<NotificationScope>("all");
   const [kind, setKind] = useState<NotificationKind | "all">("all");
   const [zoneId, setZoneId] = useState<string>("all");
@@ -226,6 +225,20 @@ export function NotificationsPanel({
           <div className="min-w-0">
             <CardTitle className="text-lg">
               {t("Notifications", "Notifications")}
+              {/* The unread count used to ride on the "Inbox" segment, which
+                  has gone with the Settings one. It is still the first thing
+                  somebody opening this tab wants. */}
+              {inbox.unread > 0 ? (
+                <span
+                  data-testid="notifications-unread-count"
+                  className="ml-2 text-sm font-normal text-muted-foreground"
+                >
+                  {t("{{count}} unread", {
+                    count: inbox.unread,
+                    defaultValue: `${inbox.unread} unread`,
+                  })}
+                </span>
+              ) : null}
             </CardTitle>
             <CardDescription
               data-testid="notifications-status-line"
@@ -269,35 +282,6 @@ export function NotificationsPanel({
             </Button>
           </div>
         </div>
-        <div
-          role="toolbar"
-          aria-label={t("Notification views", "Notification views")}
-          className="glass-surface glass-sheen glass-fade ui-segment-group scrollbar-themed"
-        >
-          <button
-            type="button"
-            className="ui-segment"
-            data-active={view === "inbox"}
-            aria-pressed={view === "inbox"}
-            onClick={() => setView("inbox")}
-          >
-            {t("Inbox", "Inbox")}
-            {inbox.unread > 0 ? (
-              <span className="ml-1 text-muted-foreground">
-                ({inbox.unread})
-              </span>
-            ) : null}
-          </button>
-          <button
-            type="button"
-            className="ui-segment"
-            data-active={view === "settings"}
-            aria-pressed={view === "settings"}
-            onClick={() => setView("settings")}
-          >
-            {t("Settings", "Settings")}
-          </button>
-        </div>
       </CardHeader>
       <CardContent className="space-y-4">
         {inbox.error ? (
@@ -308,167 +292,157 @@ export function NotificationsPanel({
             {inbox.error}
           </p>
         ) : null}
-        {view === "settings" ? (
-          <NotificationsSettings
-            status={inbox.status}
-            onCheckNow={inbox.checkNow}
-            onPause={inbox.pause}
-            onResume={inbox.resume}
-            onOpenZone={onOpenZone}
-          />
-        ) : (
-          <div className="space-y-4" data-testid="notifications-inbox">
-            <div className="flex flex-wrap items-center gap-2">
-              <div
-                role="toolbar"
-                aria-label={t("Notification scope", "Notification scope")}
-                className="glass-surface glass-sheen glass-fade ui-segment-group scrollbar-themed"
-              >
-                {NOTIFICATION_SCOPES.map((option) => (
-                  <button
-                    key={option.value}
-                    type="button"
-                    className="ui-segment"
-                    data-active={scope === option.value}
-                    aria-pressed={scope === option.value}
-                    onClick={() => setScope(option.value)}
-                  >
-                    {t(option.label, option.label)}
-                  </button>
-                ))}
-              </div>
-              <Label className="sr-only" htmlFor="notifications-kind-filter">
-                {t("Filter by kind", "Filter by kind")}
-              </Label>
-              <Select
-                value={kind}
-                onValueChange={(value) =>
-                  setKind(value as NotificationKind | "all")
-                }
-              >
-                <SelectTrigger
-                  id="notifications-kind-filter"
-                  aria-label={t("Filter by kind", "Filter by kind")}
-                  className="h-8 w-44 text-xs"
-                >
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">
-                    {t("All kinds", "All kinds")}
-                  </SelectItem>
-                  {NOTIFICATION_KINDS.map((option) => (
-                    <SelectItem key={option.value} value={option.value}>
-                      {t(option.label, option.label)}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <Label className="sr-only" htmlFor="notifications-zone-filter">
-                {t("Filter by zone", "Filter by zone")}
-              </Label>
-              <Select value={zoneId} onValueChange={setZoneId}>
-                <SelectTrigger
-                  id="notifications-zone-filter"
-                  aria-label={t("Filter by zone", "Filter by zone")}
-                  className="h-8 w-48 text-xs"
-                >
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">
-                    {t("All zones", "All zones")}
-                  </SelectItem>
-                  {zones.map((zone) => (
-                    <SelectItem key={zone.zoneId} value={zone.zoneId}>
-                      {zone.zoneName}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <div className="relative min-w-[12rem] flex-1">
-                <Search
-                  aria-hidden="true"
-                  className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground"
-                />
-                <Label className="sr-only" htmlFor="notifications-search">
-                  {t("Search notifications", "Search notifications")}
-                </Label>
-                <Input
-                  id="notifications-search"
-                  type="search"
-                  value={search}
-                  placeholder={t("Search…", "Search…")}
-                  className="h-8 pl-7 text-xs"
-                  onChange={(event) => setSearch(event.target.value)}
-                />
-              </div>
-            </div>
-
-            {groups.length === 0 ? (
-              <p
-                data-testid="notifications-empty"
-                className="rounded-md border border-dashed border-border/60 px-4 py-8 text-center text-sm text-muted-foreground"
-              >
-                {inbox.loading ? t("Loading…", "Loading…") : emptyText}
-              </p>
-            ) : (
-              <div className="space-y-4">
-                {groups.map((group) => (
-                  <section
-                    key={group.key}
-                    aria-labelledby={`ntf-day-${group.key}`}
-                  >
-                    <h3
-                      id={`ntf-day-${group.key}`}
-                      className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground"
-                    >
-                      {t(group.label, group.label)}
-                    </h3>
-                    <ul role="list" className="space-y-2">
-                      {group.items.map((item) => (
-                        <li key={item.id}>
-                          <NotificationItem
-                            item={item}
-                            now={clock}
-                            onMarkRead={(id, read) =>
-                              void inbox.markRead([id], read)
-                            }
-                            onArchive={(id) => void inbox.archive([id])}
-                            onUnarchive={(id) => void inbox.unarchive([id])}
-                            onDismiss={(id) => void inbox.dismiss([id])}
-                            onOpenZone={onOpenZone}
-                            onRevealRecord={onRevealRecord}
-                            onOpenRegistry={onOpenRegistry}
-                            registrarSite={
-                              isDomainExpiryPayload(item.payload)
-                                ? (registrarSites.get(item.payload.domain) ??
-                                  null)
-                                : null
-                            }
-                          />
-                        </li>
-                      ))}
-                    </ul>
-                  </section>
-                ))}
-              </div>
-            )}
-            {scope === "archived" && filtered.length > 0 ? (
-              <div className="flex justify-end">
-                <Button
+        <div className="space-y-4" data-testid="notifications-inbox">
+          <div className="flex flex-wrap items-center gap-2">
+            <div
+              role="toolbar"
+              aria-label={t("Notification scope", "Notification scope")}
+              className="glass-surface glass-sheen glass-fade ui-segment-group scrollbar-themed"
+            >
+              {NOTIFICATION_SCOPES.map((option) => (
+                <button
+                  key={option.value}
                   type="button"
-                  variant="ghost"
-                  size="sm"
-                  className="text-xs text-muted-foreground"
-                  onClick={() => void inbox.clearArchived()}
+                  className="ui-segment"
+                  data-active={scope === option.value}
+                  aria-pressed={scope === option.value}
+                  onClick={() => setScope(option.value)}
                 >
-                  {t("Clear archived", "Clear archived")}
-                </Button>
-              </div>
-            ) : null}
+                  {t(option.label, option.label)}
+                </button>
+              ))}
+            </div>
+            <Label className="sr-only" htmlFor="notifications-kind-filter">
+              {t("Filter by kind", "Filter by kind")}
+            </Label>
+            <Select
+              value={kind}
+              onValueChange={(value) =>
+                setKind(value as NotificationKind | "all")
+              }
+            >
+              <SelectTrigger
+                id="notifications-kind-filter"
+                aria-label={t("Filter by kind", "Filter by kind")}
+                className="h-8 w-44 text-xs"
+              >
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">
+                  {t("All kinds", "All kinds")}
+                </SelectItem>
+                {NOTIFICATION_KINDS.map((option) => (
+                  <SelectItem key={option.value} value={option.value}>
+                    {t(option.label, option.label)}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Label className="sr-only" htmlFor="notifications-zone-filter">
+              {t("Filter by zone", "Filter by zone")}
+            </Label>
+            <Select value={zoneId} onValueChange={setZoneId}>
+              <SelectTrigger
+                id="notifications-zone-filter"
+                aria-label={t("Filter by zone", "Filter by zone")}
+                className="h-8 w-48 text-xs"
+              >
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">
+                  {t("All zones", "All zones")}
+                </SelectItem>
+                {zones.map((zone) => (
+                  <SelectItem key={zone.zoneId} value={zone.zoneId}>
+                    {zone.zoneName}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <div className="relative min-w-[12rem] flex-1">
+              <Search
+                aria-hidden="true"
+                className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground"
+              />
+              <Label className="sr-only" htmlFor="notifications-search">
+                {t("Search notifications", "Search notifications")}
+              </Label>
+              <Input
+                id="notifications-search"
+                type="search"
+                value={search}
+                placeholder={t("Search…", "Search…")}
+                className="h-8 pl-7 text-xs"
+                onChange={(event) => setSearch(event.target.value)}
+              />
+            </div>
           </div>
-        )}
+
+          {groups.length === 0 ? (
+            <p
+              data-testid="notifications-empty"
+              className="rounded-md border border-dashed border-border/60 px-4 py-8 text-center text-sm text-muted-foreground"
+            >
+              {inbox.loading ? t("Loading…", "Loading…") : emptyText}
+            </p>
+          ) : (
+            <div className="space-y-4">
+              {groups.map((group) => (
+                <section
+                  key={group.key}
+                  aria-labelledby={`ntf-day-${group.key}`}
+                >
+                  <h3
+                    id={`ntf-day-${group.key}`}
+                    className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground"
+                  >
+                    {t(group.label, group.label)}
+                  </h3>
+                  <ul role="list" className="space-y-2">
+                    {group.items.map((item) => (
+                      <li key={item.id}>
+                        <NotificationItem
+                          item={item}
+                          now={clock}
+                          onMarkRead={(id, read) =>
+                            void inbox.markRead([id], read)
+                          }
+                          onArchive={(id) => void inbox.archive([id])}
+                          onUnarchive={(id) => void inbox.unarchive([id])}
+                          onDismiss={(id) => void inbox.dismiss([id])}
+                          onOpenZone={onOpenZone}
+                          onRevealRecord={onRevealRecord}
+                          onOpenRegistry={onOpenRegistry}
+                          registrarSite={
+                            isDomainExpiryPayload(item.payload)
+                              ? (registrarSites.get(item.payload.domain) ??
+                                null)
+                              : null
+                          }
+                        />
+                      </li>
+                    ))}
+                  </ul>
+                </section>
+              ))}
+            </div>
+          )}
+          {scope === "archived" && filtered.length > 0 ? (
+            <div className="flex justify-end">
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="text-xs text-muted-foreground"
+                onClick={() => void inbox.clearArchived()}
+              >
+                {t("Clear archived", "Clear archived")}
+              </Button>
+            </div>
+          ) : null}
+        </div>
       </CardContent>
     </Card>
   );

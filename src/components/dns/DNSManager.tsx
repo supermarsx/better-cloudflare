@@ -73,6 +73,7 @@ import {
   type EmailRoutingSettingsResponse,
   type McpServerStatus,
   type UnlistenFn,
+  type UpdateCheck,
   type WorkerRouteResponse,
 } from "@/lib/api/tauri-client";
 import { AddRecordDialog } from "./AddRecordDialog";
@@ -80,6 +81,18 @@ import { ImportExportDialog } from "./ImportExportDialog";
 import { RecordRow } from "./RecordRow";
 import { SpecialIpAuditFindings } from "./SpecialIpAuditFindings";
 import { NotificationsPanel } from "./NotificationsPanel";
+import type { NotificationsSettingsSection } from "./NotificationsSettings";
+import { NotificationsSettingsHost } from "./NotificationsSettingsHost";
+import { AboutAppInfoCard } from "@/components/about/AboutAppInfoCard";
+import { DiagnosticsReportView } from "@/components/diagnostics/DiagnosticsReportView";
+import {
+  collectDiagnosticsReport,
+  copyDiagnosticsReport,
+  type DiagnosticsCopyFormat,
+  type DiagnosticsReport,
+} from "@/lib/diagnostics";
+import { openExternalUrl } from "@/lib/external-url";
+import { RETENTION_LIMITS } from "@/lib/records/retention";
 import { SettingsSearch } from "./SettingsSearch";
 import {
   SETTINGS_SUBTABS,
@@ -833,6 +846,76 @@ const DNS_AUTO_REFRESH_MIN_MS = 60_000;
 const DNS_AUTO_REFRESH_MAX_MS = 30 * 60_000;
 const DNS_MIN_PAGE_SIZE = 25;
 const DNS_DEFAULT_PAGE_SIZE = 50;
+
+/**
+ * How often the automatic update check asks whether a check is *due*.
+ *
+ * Deliberately far shorter than the shortest interval a user can configure
+ * (one hour): a tick is a stored read and a comparison, not a request, and the
+ * configured interval is what decides when one goes out. A poll as long as the
+ * interval would make the real gap anywhere up to twice what the setting says.
+ */
+const UPDATE_CHECK_POLL_MS = 5 * 60_000;
+
+/**
+ * Hours offered between update checks.
+ *
+ * `storageManager.getUpdateCheckIntervalHours` clamps to 1..=168, and these
+ * are filtered against that so a preset outside the bound cannot be offered —
+ * a dropdown that silently stores something other than what it says is worse
+ * than a shorter dropdown.
+ */
+const UPDATE_CHECK_INTERVAL_PRESETS = [1, 6, 12, 24, 48, 72, 168].filter(
+  (hours) => hours >= 1 && hours <= 168,
+);
+
+/** Recycle-bin presets, filtered against the bounds the native store enforces. */
+const RECYCLE_BIN_RETENTION_PRESETS = [1, 7, 14, 30, 60, 90, 180, 365].filter(
+  (days) =>
+    days >= RETENTION_LIMITS.retentionDays.min &&
+    days <= RETENTION_LIMITS.retentionDays.max,
+);
+const RECYCLE_BIN_SIZE_PRESETS = [10, 50, 100, 250, 500, 1000].filter(
+  (entries) =>
+    entries >= RETENTION_LIMITS.maxEntries.min &&
+    entries <= RETENTION_LIMITS.maxEntries.max,
+);
+
+/**
+ * Widen the workspace's own interfaces to the diagnostics builder's inputs.
+ *
+ * `DiagnosticsZone` and `DiagnosticsRecord` are deliberately open — an index
+ * signature, so the builder can be handed the real object and read one field
+ * off it, and so a field added to a record later is covered without anyone
+ * revisiting the builder. TypeScript does not give an `interface` an implicit
+ * index signature, so `Zone` is not assignable to `DiagnosticsZone` even
+ * though every `Zone` is one.
+ *
+ * This is that fact, stated once. It copies nothing on purpose: a diagnostics
+ * collect must not clone every loaded record to satisfy a type rule.
+ */
+function widenForDiagnostics(
+  values: readonly unknown[],
+): readonly Record<string, unknown>[] {
+  return values as readonly Record<string, unknown>[];
+}
+
+/**
+ * A preset list with the stored value folded in.
+ *
+ * A profile written by another build can hold a valid value that is not one of
+ * the presets — 45 days is inside the bound and is not on the list. Merging it
+ * keeps the dropdown showing what is actually stored instead of rendering an
+ * empty trigger, which would read as "unset" for a setting that is set.
+ */
+function withCurrentValue(
+  presets: readonly number[],
+  current: number,
+): number[] {
+  return [...new Set([...presets, current])].sort(
+    (left, right) => left - right,
+  );
+}
 
 function clampAutoRefreshInterval(value: unknown): number | null {
   if (value === null || value === undefined || value === "") return null;
@@ -1604,6 +1687,58 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
    */
   const [assistantSettingsSection, setAssistantSettingsSection] =
     useState<AiSettingsSection>("providers");
+  /**
+   * Which section the notification settings show, hoisted for the same reason
+   * the assistant's is: this subtab unmounts the moment another one is opened,
+   * and a section choice that resets every time is not a choice.
+   */
+  const [notificationsSettingsSection, setNotificationsSettingsSection] =
+    useState<NotificationsSettingsSection>("service");
+  // ── Update checking (About subtab) ──────────────────────────────────────
+  const [updateCheckEnabled, setUpdateCheckEnabled] = useState(() =>
+    storageManager.getUpdateCheckEnabled(),
+  );
+  const [updateCheckIntervalHours, setUpdateCheckIntervalHours] = useState(() =>
+    storageManager.getUpdateCheckIntervalHours(),
+  );
+  const [updateCheckIncludePrereleases, setUpdateCheckIncludePrereleases] =
+    useState(() => storageManager.getUpdateCheckIncludePrereleases());
+  const [updateCheck, setUpdateCheck] = useState<UpdateCheck | null>(null);
+  const [updateCheckBusy, setUpdateCheckBusy] = useState(false);
+  const [updateCheckError, setUpdateCheckError] = useState<string | null>(null);
+  // ── Recycle bin (General subtab) ────────────────────────────────────────
+  const [recycleBinEnabled, setRecycleBinEnabled] = useState(() =>
+    storageManager.getRecycleBinEnabled(),
+  );
+  const [recycleBinRetentionDays, setRecycleBinRetentionDays] = useState(() =>
+    storageManager.getRecycleBinRetentionDays(),
+  );
+  const [recycleBinMaxEntries, setRecycleBinMaxEntries] = useState(() =>
+    storageManager.getRecycleBinMaxEntries(),
+  );
+  const [recycleBinAutoPurge, setRecycleBinAutoPurge] = useState(() =>
+    storageManager.getRecycleBinAutoPurge(),
+  );
+  // ── Diagnostics subtab ──────────────────────────────────────────────────
+  /**
+   * Whether the next report names the user's zones.
+   *
+   * Deliberately **not** persisted, and deliberately not carried between
+   * reports: it starts off on every mount. A report exists to be pasted
+   * somewhere public, and a preference remembered from a report the user
+   * collected for themselves last month is not consent to publish their DNS
+   * estate today. The cost of asking again is one click.
+   */
+  const [diagnosticsIncludeUserData, setDiagnosticsIncludeUserData] =
+    useState(false);
+  const [diagnosticsFormat, setDiagnosticsFormat] =
+    useState<DiagnosticsCopyFormat>("markdown");
+  const [diagnosticsReport, setDiagnosticsReport] =
+    useState<DiagnosticsReport | null>(null);
+  const [diagnosticsBusy, setDiagnosticsBusy] = useState(false);
+  const [diagnosticsNotice, setDiagnosticsNotice] = useState<string | null>(
+    null,
+  );
   const [sessionSettingsProfiles, setSessionSettingsProfiles] = useState<
     Record<string, SessionSettingsProfile>
   >(storageManager.getSessionSettingsProfiles());
@@ -3767,6 +3902,169 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     [],
   );
 
+  /**
+   * Ask GitHub whether a newer release exists.
+   *
+   * Gated on `updateCheckEnabled`, which is what makes that switch a setting
+   * rather than a label: `storageManager.setUpdateCheckEnabled` documents it
+   * as stopping all outbound checking, and a "Check now" that went out anyway
+   * would contradict it.
+   */
+  const runUpdateCheck = useCallback(async () => {
+    if (!isDesktop() || !updateCheckEnabled) return;
+    setUpdateCheckBusy(true);
+    setUpdateCheckError(null);
+    try {
+      setUpdateCheck(
+        await TauriClient.checkForUpdate(updateCheckIncludePrereleases),
+      );
+    } catch (error) {
+      const diagnostic = reportDnsManagerFailure(
+        error,
+        "Check for application updates",
+      );
+      // The previous answer is about a check that is no longer the latest one,
+      // so showing it beside a failure would be showing two answers.
+      setUpdateCheck(null);
+      setUpdateCheckError(diagnostic.message);
+    } finally {
+      // The same stamp the automatic check writes, for the same reason: a
+      // check the user just ran is a check, and the scheduler must not follow
+      // it with another one a minute later.
+      storageManager.setUpdateCheckLastCheckedAt(new Date().toISOString());
+      setUpdateCheckBusy(false);
+    }
+  }, [updateCheckEnabled, updateCheckIncludePrereleases]);
+
+  /**
+   * Open a release page through the app's external-URL path.
+   *
+   * `openExternalUrl` re-validates the scheme and refuses credentials in the
+   * authority even though the host already validated this one as a
+   * `github.com` URL — the renderer is not the right place to decide that a
+   * string arriving over IPC is safe to hand to the shell.
+   */
+  const openUpdateRelease = useCallback(
+    (url: string) => {
+      void openExternalUrl(url)
+        .then((opened) => {
+          if (!opened) {
+            setUpdateCheckError(
+              t(
+                "That release link could not be opened.",
+                "That release link could not be opened.",
+              ),
+            );
+          }
+        })
+        .catch((error: unknown) => {
+          const diagnostic = reportDnsManagerFailure(
+            error,
+            "Open the release page",
+          );
+          setUpdateCheckError(diagnostic.message);
+        });
+    },
+    [t],
+  );
+
+  /**
+   * Collect a diagnostics report from what the workspace currently holds.
+   *
+   * The zones and records are passed from state rather than re-fetched: the
+   * report has to describe what the user is looking at, and a fresh fetch
+   * would describe something else. Records go over whole — the builder reads
+   * `type` and nothing else.
+   *
+   * `passkeysRegistered` is deliberately absent. The count needs a stored-key
+   * id per API credential and this screen holds none, so the field is left
+   * unreported rather than guessed; the payload's passkey *availability* facts
+   * come from the collector's own `get_passkey_status` probe.
+   */
+  const collectDiagnostics = useCallback(async () => {
+    setDiagnosticsBusy(true);
+    setDiagnosticsNotice(null);
+    try {
+      setDiagnosticsReport(
+        await collectDiagnosticsReport(
+          {
+            zones: widenForDiagnostics(zones),
+            records: widenForDiagnostics(tabs.flatMap((tab) => tab.records)),
+            zoneTabsOpen: tabs.filter((tab) => tab.kind === "zone").length,
+          },
+          { includeUserData: diagnosticsIncludeUserData },
+        ),
+      );
+    } catch (error) {
+      const diagnostic = reportDnsManagerFailure(
+        error,
+        "Collect a diagnostics report",
+      );
+      setDiagnosticsReport(null);
+      setDiagnosticsNotice(diagnostic.message);
+    } finally {
+      setDiagnosticsBusy(false);
+    }
+  }, [diagnosticsIncludeUserData, tabs, zones]);
+
+  const copyDiagnostics = useCallback(async () => {
+    if (!diagnosticsReport) return;
+    const copied = await copyDiagnosticsReport(
+      diagnosticsReport,
+      diagnosticsFormat,
+    );
+    setDiagnosticsNotice(
+      copied
+        ? t("Copied to the clipboard.", "Copied to the clipboard.")
+        : t(
+            "The clipboard refused the report. Select the text above and copy it instead.",
+            "The clipboard refused the report. Select the text above and copy it instead.",
+          ),
+    );
+  }, [diagnosticsFormat, diagnosticsReport, t]);
+
+  /**
+   * The last update check's outcome, in words.
+   *
+   * `unknownVersion` is the case this function exists to get right. It means
+   * the running binary carries no release tag, which is true of every local
+   * build and of every build made from a checkout — it is not a failure, and
+   * it is not "out of date" either, because there is nothing to compare. So it
+   * says so plainly and is styled like every other answer, not like a warning.
+   */
+  const updateCheckSummary = useMemo((): string | null => {
+    if (!updateCheck) return null;
+    const current = updateCheck.current;
+    const latest = updateCheck.latest;
+    switch (updateCheck.status) {
+      case "upToDate":
+        return current
+          ? t("Up to date — {{tag}} is the newest release.", {
+              tag: current,
+              defaultValue: `Up to date — ${current} is the newest release.`,
+            })
+          : t("Up to date.", "Up to date.");
+      case "updateAvailable":
+        return latest
+          ? t("{{latest}} is available; this build is {{current}}.", {
+              latest: latest.tag,
+              current: current ?? "unknown",
+              defaultValue: `${latest.tag} is available; this build is ${current ?? "unknown"}.`,
+            })
+          : t("A newer release is available.", "A newer release is available.");
+      case "unknownVersion":
+        return t(
+          "This build carries no release tag, so there is nothing to compare it with. Builds made from a checkout always report this.",
+          "This build carries no release tag, so there is nothing to compare it with. Builds made from a checkout always report this.",
+        );
+      case "noReleases":
+        return t(
+          "No releases have been published yet.",
+          "No releases have been published yet.",
+        );
+    }
+  }, [t, updateCheck]);
+
   const refreshMcpStatus = useCallback(async () => {
     if (!isDesktop()) return;
     setMcpActionError(null);
@@ -4790,6 +5088,110 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       storageManager.setAutoRefreshInterval(autoRefreshInterval ?? null);
     }
   }, [autoRefreshInterval, prefsReady]);
+
+  /**
+   * Update checking and the recycle bin.
+   *
+   * No `persistDnsPreferenceFields` branch, unlike the effect above: these
+   * seven are browser-preference leaves with no field in the Rust
+   * `Preferences` object, so `storageManager` is the one store on either
+   * platform. Each setter clamps on the way in and again on the way out, so
+   * the state here and the stored value cannot disagree about a bound.
+   */
+  useEffect(() => {
+    if (!prefsReady) return;
+    storageManager.setUpdateCheckEnabled(updateCheckEnabled);
+    storageManager.setUpdateCheckIntervalHours(updateCheckIntervalHours);
+    storageManager.setUpdateCheckIncludePrereleases(
+      updateCheckIncludePrereleases,
+    );
+    storageManager.setRecycleBinEnabled(recycleBinEnabled);
+    storageManager.setRecycleBinRetentionDays(recycleBinRetentionDays);
+    storageManager.setRecycleBinMaxEntries(recycleBinMaxEntries);
+    storageManager.setRecycleBinAutoPurge(recycleBinAutoPurge);
+  }, [
+    prefsReady,
+    recycleBinAutoPurge,
+    recycleBinEnabled,
+    recycleBinMaxEntries,
+    recycleBinRetentionDays,
+    updateCheckEnabled,
+    updateCheckIncludePrereleases,
+    updateCheckIntervalHours,
+  ]);
+
+  /**
+   * The automatic update check.
+   *
+   * `storageManager.isUpdateCheckDue()` is the only thing that decides whether
+   * to go out, and it is not re-derived here: it already settles the awkward
+   * cases (a disabled check is never due however long it has been, a stamp in
+   * the future means due rather than parked, an unreadable stamp reads as
+   * never). The stamp is written in `finally`, on completion either way, so a
+   * rate-limited refusal costs one request per interval rather than becoming a
+   * retry loop.
+   *
+   * ## Every failure here is silent, deliberately
+   *
+   * No toast, no `updateCheckError`, no `reportDnsManagerFailure` — which is
+   * the opposite of this file's rule everywhere else, so it is worth saying
+   * why. Nobody asked for this check. It is a background request to a public
+   * endpoint that the user did not initiate and is not waiting on, and the
+   * things that make it fail — being offline, a captive portal, GitHub
+   * rate-limiting an unauthenticated caller — are all conditions the user
+   * already knows about or cannot act on. An error badge for any of them would
+   * be a notifier nagging about itself. A *manual* "Check now" is the opposite
+   * case: somebody is waiting for an answer, so `runUpdateCheck` reports what
+   * happened.
+   *
+   * The poll interval is much shorter than the shortest configurable one on
+   * purpose: the tick only asks whether a check is *due*, which is a stored
+   * read, and the user's interval is the cadence.
+   */
+  useEffect(() => {
+    if (!prefsReady || !isDesktop() || !updateCheckEnabled) return;
+    let disposed = false;
+    let inFlight = false;
+
+    const checkIfDue = async () => {
+      if (disposed || inFlight || !storageManager.isUpdateCheckDue()) return;
+      inFlight = true;
+      try {
+        const result = await TauriClient.checkForUpdate(
+          updateCheckIncludePrereleases,
+        );
+        if (disposed) return;
+        setUpdateCheck(result);
+        // A fresh answer stands alone: an error left over from an earlier
+        // manual check would otherwise sit beside it as a second answer.
+        setUpdateCheckError(null);
+      } finally {
+        // Stamped even when the component has gone: the request was made and
+        // finished, and not recording that would make the next launch check
+        // again straight away.
+        storageManager.setUpdateCheckLastCheckedAt(new Date().toISOString());
+        inFlight = false;
+      }
+    };
+
+    // The poller schedules its first tick an interval from now, so launch gets
+    // its own attempt. `createCompletionScheduledPoller` swallows rejections by
+    // default and only reschedules once the task settles, which is both the
+    // silence this needs and the no-overlap guarantee.
+    void checkIfDue().catch(() => {});
+    const disposePoller = createCompletionScheduledPoller(
+      checkIfDue,
+      UPDATE_CHECK_POLL_MS,
+    );
+    return () => {
+      disposed = true;
+      disposePoller();
+    };
+    // Toggling pre-releases re-creates the poller but will not force a check:
+    // the stamp from the last one is still inside the interval, so the next
+    // automatic answer arrives on schedule. Somebody who wants the new rule
+    // applied now has "Check now".
+  }, [prefsReady, updateCheckEnabled, updateCheckIncludePrereleases]);
 
   useEffect(() => {
     if (!autoRefreshInterval || autoRefreshInterval <= 0) return;
@@ -11414,6 +11816,216 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             </div>
                           </div>
                         </div>
+                        {/* The recycle bin. Desktop only, and not because the
+                            preferences are: the retained records live in the
+                            OS keyring behind the `retention` commands, so on
+                            the web these four would configure a bin that does
+                            not exist. */}
+                        {isDesktop() && (
+                          <>
+                            <div
+                              className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center"
+                              data-setting-id="recycle-bin-enabled"
+                            >
+                              <div className="font-medium">
+                                {t("Recycle bin", "Recycle bin")}
+                              </div>
+                              <div className="flex flex-wrap items-center gap-3">
+                                <Switch
+                                  checked={recycleBinEnabled}
+                                  onCheckedChange={(checked: boolean) => {
+                                    setRecycleBinEnabled(checked);
+                                    notifySaved(
+                                      checked
+                                        ? t(
+                                            "Deleted records will be kept so they can be restored.",
+                                            "Deleted records will be kept so they can be restored.",
+                                          )
+                                        : t(
+                                            "Deletions are now immediate and final.",
+                                            "Deletions are now immediate and final.",
+                                          ),
+                                    );
+                                  }}
+                                  aria-label={t("Recycle bin", "Recycle bin")}
+                                />
+                                <div className="text-xs text-muted-foreground">
+                                  {t(
+                                    "Deleting a record keeps a restorable copy. Off makes a deletion immediate and final.",
+                                    "Deleting a record keeps a restorable copy. Off makes a deletion immediate and final.",
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+                            <div
+                              className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center"
+                              data-setting-id="recycle-bin-retention-days"
+                            >
+                              <div className="font-medium">
+                                {t("Keep deletions for", "Keep deletions for")}
+                              </div>
+                              <div className="flex flex-wrap items-center gap-3">
+                                <Select
+                                  value={String(recycleBinRetentionDays)}
+                                  onValueChange={(v) => {
+                                    const next = Number(v);
+                                    if (!Number.isFinite(next)) return;
+                                    setRecycleBinRetentionDays(next);
+                                    notifySaved(
+                                      t(
+                                        "New deletions will be kept for {{count}} days.",
+                                        {
+                                          count: next,
+                                          defaultValue: `New deletions will be kept for ${next} days.`,
+                                        },
+                                      ),
+                                    );
+                                  }}
+                                >
+                                  <SelectTrigger
+                                    className="w-44"
+                                    aria-label={t(
+                                      "Keep deletions for",
+                                      "Keep deletions for",
+                                    )}
+                                  >
+                                    <SelectValue />
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    {withCurrentValue(
+                                      RECYCLE_BIN_RETENTION_PRESETS,
+                                      recycleBinRetentionDays,
+                                    ).map((days) => (
+                                      <SelectItem
+                                        key={days}
+                                        value={String(days)}
+                                        data-value={String(days)}
+                                      >
+                                        {t("{{count}} days", {
+                                          count: days,
+                                          defaultValue: `${days} days`,
+                                        })}
+                                      </SelectItem>
+                                    ))}
+                                  </SelectContent>
+                                </Select>
+                                {/* The counter-intuitive half: an entry's
+                                    expiry is stamped when it is binned, so the
+                                    date a user was shown is the date the purge
+                                    honours. Changing this never shortens or
+                                    extends an entry that already exists. */}
+                                <div className="text-xs text-muted-foreground">
+                                  {t(
+                                    "Applies to deletions made from now on. Entries already in the bin keep the expiry date they were given.",
+                                    "Applies to deletions made from now on. Entries already in the bin keep the expiry date they were given.",
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+                            <div
+                              className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center"
+                              data-setting-id="recycle-bin-max-entries"
+                            >
+                              <div className="font-medium">
+                                {t("Bin size", "Bin size")}
+                              </div>
+                              <div className="flex flex-wrap items-center gap-3">
+                                <Select
+                                  value={String(recycleBinMaxEntries)}
+                                  onValueChange={(v) => {
+                                    const next = Number(v);
+                                    if (!Number.isFinite(next)) return;
+                                    setRecycleBinMaxEntries(next);
+                                    notifySaved(
+                                      t(
+                                        "The bin will hold up to {{count}} entries.",
+                                        {
+                                          count: next,
+                                          defaultValue: `The bin will hold up to ${next} entries.`,
+                                        },
+                                      ),
+                                    );
+                                  }}
+                                >
+                                  <SelectTrigger
+                                    className="w-44"
+                                    aria-label={t("Bin size", "Bin size")}
+                                  >
+                                    <SelectValue />
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    {withCurrentValue(
+                                      RECYCLE_BIN_SIZE_PRESETS,
+                                      recycleBinMaxEntries,
+                                    ).map((entries) => (
+                                      <SelectItem
+                                        key={entries}
+                                        value={String(entries)}
+                                        data-value={String(entries)}
+                                      >
+                                        {t("{{count}} entries", {
+                                          count: entries,
+                                          defaultValue: `${entries} entries`,
+                                        })}
+                                      </SelectItem>
+                                    ))}
+                                  </SelectContent>
+                                </Select>
+                                <div className="text-xs text-muted-foreground">
+                                  {t(
+                                    "Entries the bin holds before it gives up its oldest to make room.",
+                                    "Entries the bin holds before it gives up its oldest to make room.",
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+                            <div
+                              className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center"
+                              data-setting-id="recycle-bin-auto-purge"
+                            >
+                              <div className="font-medium">
+                                {t(
+                                  "Sweep expired entries",
+                                  "Sweep expired entries",
+                                )}
+                              </div>
+                              <div className="flex flex-wrap items-center gap-3">
+                                <Switch
+                                  checked={recycleBinAutoPurge}
+                                  onCheckedChange={(checked: boolean) => {
+                                    setRecycleBinAutoPurge(checked);
+                                    notifySaved(
+                                      checked
+                                        ? t(
+                                            "Expired entries will be swept automatically.",
+                                            "Expired entries will be swept automatically.",
+                                          )
+                                        : t(
+                                            "Expired entries will be left in the list until you clear them.",
+                                            "Expired entries will be left in the list until you clear them.",
+                                          ),
+                                    );
+                                  }}
+                                  aria-label={t(
+                                    "Sweep expired entries",
+                                    "Sweep expired entries",
+                                  )}
+                                />
+                                {/* The other counter-intuitive half. Off is
+                                    not a stay of execution: the native layer
+                                    refuses a restore past the expiry either
+                                    way, so that the list and the purge can
+                                    never disagree. */}
+                                <div className="text-xs text-muted-foreground">
+                                  {t(
+                                    "Off does not keep an expired entry restorable — a restore past the expiry is refused either way. It only stops the sweep happening unasked.",
+                                    "Off does not keep an expired entry restorable — a restore past the expiry is refused either way. It only stops the sweep happening unasked.",
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+                          </>
+                        )}
                       </div>
                     )}
                     {settingsSubtab === "columns" && (
@@ -12727,6 +13339,21 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         )}
                       </div>
                     )}
+                    {/* The notification settings. They used to sit behind a
+                        Settings segment inside the Notifications tab; the user
+                        asked for them here, which is the same move the
+                        assistant's settings already made. `NotificationsSettings`
+                        is re-hosted unchanged — its six sections and every row
+                        in them are the ones the Notifications tab showed. The
+                        section is held in this component so it survives a trip
+                        to another subtab. */}
+                    {settingsSubtab === "notifications" && isDesktop() && (
+                      <NotificationsSettingsHost
+                        section={notificationsSettingsSection}
+                        onSectionChange={setNotificationsSettingsSection}
+                        onOpenZone={openZoneTab}
+                      />
+                    )}
                     {settingsSubtab === "mcp" && (
                       <div className="divide-y divide-white/10 rounded-xl border border-border/60 bg-card/60 text-sm">
                         {!isDesktop() ? (
@@ -12955,6 +13582,384 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             {t("Clone", "Clone")}
                           </Button>
                         </div>
+                      </div>
+                    )}
+                    {/* About: what this build is, and whether a newer one
+                        exists. Update checking lives here rather than in
+                        General because the question it answers is about the
+                        build this screen names. */}
+                    {settingsSubtab === "about" && (
+                      <div className="space-y-4">
+                        <AboutAppInfoCard />
+                        <div className="divide-y divide-white/10 rounded-xl border border-border/60 bg-card/60 text-sm">
+                          {!isDesktop() ? (
+                            <div className="px-4 py-4 text-xs text-muted-foreground">
+                              {t(
+                                "Update checking is only available in the desktop app.",
+                                "Update checking is only available in the desktop app.",
+                              )}
+                            </div>
+                          ) : (
+                            <>
+                              <div
+                                className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center"
+                                data-setting-id="update-check-status"
+                              >
+                                <div className="font-medium">
+                                  {t("Update status", "Update status")}
+                                </div>
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    className="h-7 gap-1 px-2"
+                                    disabled={
+                                      updateCheckBusy || !updateCheckEnabled
+                                    }
+                                    onClick={() => void runUpdateCheck()}
+                                  >
+                                    <RefreshCw
+                                      aria-hidden="true"
+                                      className="h-3.5 w-3.5"
+                                    />
+                                    {t("Check now", "Check now")}
+                                  </Button>
+                                  <span
+                                    role="status"
+                                    data-testid="update-check-outcome"
+                                    data-status={updateCheck?.status ?? ""}
+                                    className="text-xs text-muted-foreground"
+                                  >
+                                    {updateCheckBusy
+                                      ? t("Checking…", "Checking…")
+                                      : !updateCheckEnabled
+                                        ? t(
+                                            "Update checking is off, so nothing is asked.",
+                                            "Update checking is off, so nothing is asked.",
+                                          )
+                                        : (updateCheckSummary ??
+                                          t(
+                                            "Not checked yet.",
+                                            "Not checked yet.",
+                                          ))}
+                                  </span>
+                                  {updateCheck?.latest ? (
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      className="h-7 gap-1 px-2"
+                                      onClick={() =>
+                                        openUpdateRelease(
+                                          updateCheck.latest?.url ?? "",
+                                        )
+                                      }
+                                    >
+                                      <ExternalLink
+                                        aria-hidden="true"
+                                        className="h-3.5 w-3.5"
+                                      />
+                                      {t("Open {{tag}}", {
+                                        tag: updateCheck.latest.tag,
+                                        defaultValue: `Open ${updateCheck.latest.tag}`,
+                                      })}
+                                    </Button>
+                                  ) : null}
+                                  {updateCheckError ? (
+                                    <span
+                                      role="alert"
+                                      className="text-xs text-destructive"
+                                    >
+                                      {updateCheckError}
+                                    </span>
+                                  ) : null}
+                                </div>
+                              </div>
+                              <div
+                                className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center"
+                                data-setting-id="update-check-enabled"
+                              >
+                                <div className="font-medium">
+                                  {t("Check for updates", "Check for updates")}
+                                </div>
+                                <div className="flex flex-wrap items-center gap-3">
+                                  <Switch
+                                    checked={updateCheckEnabled}
+                                    onCheckedChange={(checked: boolean) => {
+                                      setUpdateCheckEnabled(checked);
+                                      // The old answer was about a check this
+                                      // setting may no longer permit.
+                                      if (!checked) {
+                                        setUpdateCheck(null);
+                                        setUpdateCheckError(null);
+                                      }
+                                      notifySaved(
+                                        checked
+                                          ? t(
+                                              "Update checking enabled.",
+                                              "Update checking enabled.",
+                                            )
+                                          : t(
+                                              "Update checking disabled.",
+                                              "Update checking disabled.",
+                                            ),
+                                      );
+                                    }}
+                                    aria-label={t(
+                                      "Check for updates",
+                                      "Check for updates",
+                                    )}
+                                  />
+                                  <div className="text-xs text-muted-foreground">
+                                    {t(
+                                      "Asks GitHub's public releases list whether a newer release exists. Nothing is downloaded and nothing is replaced.",
+                                      "Asks GitHub's public releases list whether a newer release exists. Nothing is downloaded and nothing is replaced.",
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
+                              <div
+                                className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center"
+                                data-setting-id="update-check-interval"
+                              >
+                                <div className="font-medium">
+                                  {t(
+                                    "Hours between checks",
+                                    "Hours between checks",
+                                  )}
+                                </div>
+                                <div className="flex flex-wrap items-center gap-3">
+                                  <Select
+                                    value={String(updateCheckIntervalHours)}
+                                    onValueChange={(v) => {
+                                      const next = Number(v);
+                                      if (!Number.isFinite(next)) return;
+                                      setUpdateCheckIntervalHours(next);
+                                      notifySaved(
+                                        t(
+                                          "Update checks set to every {{count}} hours.",
+                                          {
+                                            count: next,
+                                            defaultValue: `Update checks set to every ${next} hours.`,
+                                          },
+                                        ),
+                                      );
+                                    }}
+                                  >
+                                    <SelectTrigger
+                                      className="w-44"
+                                      aria-label={t(
+                                        "Hours between checks",
+                                        "Hours between checks",
+                                      )}
+                                    >
+                                      <SelectValue />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                      {withCurrentValue(
+                                        UPDATE_CHECK_INTERVAL_PRESETS,
+                                        updateCheckIntervalHours,
+                                      ).map((hours) => (
+                                        <SelectItem
+                                          key={hours}
+                                          value={String(hours)}
+                                          data-value={String(hours)}
+                                        >
+                                          {t("{{count}} h", {
+                                            count: hours,
+                                            defaultValue: `${hours} h`,
+                                          })}
+                                        </SelectItem>
+                                      ))}
+                                    </SelectContent>
+                                  </Select>
+                                  <div className="text-xs text-muted-foreground">
+                                    {t(
+                                      "From 1 hour to 168 (one week).",
+                                      "From 1 hour to 168 (one week).",
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
+                              <div
+                                className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center"
+                                data-setting-id="update-check-prereleases"
+                              >
+                                <div className="font-medium">
+                                  {t(
+                                    "Include pre-releases",
+                                    "Include pre-releases",
+                                  )}
+                                </div>
+                                <div className="flex flex-wrap items-center gap-3">
+                                  <Switch
+                                    checked={updateCheckIncludePrereleases}
+                                    onCheckedChange={(checked: boolean) => {
+                                      setUpdateCheckIncludePrereleases(checked);
+                                      // The standing answer was reached under
+                                      // the other rule, so it is no longer an
+                                      // answer to this question.
+                                      setUpdateCheck(null);
+                                      setUpdateCheckError(null);
+                                      notifySaved(
+                                        checked
+                                          ? t(
+                                              "Pre-releases now count as newer.",
+                                              "Pre-releases now count as newer.",
+                                            )
+                                          : t(
+                                              "Only stable releases count as newer.",
+                                              "Only stable releases count as newer.",
+                                            ),
+                                      );
+                                    }}
+                                    aria-label={t(
+                                      "Include pre-releases",
+                                      "Include pre-releases",
+                                    )}
+                                  />
+                                  <div className="text-xs text-muted-foreground">
+                                    {t(
+                                      "Off by default: stable releases only. On, a pre-release counts as newer.",
+                                      "Off by default: stable releases only. On, a pre-release counts as newer.",
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                    {/* Diagnostics. Nothing is collected until the user asks:
+                        the probes are IPC calls, and a screen that fired them
+                        on open would be collecting a report for someone who
+                        came to read the setting above it. */}
+                    {settingsSubtab === "diagnostics" && (
+                      <div className="space-y-4">
+                        <div className="divide-y divide-white/10 rounded-xl border border-border/60 bg-card/60 text-sm">
+                          <div
+                            className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center"
+                            data-setting-id="diagnostics-include-zone-names"
+                          >
+                            <div className="font-medium">
+                              {t("Include zone names", "Include zone names")}
+                            </div>
+                            <div className="flex flex-wrap items-center gap-3">
+                              <Switch
+                                checked={diagnosticsIncludeUserData}
+                                onCheckedChange={(checked: boolean) => {
+                                  setDiagnosticsIncludeUserData(checked);
+                                  // A report already on screen was built
+                                  // under the other rule. Keeping it would
+                                  // leave the preview disagreeing with what
+                                  // the copy button is about to copy.
+                                  setDiagnosticsReport(null);
+                                  setDiagnosticsNotice(null);
+                                }}
+                                aria-label={t(
+                                  "Include zone names",
+                                  "Include zone names",
+                                )}
+                              />
+                              {/* Said before it is on, not after: this is the
+                                  one switch on this screen that publishes
+                                  something about the user. */}
+                              <div className="text-xs text-muted-foreground">
+                                {t(
+                                  "Off, the report counts your zones. On, it names them — and a report exists to be pasted somewhere public.",
+                                  "Off, the report counts your zones. On, it names them — and a report exists to be pasted somewhere public.",
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                          <div
+                            className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center"
+                            data-setting-id="diagnostics-report"
+                          >
+                            <div className="font-medium">
+                              {t("Diagnostics report", "Diagnostics report")}
+                            </div>
+                            <div className="flex flex-wrap items-center gap-2">
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="h-7 gap-1 px-2"
+                                disabled={diagnosticsBusy}
+                                onClick={() => void collectDiagnostics()}
+                              >
+                                <RefreshCw
+                                  aria-hidden="true"
+                                  className="h-3.5 w-3.5"
+                                />
+                                {diagnosticsReport
+                                  ? t("Collect again", "Collect again")
+                                  : t("Collect", "Collect")}
+                              </Button>
+                              <Select
+                                value={diagnosticsFormat}
+                                onValueChange={(v) =>
+                                  setDiagnosticsFormat(
+                                    v as DiagnosticsCopyFormat,
+                                  )
+                                }
+                              >
+                                <SelectTrigger
+                                  className="h-7 w-32"
+                                  aria-label={t("Format", "Format")}
+                                >
+                                  <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem
+                                    value="markdown"
+                                    data-value="markdown"
+                                  >
+                                    {t("Markdown", "Markdown")}
+                                  </SelectItem>
+                                  <SelectItem value="json" data-value="json">
+                                    {t("JSON", "JSON")}
+                                  </SelectItem>
+                                </SelectContent>
+                              </Select>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="h-7 gap-1 px-2"
+                                disabled={!diagnosticsReport}
+                                onClick={() => void copyDiagnostics()}
+                              >
+                                <Copy
+                                  aria-hidden="true"
+                                  className="h-3.5 w-3.5"
+                                />
+                                {t("Copy", "Copy")}
+                              </Button>
+                              <span
+                                role="status"
+                                data-testid="diagnostics-notice"
+                                className="text-xs text-muted-foreground"
+                              >
+                                {diagnosticsBusy
+                                  ? t("Collecting…", "Collecting…")
+                                  : (diagnosticsNotice ?? "")}
+                              </span>
+                              <div className="text-xs text-muted-foreground">
+                                {t(
+                                  "Build, platform, services and counts, for pasting into a bug report. No credentials, and no record names or contents at any setting.",
+                                  "Build, platform, services and counts, for pasting into a bug report. No credentials, and no record names or contents at any setting.",
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                        {diagnosticsReport ? (
+                          <div className="rounded-xl border border-border/60 bg-card/60 p-4">
+                            <DiagnosticsReportView
+                              report={diagnosticsReport}
+                              format={diagnosticsFormat}
+                            />
+                          </div>
+                        ) : null}
                       </div>
                     )}
                     <div className="flex items-center gap-2 text-xs text-muted-foreground">

@@ -1,7 +1,7 @@
 /**
  * The searchable index of Session settings.
  *
- * Settings live in seven subtabs of one 13,000-line component, and a user who
+ * Settings live in ten subtabs of one 13,000-line component, and a user who
  * wants one has to know which subtab holds it. This module is the index a
  * search box reads: one entry per setting, with the subtab that owns it and
  * enough text to find it by.
@@ -17,10 +17,24 @@
  * same labels, in the same subtabs, with the same platform and precondition
  * gates. Nothing below is taken on faith except the `keywords`.
  *
- * The two subtabs whose contents are not rows of this shape are handled by
+ * The subtabs whose contents are not rows of this shape are handled by
  * construction instead: the Columns entries are generated from
  * {@link TABLE_COLUMN_GROUPS}, and the Assistant entries are checked against
  * `AI_SETTINGS_SECTIONS` by the same test.
+ *
+ * Three subtabs are deliberately indexed only in part, and it is worth saying
+ * which so the gap is not mistaken for an oversight:
+ *
+ *   - **Notifications** re-hosts `NotificationsSettings`, whose own six
+ *     sections render their rows in their own files. The registry test can
+ *     only police strings `DNSManager.tsx` itself renders, so those rows have
+ *     no entries and the sections are not individually findable. Making them
+ *     so needs the treatment the Assistant subtab got — an exported section
+ *     list the test checks against — which is a change to the test.
+ *   - **About** and **Diagnostics** index their settings rows. Their
+ *     informational content (build facts, dependency lists, a collected
+ *     report) lives in child components and is not a setting, so it is not
+ *     indexed either.
  *
  * ## Labels are stored in English, and matched in both languages
  *
@@ -44,9 +58,12 @@ export type SettingsSubtab =
   | "columns"
   | "topology"
   | "audit"
+  | "notifications"
   | "mcp"
   | "assistant"
-  | "profiles";
+  | "profiles"
+  | "about"
+  | "diagnostics";
 
 /** One subtab of the Session settings screen. */
 export interface SettingsSubtabDescriptor {
@@ -68,9 +85,18 @@ export const SETTINGS_SUBTABS: readonly SettingsSubtabDescriptor[] = [
   { id: "columns", label: "Columns" },
   { id: "topology", label: "Topology" },
   { id: "audit", label: "Audit" },
+  // Desktop only, like the Notifications tab itself: the settings are read and
+  // written by `notifications_get_settings` / `notifications_update_settings`,
+  // and the web build has no host to ask.
+  { id: "notifications", label: "Notifications", desktopOnly: true },
   { id: "mcp", label: "MCP" },
   { id: "assistant", label: "Assistant", desktopOnly: true },
   { id: "profiles", label: "Profiles" },
+  // Last two, and in this order: both answer "what am I running" rather than
+  // "how should it behave", and a diagnostics report is the more niche of the
+  // two.
+  { id: "about", label: "About" },
+  { id: "diagnostics", label: "Diagnostics" },
 ];
 
 const SUBTAB_LABELS = new Map(SETTINGS_SUBTABS.map((s) => [s.id, s.label]));
@@ -227,6 +253,57 @@ const ROW_ENTRIES: readonly SettingsSearchEntry[] = [
     label: "Auto logout (idle)",
     description: "Logs out automatically after inactivity.",
     keywords: ["sign out", "inactivity", "timeout", "lock"],
+    anchor: { kind: "row" },
+  },
+
+  // --- General › Recycle bin -------------------------------------------
+  //
+  // Desktop only, and not because the preferences are: the retained records
+  // live in the OS keyring, written by `bc_storage::retention` through Tauri
+  // commands, so on the web these four would configure a bin that does not
+  // exist.
+  {
+    id: "recycle-bin-enabled",
+    subtab: "general",
+    group: "Recycle bin",
+    label: "Recycle bin",
+    description:
+      "Deleting a record keeps a restorable copy. Off makes a deletion immediate and final.",
+    keywords: ["trash", "undo", "restore", "deleted", "retention", "bin"],
+    desktopOnly: true,
+    anchor: { kind: "row" },
+  },
+  {
+    id: "recycle-bin-retention-days",
+    subtab: "general",
+    group: "Recycle bin",
+    label: "Keep deletions for",
+    description:
+      "Applies to deletions made from now on. Entries already in the bin keep the expiry date they were given.",
+    keywords: ["trash", "days", "expiry", "retention", "bin", "restore"],
+    desktopOnly: true,
+    anchor: { kind: "row" },
+  },
+  {
+    id: "recycle-bin-max-entries",
+    subtab: "general",
+    group: "Recycle bin",
+    label: "Bin size",
+    description:
+      "Entries the bin holds before it gives up its oldest to make room.",
+    keywords: ["trash", "limit", "entries", "bin", "eviction", "oldest"],
+    desktopOnly: true,
+    anchor: { kind: "row" },
+  },
+  {
+    id: "recycle-bin-auto-purge",
+    subtab: "general",
+    group: "Recycle bin",
+    label: "Sweep expired entries",
+    description:
+      "Off does not keep an expired entry restorable — a restore past the expiry is refused either way. It only stops the sweep happening unasked.",
+    keywords: ["trash", "purge", "expired", "bin", "clean"],
+    desktopOnly: true,
     anchor: { kind: "row" },
   },
 
@@ -469,6 +546,98 @@ const ROW_ENTRIES: readonly SettingsSearchEntry[] = [
     label: "Tool access",
     keywords: ["mcp", "permissions", "tools", "allow"],
     desktopOnly: true,
+    anchor: { kind: "row" },
+  },
+
+  // --- About › Update checking -----------------------------------------
+  //
+  // These sit with About rather than in General because the question they
+  // answer is "is the build I am running the current one", and the build this
+  // is running is the thing About names. Desktop only: the check is an
+  // `update_check` command, so a browser build has nothing to ask.
+  {
+    id: "update-check-status",
+    subtab: "about",
+    group: "Updates",
+    label: "Update status",
+    keywords: [
+      "update",
+      "upgrade",
+      "release",
+      "version",
+      "github",
+      "check now",
+      "newer",
+    ],
+    desktopOnly: true,
+    anchor: { kind: "row" },
+  },
+  {
+    id: "update-check-enabled",
+    subtab: "about",
+    group: "Updates",
+    label: "Check for updates",
+    description:
+      "Asks GitHub's public releases list whether a newer release exists. Nothing is downloaded and nothing is replaced.",
+    keywords: ["update", "upgrade", "release", "github", "notify", "offline"],
+    desktopOnly: true,
+    anchor: { kind: "row" },
+  },
+  {
+    id: "update-check-interval",
+    subtab: "about",
+    group: "Updates",
+    label: "Hours between checks",
+    description: "From 1 hour to 168 (one week).",
+    keywords: ["update", "interval", "frequency", "hours", "how often"],
+    desktopOnly: true,
+    anchor: { kind: "row" },
+  },
+  {
+    id: "update-check-prereleases",
+    subtab: "about",
+    group: "Updates",
+    label: "Include pre-releases",
+    description:
+      "Off by default: stable releases only. On, a pre-release counts as newer.",
+    keywords: ["update", "beta", "prerelease", "pre-release", "rc", "unstable"],
+    desktopOnly: true,
+    anchor: { kind: "row" },
+  },
+
+  // --- Diagnostics -----------------------------------------------------
+  {
+    id: "diagnostics-include-zone-names",
+    subtab: "diagnostics",
+    label: "Include zone names",
+    description:
+      "Off, the report counts your zones. On, it names them — and a report exists to be pasted somewhere public.",
+    keywords: [
+      "diagnostics",
+      "privacy",
+      "zone names",
+      "domains",
+      "user data",
+      "redact",
+    ],
+    anchor: { kind: "row" },
+  },
+  {
+    id: "diagnostics-report",
+    subtab: "diagnostics",
+    label: "Diagnostics report",
+    description:
+      "Build, platform, services and counts, for pasting into a bug report. No credentials, and no record names or contents at any setting.",
+    keywords: [
+      "diagnostics",
+      "bug report",
+      "issue",
+      "support",
+      "copy",
+      "markdown",
+      "json",
+      "troubleshoot",
+    ],
     anchor: { kind: "row" },
   },
 ];
