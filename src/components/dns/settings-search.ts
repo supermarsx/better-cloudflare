@@ -19,22 +19,17 @@
  *
  * The subtabs whose contents are not rows of this shape are handled by
  * construction instead: the Columns entries are generated from
- * {@link TABLE_COLUMN_GROUPS}, and the Assistant entries are checked against
- * `AI_SETTINGS_SECTIONS` by the same test.
+ * {@link TABLE_COLUMN_GROUPS}, and the Assistant and Notifications entries are
+ * checked against `AI_SETTINGS_SECTIONS` and
+ * `NOTIFICATION_SETTINGS_SECTIONS` by the same test. Both of those subtabs
+ * re-host a panel whose rows live in their own files, so a *section* is the
+ * finest thing the index can name and the finest thing a jump can land on;
+ * checking the sections against the panel's own list is what stops a renamed
+ * section leaving search matching a word nobody can see.
  *
- * Three subtabs are deliberately indexed only in part, and it is worth saying
- * which so the gap is not mistaken for an oversight:
- *
- *   - **Notifications** re-hosts `NotificationsSettings`, whose own six
- *     sections render their rows in their own files. The registry test can
- *     only police strings `DNSManager.tsx` itself renders, so those rows have
- *     no entries and the sections are not individually findable. Making them
- *     so needs the treatment the Assistant subtab got — an exported section
- *     list the test checks against — which is a change to the test.
- *   - **About** and **Diagnostics** index their settings rows. Their
- *     informational content (build facts, dependency lists, a collected
- *     report) lives in child components and is not a setting, so it is not
- *     indexed either.
+ * About and Diagnostics index their settings rows, and only those. Their
+ * informational content — build facts, dependency lists, a collected report —
+ * lives in child components and is not a setting, so it is not indexed.
  *
  * ## Labels are stored in English, and matched in both languages
  *
@@ -121,6 +116,7 @@ export type SettingsAnchor =
       readonly column: string;
     }
   | { readonly kind: "assistantSection"; readonly section: string }
+  | { readonly kind: "notificationsSection"; readonly section: string }
   | { readonly kind: "subtab" };
 
 /** One searchable setting. */
@@ -671,10 +667,11 @@ function columnEntries(
 }
 
 /**
- * Settings that are not rows of their own: the Assistant panel's sections and
- * the Profiles controls. Both are checked by the registry test against the
- * strings their subtab actually renders, which catches a rename — but, unlike
- * the rows, not an addition.
+ * Settings that are not rows of their own: the Assistant and Notifications
+ * panels' sections, and the Profiles controls. All are checked by the registry
+ * test against the strings their subtab actually renders — the two panels
+ * against their own exported section lists — which catches a rename, but,
+ * unlike the rows, not an addition.
  */
 const ANCHORLESS_ENTRIES: readonly SettingsSearchEntry[] = [
   {
@@ -708,6 +705,111 @@ const ANCHORLESS_ENTRIES: readonly SettingsSearchEntry[] = [
     keywords: ["ai", "persona", "system prompt", "role"],
     desktopOnly: true,
     anchor: { kind: "assistantSection", section: "personas" },
+  },
+  // The notification settings panel's six sections. Their rows live in the
+  // `NotificationsSettings*.tsx` files, so the row test cannot police them;
+  // the registry test checks these against
+  // `NOTIFICATION_SETTINGS_SECTIONS` instead, which is how a renamed section
+  // fails rather than leaving search matching a word nobody can see.
+  {
+    id: "notifications-service",
+    subtab: "notifications",
+    label: "Service",
+    keywords: [
+      "notifications",
+      "monitoring",
+      "poll",
+      "interval",
+      "pause",
+      "resume",
+      "check now",
+      "backoff",
+      "rdap cache",
+    ],
+    desktopOnly: true,
+    anchor: { kind: "notificationsSection", section: "service" },
+  },
+  {
+    id: "notifications-kinds",
+    subtab: "notifications",
+    label: "Kinds",
+    keywords: [
+      "notifications",
+      "domain expiry",
+      "record change",
+      "audit finding",
+      "severity",
+      "os notify",
+      "desktop notification",
+    ],
+    desktopOnly: true,
+    anchor: { kind: "notificationsSection", section: "kinds" },
+  },
+  {
+    id: "notifications-expiry",
+    subtab: "notifications",
+    label: "Expiry",
+    keywords: [
+      "notifications",
+      "milestones",
+      "days left",
+      "renewal",
+      "rdap",
+      "registrar",
+      "countdown",
+      "stale",
+      "warning",
+      "critical",
+    ],
+    desktopOnly: true,
+    anchor: { kind: "notificationsSection", section: "expiry" },
+  },
+  {
+    id: "notifications-zones",
+    subtab: "notifications",
+    label: "Zones",
+    keywords: [
+      "notifications",
+      "mute",
+      "allowlist",
+      "monitored",
+      "per zone",
+      "override",
+    ],
+    desktopOnly: true,
+    anchor: { kind: "notificationsSection", section: "zones" },
+  },
+  {
+    id: "notifications-delivery",
+    subtab: "notifications",
+    label: "Delivery",
+    keywords: [
+      "notifications",
+      "quiet hours",
+      "toast",
+      "badge",
+      "in app",
+      "os",
+      "sound",
+      "silence",
+    ],
+    desktopOnly: true,
+    anchor: { kind: "notificationsSection", section: "delivery" },
+  },
+  {
+    id: "notifications-retention",
+    subtab: "notifications",
+    label: "Retention",
+    keywords: [
+      "notifications",
+      "purge",
+      "archive",
+      "keep",
+      "history",
+      "inbox size",
+    ],
+    desktopOnly: true,
+    anchor: { kind: "notificationsSection", section: "retention" },
   },
   {
     id: "profiles-export",
@@ -766,6 +868,8 @@ export function settingsAnchorSelector(
       return `[data-testid="column-group-${entry.anchor.table}"] [data-column-id="${entry.anchor.column}"]`;
     case "assistantSection":
       return `[data-testid="assistant-settings-host"]`;
+    case "notificationsSection":
+      return `[data-testid="notifications-settings-host"]`;
     case "subtab":
       return null;
   }

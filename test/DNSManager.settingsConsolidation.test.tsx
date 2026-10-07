@@ -290,6 +290,44 @@ test("the Notifications subtab hosts the notification settings panel", async () 
   await screen.findByTestId("notifications-settings-service");
 });
 
+test("searching for a notification setting lands on its section", async () => {
+  // The payoff of moving these into Settings. "Quiet hours" is a Delivery
+  // control whose row lives in `NotificationsSettingsDelivery.tsx`, so the
+  // index can only name the section — and naming it has to be enough to get
+  // the user there, on the right section rather than the panel's default.
+  await renderSettings();
+  fireEvent.change(screen.getByRole("combobox", { name: "Find a setting" }), {
+    target: { value: "quiet hours" },
+  });
+
+  const results = await screen.findByTestId("settings-search-results");
+  const option = await waitFor(() => {
+    const found = within(results)
+      .queryAllByRole("option")
+      .find(
+        (candidate) =>
+          candidate.getAttribute("data-setting-result") ===
+          "notifications-delivery",
+      );
+    assert.ok(found, "search must offer the Delivery section");
+    return found;
+  });
+  fireEvent.click(option);
+
+  await waitFor(() =>
+    assert.equal(
+      subtabButton("notifications").getAttribute("data-active"),
+      "true",
+    ),
+  );
+  // Delivery, not the panel's own default of Service.
+  await screen.findByTestId("notifications-settings-quiet-hours");
+  assert.ok(
+    screen.queryByTestId("notifications-settings-service") === null,
+    "the jump must open the section it promised, not the default one",
+  );
+});
+
 test("the chosen notification section survives a trip to another subtab", async () => {
   await renderSettings();
   await openSubtab("notifications");

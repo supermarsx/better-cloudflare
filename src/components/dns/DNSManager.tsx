@@ -81,7 +81,10 @@ import { ImportExportDialog } from "./ImportExportDialog";
 import { RecordRow } from "./RecordRow";
 import { SpecialIpAuditFindings } from "./SpecialIpAuditFindings";
 import { NotificationsPanel } from "./NotificationsPanel";
-import type { NotificationsSettingsSection } from "./NotificationsSettings";
+import {
+  NOTIFICATION_SETTINGS_SECTIONS,
+  type NotificationsSettingsSection,
+} from "./NotificationsSettings";
 import { NotificationsSettingsHost } from "./NotificationsSettingsHost";
 import { AboutAppInfoCard } from "@/components/about/AboutAppInfoCard";
 import { DiagnosticsReportView } from "@/components/diagnostics/DiagnosticsReportView";
@@ -3400,6 +3403,14 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       const target = entry.anchor.section;
       const section = AI_SETTINGS_SECTIONS.find((s) => s.id === target);
       if (section) setAssistantSettingsSection(section.id);
+    }
+    if (entry.anchor.kind === "notificationsSection") {
+      // Same narrowing, against the notification panel's own list.
+      const target = entry.anchor.section;
+      const section = NOTIFICATION_SETTINGS_SECTIONS.find(
+        (s) => s.id === target,
+      );
+      if (section) setNotificationsSettingsSection(section.id);
     }
     setSettingsSubtab(entry.subtab);
     setRevealedSettingId(entry.id);

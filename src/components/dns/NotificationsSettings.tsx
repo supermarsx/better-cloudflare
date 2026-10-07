@@ -25,15 +25,29 @@ import { NotificationsSettingsZones } from "./NotificationsSettingsZones";
 export type NotificationsSettingsSection =
   "service" | "kinds" | "expiry" | "zones" | "delivery" | "retention";
 
-const SECTIONS: readonly { id: NotificationsSettingsSection; label: string }[] =
-  [
-    { id: "service", label: "Service" },
-    { id: "kinds", label: "Kinds" },
-    { id: "expiry", label: "Expiry" },
-    { id: "zones", label: "Zones" },
-    { id: "delivery", label: "Delivery" },
-    { id: "retention", label: "Retention" },
-  ];
+/**
+ * The sub-sections, in nav order.
+ *
+ * Exported because this panel is now hosted in the Session settings tab, and
+ * `settings-search.ts` indexes these six so "find a setting" can reach them.
+ * The rows inside each section live in their own files, where the settings
+ * registry test cannot see them, so the sections are what that test checks the
+ * index against — the same arrangement `AI_SETTINGS_SECTIONS` has. Renaming a
+ * section here therefore fails that test rather than silently leaving search
+ * matching a word nobody can see.
+ */
+export const NOTIFICATION_SETTINGS_SECTIONS: readonly {
+  id: NotificationsSettingsSection;
+  /** English label; rendered through `t(label, label)`. */
+  label: string;
+}[] = [
+  { id: "service", label: "Service" },
+  { id: "kinds", label: "Kinds" },
+  { id: "expiry", label: "Expiry" },
+  { id: "zones", label: "Zones" },
+  { id: "delivery", label: "Delivery" },
+  { id: "retention", label: "Retention" },
+];
 
 export interface NotificationsSettingsProps {
   status: NotificationServiceStatus | null;
@@ -103,7 +117,7 @@ export function NotificationsSettings({
           )}
           className="glass-surface glass-sheen glass-fade ui-segment-group scrollbar-themed"
         >
-          {SECTIONS.map((entry) => (
+          {NOTIFICATION_SETTINGS_SECTIONS.map((entry) => (
             <button
               key={entry.id}
               type="button"

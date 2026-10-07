@@ -15,6 +15,11 @@
  * passes to `t()` for its label, which `settingsSubtab === "..."` block it sits
  * in, and which conditions guard it. The registry has to agree with all four.
  *
+ * The two subtabs that re-host a panel from another file — Assistant and
+ * Notifications — are checked a second way, because their rows are not in the
+ * source this parses: their entries have to match the panel's own exported
+ * section list, id for id and label for label, in order.
+ *
  * What that catches, which nothing else would:
  *
  *   - a new settings row with no registry entry (search cannot find it);
@@ -35,6 +40,7 @@ import { test } from "node:test";
 import ts from "typescript";
 
 import { AI_SETTINGS_SECTIONS } from "../src/components/ai/AiSettingsPanel";
+import { NOTIFICATION_SETTINGS_SECTIONS } from "../src/components/dns/NotificationsSettings";
 import {
   SETTINGS_SEARCH_ENTRIES,
   SETTINGS_SUBTABS,
@@ -518,13 +524,46 @@ test("the Assistant entries are the panel's own sections", () => {
   );
 });
 
+test("the Notifications entries are the panel's own sections", () => {
+  // The Assistant check, for the second re-hosted panel. `NotificationsSettings`
+  // renders its six sections' rows from their own files, so — exactly as with
+  // the Assistant — a section is the finest thing the index can name, and the
+  // panel's own list is what the index has to agree with. Checking ids *and*
+  // labels, deep-equal and in order, is stricter than the string search below
+  // that this subtab is excused from: that one only asks whether the label
+  // appears somewhere in the subtab, while this one fails on a renamed
+  // section, a reordered nav, a missing section and a section that no longer
+  // exists.
+  const expected = NOTIFICATION_SETTINGS_SECTIONS.map((section) => ({
+    id: section.id,
+    label: section.label,
+  }));
+  const actual = SETTINGS_SEARCH_ENTRIES.filter(
+    (entry) => entry.subtab === "notifications",
+  ).map((entry) => ({
+    id:
+      entry.anchor.kind === "notificationsSection" ? entry.anchor.section : "",
+    label: entry.label,
+  }));
+  assert.deepEqual(
+    actual,
+    expected,
+    "the Notifications index must list exactly NOTIFICATION_SETTINGS_SECTIONS, with their labels",
+  );
+});
+
 test("an anchorless entry's label is a string its subtab renders", () => {
   const blocks = findSubtabBlocks();
   for (const entry of SETTINGS_SEARCH_ENTRIES) {
     if (entry.anchor.kind === "row" || entry.anchor.kind === "columnToggle") {
       continue;
     }
-    if (entry.subtab === "assistant") continue; // checked against the panel
+    // Both of these re-host a panel from another file, so their labels are not
+    // strings `DNSManager.tsx` renders. They are checked against their panel's
+    // own exported section list instead, by the two tests above — which is a
+    // stricter check than this one, not an exemption from it.
+    if (entry.subtab === "assistant") continue;
+    if (entry.subtab === "notifications") continue;
     const block = blocks.get(entry.subtab);
     assert.ok(block, `no ${entry.subtab} subtab block`);
     assert.ok(
