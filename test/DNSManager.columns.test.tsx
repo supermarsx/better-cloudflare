@@ -100,6 +100,12 @@ interface Harness {
 
 function mockRuntime(options: HarnessOptions = {}): Harness {
   (window as unknown as { __TAURI__?: unknown }).__TAURI__ = {};
+  // This suite is about columns and the row menu, not about retention. With
+  // the recycle bin on — which is the default — a delete is a `retain_dns_record`
+  // and never reaches `deleteDNSRecord`, so the row-menu test would be
+  // asserting the wrong call. The binned path is covered by
+  // `test/DNSManager.recycleBin.test.tsx`.
+  storageManager.setRecycleBinEnabled(false);
   const zones = options.zones ?? [ZONE];
   const preferenceUpdates: Array<Record<string, unknown>> = [];
   const deletedRecordIds: string[] = [];
@@ -192,8 +198,11 @@ afterEach(() => {
   cleanup();
   mock.restoreAll();
   // The storage manager is a module singleton; without this a tab order written
-  // by one test leaks into the next one's hydration.
+  // by one test leaks into the next one's hydration. `clearSettings` does not
+  // reach the recycle-bin leaves, so the one this harness writes is restored
+  // to its default by hand.
   storageManager.clearSettings();
+  storageManager.setRecycleBinEnabled(true);
   delete (window as unknown as { __TAURI__?: unknown }).__TAURI__;
   if (originalFetch) globalThis.fetch = originalFetch;
   else delete (globalThis as { fetch?: typeof fetch }).fetch;

@@ -302,6 +302,33 @@ const ROW_ENTRIES: readonly SettingsSearchEntry[] = [
     desktopOnly: true,
     anchor: { kind: "row" },
   },
+  // The only row in the group that is not a rule: it opens what retention has
+  // already kept. Worth indexing under the words for the things a user comes
+  // looking for — "restore", "undelete", "disabled record" — because this is
+  // the one screen where a record that exists nowhere else can be put back.
+  {
+    id: "recycle-bin-contents",
+    subtab: "general",
+    group: "Recycle bin",
+    label: "Recycle bin contents",
+    description:
+      "Restore a deleted record, re-enable a disabled one, or forget an entry for good. Nothing listed there exists anywhere else.",
+    keywords: [
+      "trash",
+      "restore",
+      "undelete",
+      "undo",
+      "recover",
+      "disabled",
+      "re-enable",
+      "enable",
+      "forget",
+      "empty",
+      "bin",
+    ],
+    desktopOnly: true,
+    anchor: { kind: "row" },
+  },
 
   // --- Topology --------------------------------------------------------
   {

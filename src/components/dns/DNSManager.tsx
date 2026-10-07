@@ -58,16 +58,22 @@ import {
   FileUp,
   Filter,
   Plus,
+  PowerOff,
   RefreshCw,
+  RotateCcw,
   Search,
   Settings,
   Trash2,
   X,
 } from "lucide-react";
+import { invoke as tauriInvoke } from "@tauri-apps/api/core";
 import { isDesktop } from "@/lib/environment";
 import {
   createPreferenceFailureReporter,
+  getTauriInvokeTimeoutMs,
+  normalizeTauriInvokeError,
   TauriClient,
+  withTauriUiTimeout,
   type BulkDnsDeleteFailure,
   type EmailRoutingRuleResponse,
   type EmailRoutingSettingsResponse,
@@ -95,7 +101,26 @@ import {
   type DiagnosticsReport,
 } from "@/lib/diagnostics";
 import { openExternalUrl } from "@/lib/external-url";
-import { RETENTION_LIMITS } from "@/lib/records/retention";
+import {
+  createRecordRetentionClient,
+  isRetainedRecordExpired,
+  isRetainedRecordRestorable,
+  parseRetainedRecords,
+  retainedRecordDaysLeft,
+  RETAINED_FIELD_LOSSES,
+  RETENTION_LIMITS,
+  RETENTION_REASON_DELETED,
+  RETENTION_REASON_DISABLED,
+  retentionDaysForReason,
+  shouldRetainDeletion,
+  sortRetainedRecords,
+  type RestoredRecord,
+  type RestoreOutcome,
+  type RetainDecision,
+  type RetainedRecord,
+  type RetainedRecordSnapshot,
+  type RetainedStoreView,
+} from "@/lib/records/retention";
 import { SettingsSearch } from "./SettingsSearch";
 import {
   SETTINGS_SUBTABS,
@@ -883,6 +908,113 @@ const RECYCLE_BIN_SIZE_PRESETS = [10, 50, 100, 250, 500, 1000].filter(
     entries >= RETENTION_LIMITS.maxEntries.min &&
     entries <= RETENTION_LIMITS.maxEntries.max,
 );
+
+/**
+ * The retention commands, invoked the way `lib/diagnostics/host-facts.ts`
+ * invokes its one command: `tauriInvoke` wrapped in `tauri-client.ts`'s own
+ * exported pieces, so these six get the same deadline, the same abort handling
+ * and the same error normalisation as every other command without a second
+ * invoke implementation existing to drift from the first.
+ */
+async function retentionInvoke<T>(
+  command: string,
+  args: Record<string, unknown>,
+): Promise<T> {
+  try {
+    return await withTauriUiTimeout(
+      tauriInvoke<T>(command, args),
+      command,
+      getTauriInvokeTimeoutMs(command),
+    );
+  } catch (error) {
+    throw normalizeTauriInvokeError(error, command);
+  }
+}
+
+/**
+ * The typed wrapper over the six retention commands.
+ *
+ * Module scope because it holds nothing: `createRecordRetentionClient` exists
+ * to own the argument names, and a mistyped `zoneId` there is a retained entry
+ * with no zone, which is an entry that cannot be restored.
+ */
+const recordRetention = createRecordRetentionClient(retentionInvoke);
+
+/**
+ * The part of a live record that can be kept.
+ *
+ * Exactly the seven fields `DNSRecordInput` models, and `ttl: "auto"` is
+ * dropped rather than coerced — the store holds whole numbers, and inventing
+ * a 1 for "auto" would restore a record whose TTL the user never chose.
+ * {@link RETAINED_FIELD_LOSSES} says what is not here and why.
+ */
+function retainedSnapshotOf(record: DNSRecord): RetainedRecordSnapshot {
+  const snapshot: RetainedRecordSnapshot = {
+    type: record.type,
+    name: record.name,
+    content: record.content,
+  };
+  if (typeof record.ttl === "number") snapshot.ttl = record.ttl;
+  if (record.priority !== undefined) snapshot.priority = record.priority;
+  if (record.proxied !== undefined) snapshot.proxied = record.proxied;
+  if (record.comment !== undefined) snapshot.comment = record.comment;
+  return snapshot;
+}
+
+/**
+ * The record a restore created, in the shape the table holds.
+ *
+ * `id` is optional on the native type and is **not** the id the record had
+ * before: a restore always mints a new one. An absent id would mean a created
+ * record the UI cannot address, so it stays empty rather than being filled
+ * with the dead one.
+ */
+function restoredRecordToDnsRecord(record: RestoredRecord): DNSRecord {
+  return {
+    id: record.id ?? "",
+    type: record.type,
+    name: record.name,
+    content: record.content,
+    ...(record.comment !== undefined ? { comment: record.comment } : {}),
+    ttl: record.ttl ?? 1,
+    ...(record.priority !== undefined ? { priority: record.priority } : {}),
+    ...(record.proxied !== undefined ? { proxied: record.proxied } : {}),
+    zone_id: record.zone_id,
+    zone_name: record.zone_name,
+    created_on: record.created_on,
+    modified_on: record.modified_on,
+  };
+}
+
+/** Store size in whole KB. The native ceiling is 1.5 MB, so KB is the unit. */
+function retainedStoreKb(bytes: number): number {
+  return Math.round(bytes / 1024);
+}
+
+/** A retained entry named the way the rest of the UI names a record. */
+function describeRetainedRecord(entry: RetainedRecord): string {
+  return `${entry.type} ${entry.name}`;
+}
+
+/**
+ * The short half of a retention failure.
+ *
+ * `retentionInvoke` has already turned it into a `RequestError`, whose
+ * `message` carries the remediation; the full `formatRequestError` trail is
+ * for a diagnostics report, not for a line in a dialog.
+ */
+function retentionFailureMessage(error: unknown): string {
+  if (error instanceof Error && error.message) return error.message;
+  if (typeof error === "string" && error.trim()) return error.trim();
+  return "The command returned an unknown error.";
+}
+
+/** What a retain decision did, for a bulk report that counts outcomes. */
+interface RetainAttempt {
+  record: DNSRecord;
+  decision?: RetainDecision;
+  error?: string;
+}
 
 /**
  * Widen the workspace's own interfaces to the diagnostics builder's inputs.
@@ -1722,6 +1854,53 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const [recycleBinAutoPurge, setRecycleBinAutoPurge] = useState(() =>
     storageManager.getRecycleBinAutoPurge(),
   );
+  // ── The recycle bin itself (a dialog, not a subtab) ─────────────────────
+  const [recycleBinOpen, setRecycleBinOpen] = useState(false);
+  const [recycleBinEntries, setRecycleBinEntries] = useState<RetainedRecord[]>(
+    [],
+  );
+  const [recycleBinStore, setRecycleBinStore] =
+    useState<RetainedStoreView | null>(null);
+  const [recycleBinLoading, setRecycleBinLoading] = useState(false);
+  const [recycleBinError, setRecycleBinError] = useState<string | null>(null);
+  /**
+   * The instant the listed entries were read.
+   *
+   * One instant for the whole list, rather than `Date.now()` per row: two rows
+   * counted down from two different instants can disagree about which of them
+   * is still restorable, which is the one thing this screen must never do.
+   */
+  const [recycleBinReadAt, setRecycleBinReadAt] = useState(() => Date.now());
+  /** The entry a restore or a forget is in flight for, or `"*"` for the store. */
+  const [recycleBinBusy, setRecycleBinBusy] = useState<string | null>(null);
+  /** Forget and empty are two-step: nothing they drop exists anywhere else. */
+  const [recycleBinForgetId, setRecycleBinForgetId] = useState<string | null>(
+    null,
+  );
+  const [recycleBinConfirmEmpty, setRecycleBinConfirmEmpty] = useState(false);
+  /**
+   * The records a disable is waiting to be confirmed for.
+   *
+   * There is no "are you sure" to skip here and no "don't ask again": the
+   * confirmation is the only place the user is told that Cloudflare has no
+   * disabled state and that this application will hold the only copy.
+   */
+  const [disablePrompt, setDisablePrompt] = useState<{
+    zoneId: string;
+    zoneName: string;
+    records: DNSRecord[];
+  } | null>(null);
+  /**
+   * A `store_full` refusal, which is neither a success nor a crash: the
+   * records named here are **still live at Cloudflare** and nothing was kept.
+   */
+  const [storeFullPrompt, setStoreFullPrompt] = useState<{
+    zoneId: string;
+    zoneName: string;
+    reason: string;
+    records: DNSRecord[];
+    info: Extract<RetainDecision, { status: "store_full" }>;
+  } | null>(null);
   // ── Diagnostics subtab ──────────────────────────────────────────────────
   /**
    * Whether the next report names the user's zones.
@@ -6514,9 +6693,753 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     }
   };
 
+  /* ── The recycle bin, and disabling a record ─────────────────────────────
+   *
+   * Both halves are one native primitive: `retain_dns_record` removes the
+   * record from Cloudflare and keeps a complete copy, retaining *first* so the
+   * destructive step cannot run without the copy safe. `reason` is the only
+   * difference between a delete-to-bin and a disable, and
+   * `retentionDaysForReason` is the only thing that decides the lifetime — a
+   * disable is indefinite whatever the bin is set to.
+   */
+
+  /**
+   * Read the bin, and sweep it first when the user asked for that.
+   *
+   * Reading never purges. `list_retained_records` already excludes expired
+   * entries, so the list can never offer a restore the engine would refuse;
+   * the sweep is about the store, and with `autoPurge` off the expired entries
+   * stay in it with their count on screen.
+   */
+  const loadRecycleBin = useCallback(
+    async (options: { sweep?: boolean } = {}) => {
+      if (!isDesktop()) return;
+      const settings = storageManager.getRecycleBinSettings();
+      setRecycleBinLoading(true);
+      setRecycleBinError(null);
+      try {
+        let view = await recordRetention.list(settings.maxEntries);
+        if (
+          (options.sweep ?? settings.autoPurge) &&
+          view.expiredPendingPurge > 0
+        ) {
+          await recordRetention.purge();
+          view = await recordRetention.list(settings.maxEntries);
+        }
+        setRecycleBinStore(view);
+        setRecycleBinEntries(
+          sortRetainedRecords(parseRetainedRecords(view.entries)),
+        );
+        setRecycleBinReadAt(Date.now());
+      } catch (error) {
+        setRecycleBinError(retentionFailureMessage(error));
+      } finally {
+        setRecycleBinLoading(false);
+      }
+    },
+    [],
+  );
+
+  const openRecycleBin = useCallback(() => {
+    setRecycleBinForgetId(null);
+    setRecycleBinConfirmEmpty(false);
+    setRecycleBinOpen(true);
+    void loadRecycleBin();
+  }, [loadRecycleBin]);
+
+  /**
+   * Say what a restore did, for every one of the nine statuses it can report.
+   *
+   * A generic "restore failed" would throw away the distinction the command
+   * went to the trouble of making: only three of these are failures of this
+   * application, four of them leave the entry restorable, and two of them mean
+   * the record is already live. Returns `true` when a record was created.
+   */
+  const applyRestoreOutcome = useCallback(
+    (outcome: RestoreOutcome, entry: RetainedRecord): boolean => {
+      const label = describeRetainedRecord(entry);
+      switch (outcome.status) {
+        case "restored": {
+          const record = restoredRecordToDnsRecord(outcome.record);
+          const notes: string[] = [];
+          notes.push(
+            record.id
+              ? t(
+                  "It is live again with a new record id ({{id}}); the id it had before is gone for good.",
+                  {
+                    id: record.id,
+                    defaultValue: `It is live again with a new record id (${record.id}); the id it had before is gone for good.`,
+                  },
+                )
+              : t(
+                  "It is live again with a new record id; the id it had before is gone for good.",
+                  "It is live again with a new record id; the id it had before is gone for good.",
+                ),
+          );
+          if (record.id && outcome.localTags.length > 0) {
+            // The tags were keyed by the id that died with the record, so this
+            // is the only moment they can be re-attached.
+            storageManager.setRecordTags(
+              entry.zoneId,
+              record.id,
+              outcome.localTags,
+            );
+            notes.push(
+              t("{{count}} tag(s) re-attached.", {
+                count: outcome.localTags.length,
+                defaultValue: `${outcome.localTags.length} tag(s) re-attached.`,
+              }),
+            );
+          }
+          if (outcome.sharesNameWith.length > 0) {
+            notes.push(
+              t("It sits alongside {{count}} other record(s) at this name.", {
+                count: outcome.sharesNameWith.length,
+                defaultValue: `It sits alongside ${outcome.sharesNameWith.length} other record(s) at this name.`,
+              }),
+            );
+          }
+          if (outcome.destinationUnverified) {
+            notes.push(
+              t(
+                "The zone was too large to scan first, so Cloudflare alone judged whether it could be created.",
+                "The zone was too large to scan first, so Cloudflare alone judged whether it could be created.",
+              ),
+            );
+          }
+          if (!outcome.entryCleared) {
+            notes.push(
+              t(
+                "The record was created but its bin entry could not be removed — forget it here so it is not restored a second time.",
+                "The record was created but its bin entry could not be removed — forget it here so it is not restored a second time.",
+              ),
+            );
+          }
+          if (record.id) {
+            updateTabByZone(entry.zoneId, (prev) => ({
+              ...prev,
+              records: [record, ...prev.records],
+            }));
+          }
+          toast({
+            title:
+              entry.reasonKind === "disabled"
+                ? t("Re-enabled {{record}}", {
+                    record: label,
+                    defaultValue: `Re-enabled ${label}`,
+                  })
+                : t("Restored {{record}}", {
+                    record: label,
+                    defaultValue: `Restored ${label}`,
+                  }),
+            description: notes.join(" "),
+          });
+          return true;
+        }
+        case "blocked": {
+          const existing = `${outcome.existing.type} ${outcome.existing.name} → ${outcome.existing.content}`;
+          const description =
+            outcome.obstacle === "already_present"
+              ? t(
+                  "{{record}} already exists at Cloudflare ({{existing}}), so nothing was created. The entry is still in the recycle bin; forget it if the live record is the one you want.",
+                  {
+                    record: label,
+                    existing,
+                    defaultValue: `${label} already exists at Cloudflare (${existing}), so nothing was created. The entry is still in the recycle bin; forget it if the live record is the one you want.`,
+                  },
+                )
+              : outcome.obstacle === "cname_collision"
+                ? t(
+                    "A CNAME at this name cannot coexist with {{record}} ({{existing}}). Remove or rename the CNAME, then restore again. The entry is still in the recycle bin.",
+                    {
+                      record: label,
+                      existing,
+                      defaultValue: `A CNAME at this name cannot coexist with ${label} (${existing}). Remove or rename the CNAME, then restore again. The entry is still in the recycle bin.`,
+                    },
+                  )
+                : t(
+                    "Something in the zone is in the way of {{record}} ({{obstacle}}: {{existing}}). The entry is still in the recycle bin.",
+                    {
+                      record: label,
+                      obstacle: outcome.obstacle,
+                      existing,
+                      defaultValue: `Something in the zone is in the way of ${label} (${outcome.obstacle}: ${existing}). The entry is still in the recycle bin.`,
+                    },
+                  );
+          toast({
+            title: t("Not restored", "Not restored"),
+            description,
+            variant: "destructive",
+          });
+          return false;
+        }
+        case "zone_unavailable": {
+          toast({
+            title: t("Zone did not answer", "Zone did not answer"),
+            description: t(
+              "Cloudflare could not be reached for zone {{zone}} ({{message}}). Nothing was lost: {{record}} is still in the recycle bin and still restorable — try again when the zone answers.",
+              {
+                zone: entry.zoneName || outcome.zoneId,
+                message: outcome.message,
+                record: label,
+                defaultValue: `Cloudflare could not be reached for zone ${entry.zoneName || outcome.zoneId} (${outcome.message}). Nothing was lost: ${label} is still in the recycle bin and still restorable — try again when the zone answers.`,
+              },
+            ),
+            variant: "destructive",
+          });
+          return false;
+        }
+        case "provider_refused": {
+          toast({
+            title: t("Cloudflare refused it", "Cloudflare refused it"),
+            description: t(
+              "Cloudflare would not create {{record}}: {{message}}. The entry is still in the recycle bin.",
+              {
+                record: label,
+                message: outcome.message,
+                defaultValue: `Cloudflare would not create ${label}: ${outcome.message}. The entry is still in the recycle bin.`,
+              },
+            ),
+            variant: "destructive",
+          });
+          return false;
+        }
+        case "invalid": {
+          toast({
+            title: t("Entry cannot be sent", "Entry cannot be sent"),
+            description: t(
+              "{{record}} cannot be created as it stands: {{issues}}. The entry is still in the recycle bin.",
+              {
+                record: label,
+                issues: outcome.issues.join("; "),
+                defaultValue: `${label} cannot be created as it stands: ${outcome.issues.join("; ")}. The entry is still in the recycle bin.`,
+              },
+            ),
+            variant: "destructive",
+          });
+          return false;
+        }
+        case "incomplete": {
+          toast({
+            title: t("Entry is incomplete", "Entry is incomplete"),
+            description: t(
+              "This entry is missing {{missing}}, so it cannot be re-created. It is still in the recycle bin, but a record this incomplete can only be entered again by hand.",
+              {
+                missing: outcome.missing.join(", "),
+                defaultValue: `This entry is missing ${outcome.missing.join(", ")}, so it cannot be re-created. It is still in the recycle bin, but a record this incomplete can only be entered again by hand.`,
+              },
+            ),
+            variant: "destructive",
+          });
+          return false;
+        }
+        case "expired": {
+          toast({
+            title: t("Entry has expired", "Entry has expired"),
+            description: outcome.expiresAt
+              ? t(
+                  "{{record}} was only kept until {{date}} and can no longer be restored. Nothing in Cloudflare has it any more either.",
+                  {
+                    record: label,
+                    date: outcome.expiresAt,
+                    defaultValue: `${label} was only kept until ${outcome.expiresAt} and can no longer be restored. Nothing in Cloudflare has it any more either.`,
+                  },
+                )
+              : t(
+                  "{{record}} has passed its expiry and can no longer be restored.",
+                  {
+                    record: label,
+                    defaultValue: `${label} has passed its expiry and can no longer be restored.`,
+                  },
+                ),
+            variant: "destructive",
+          });
+          return false;
+        }
+        case "not_found": {
+          toast({
+            title: t("Entry is gone", "Entry is gone"),
+            description: t(
+              "There is no longer an entry for {{record}} — it was forgotten, swept after expiry, or already restored somewhere else.",
+              {
+                record: label,
+                defaultValue: `There is no longer an entry for ${label} — it was forgotten, swept after expiry, or already restored somewhere else.`,
+              },
+            ),
+            variant: "destructive",
+          });
+          return false;
+        }
+      }
+    },
+    [t, toast, updateTabByZone],
+  );
+
+  /** Restore one entry. Serves the bin's Restore and its Re-enable alike. */
+  const restoreRetainedEntry = useCallback(
+    async (entry: RetainedRecord) => {
+      if (!isDesktop()) return;
+      setRecycleBinBusy(entry.entryId);
+      try {
+        const outcome = await recordRetention.restore({
+          apiKey,
+          email,
+          entryId: entry.entryId,
+        });
+        applyRestoreOutcome(outcome, entry);
+      } catch (error) {
+        toast({
+          title: t("Restore failed", "Restore failed"),
+          description: retentionFailureMessage(error),
+          variant: "destructive",
+        });
+      } finally {
+        setRecycleBinBusy(null);
+        await loadRecycleBin({ sweep: false });
+      }
+    },
+    [apiKey, applyRestoreOutcome, email, loadRecycleBin, t, toast],
+  );
+
+  const forgetRetainedEntry = useCallback(
+    async (entry: RetainedRecord) => {
+      if (!isDesktop()) return;
+      setRecycleBinBusy(entry.entryId);
+      try {
+        const existed = await recordRetention.forget(entry.entryId);
+        toast({
+          title: existed
+            ? t("Forgotten", "Forgotten")
+            : t("Already gone", "Already gone"),
+          description: existed
+            ? t("{{record}} is gone for good. It existed nowhere but here.", {
+                record: describeRetainedRecord(entry),
+                defaultValue: `${describeRetainedRecord(entry)} is gone for good. It existed nowhere but here.`,
+              })
+            : t(
+                "There was no entry left to forget.",
+                "There was no entry left to forget.",
+              ),
+          variant: existed ? "destructive" : undefined,
+        });
+      } catch (error) {
+        toast({
+          title: t("Could not forget it", "Could not forget it"),
+          description: retentionFailureMessage(error),
+          variant: "destructive",
+        });
+      } finally {
+        setRecycleBinBusy(null);
+        setRecycleBinForgetId(null);
+        await loadRecycleBin({ sweep: false });
+      }
+    },
+    [loadRecycleBin, t, toast],
+  );
+
+  const purgeRetainedExpired = useCallback(async () => {
+    if (!isDesktop()) return;
+    setRecycleBinBusy("*");
+    try {
+      const report = await recordRetention.purge();
+      toast({
+        title: t("Swept", "Swept"),
+        description: t(
+          "{{purged}} expired entr(ies) removed. {{remaining}} still held.",
+          {
+            purged: report.purged,
+            remaining: report.remaining,
+            defaultValue: `${report.purged} expired entr(ies) removed. ${report.remaining} still held.`,
+          },
+        ),
+      });
+    } catch (error) {
+      toast({
+        title: t("Sweep failed", "Sweep failed"),
+        description: retentionFailureMessage(error),
+        variant: "destructive",
+      });
+    } finally {
+      setRecycleBinBusy(null);
+      await loadRecycleBin({ sweep: false });
+    }
+  }, [loadRecycleBin, t, toast]);
+
+  const emptyRecycleBin = useCallback(async (): Promise<boolean> => {
+    if (!isDesktop()) return false;
+    setRecycleBinBusy("*");
+    try {
+      const report = await recordRetention.clear();
+      toast({
+        title: t("Recycle bin emptied", "Recycle bin emptied"),
+        description: t(
+          "{{purged}} entr(ies) discarded. Every one of them existed nowhere but here.",
+          {
+            purged: report.purged,
+            defaultValue: `${report.purged} entr(ies) discarded. Every one of them existed nowhere but here.`,
+          },
+        ),
+        variant: "destructive",
+      });
+      return true;
+    } catch (error) {
+      toast({
+        title: t("Could not empty it", "Could not empty it"),
+        description: retentionFailureMessage(error),
+        variant: "destructive",
+      });
+      return false;
+    } finally {
+      setRecycleBinBusy(null);
+      setRecycleBinConfirmEmpty(false);
+      await loadRecycleBin({ sweep: false });
+    }
+  }, [loadRecycleBin, t, toast]);
+
+  /**
+   * Remove records from Cloudflare and keep a copy of each, one at a time.
+   *
+   * One call per record because the native command is per record, and because
+   * a `store_full` refusal is per record too: the first refusal does not mean
+   * the rest failed, and a record the store refused is **still live**.
+   */
+  const retainRecordsToStore = useCallback(
+    async (
+      zoneId: string,
+      zoneName: string,
+      records: readonly DNSRecord[],
+      reason: string,
+    ): Promise<RetainAttempt[]> => {
+      const settings = storageManager.getRecycleBinSettings();
+      const retentionDays = retentionDaysForReason(reason, settings);
+      const attempts: RetainAttempt[] = [];
+      for (const record of records) {
+        // Read the tags before the call: they are keyed by the provider id it
+        // is about to end, so after it there is nothing left to read them by.
+        const localTags = storageManager.getRecordTags(zoneId, record.id);
+        try {
+          const decision = await recordRetention.retain({
+            apiKey,
+            email,
+            zoneId,
+            zoneName,
+            recordId: record.id,
+            record: retainedSnapshotOf(record),
+            reason,
+            retentionDays,
+            localTags,
+            maxEntries: settings.maxEntries,
+          });
+          attempts.push({ record, decision });
+        } catch (error) {
+          attempts.push({ record, error: retentionFailureMessage(error) });
+        }
+      }
+      return attempts;
+    },
+    [apiKey, email],
+  );
+
+  /**
+   * Take the records that were really retained out of the table.
+   *
+   * Only those: a `store_full` refusal and a rejected call both leave the
+   * record live at Cloudflare, so its row has to stay, exactly as a refused
+   * bulk delete's rows do.
+   */
+  const applyRetainedRemovals = useCallback(
+    (zoneId: string, attempts: readonly RetainAttempt[]): RetainAttempt[] => {
+      const retained = attempts.filter(
+        (attempt) => attempt.decision?.status === "retained",
+      );
+      if (retained.length > 0) {
+        const removedIds = new Set(retained.map((a) => a.record.id));
+        // The tags are inside the entry now; the id they were keyed by is dead.
+        for (const id of removedIds) storageManager.clearRecordTags(zoneId, id);
+        updateTabByZone(zoneId, (prev) => ({
+          ...prev,
+          records: prev.records.filter((r) => !removedIds.has(r.id)),
+          selectedIds: prev.selectedIds.filter((id) => !removedIds.has(id)),
+        }));
+      }
+      return retained;
+    },
+    [updateTabByZone],
+  );
+
+  /** Name the records a retain pass left live, and why, for one toast. */
+  const describeRetainRefusals = useCallback(
+    (attempts: readonly RetainAttempt[]): string => {
+      const full = t("the recycle bin is full", "the recycle bin is full");
+      return joinBulkFailures(
+        attempts
+          .slice(0, BULK_FAILURE_DETAIL_LIMIT)
+          .map(
+            (attempt) =>
+              `${describeRecordForFailure(attempt.record, attempt.record.id)}: ${attempt.error ?? full}`,
+          ),
+        attempts.length,
+      );
+    },
+    [t],
+  );
+
+  /**
+   * Report a finished retain pass, and raise the `store_full` way out.
+   *
+   * `store_full` is the one outcome that must read as neither a success nor a
+   * crash, so it gets a dialog rather than a toast: the record is still live,
+   * and the user has to choose between making room and deleting it outright.
+   */
+  const reportRetainPass = useCallback(
+    (
+      zoneId: string,
+      zoneName: string,
+      reason: string,
+      attempts: readonly RetainAttempt[],
+      retained: readonly RetainAttempt[],
+    ) => {
+      const refused = attempts.filter(
+        (attempt) => attempt.decision?.status !== "retained",
+      );
+      const storeFull = refused.filter(
+        (attempt) => attempt.decision?.status === "store_full",
+      );
+      const disabling = reason === RETENTION_REASON_DISABLED;
+
+      if (retained.length > 0) {
+        const evicted = retained.reduce(
+          (total, attempt) =>
+            total +
+            (attempt.decision?.status === "retained"
+              ? attempt.decision.evicted
+              : 0),
+          0,
+        );
+        const evictionNote =
+          evicted > 0
+            ? ` ${t(
+                "{{count}} older entr(ies) were given up to make room, and are gone for good.",
+                {
+                  count: evicted,
+                  defaultValue: `${evicted} older entr(ies) were given up to make room, and are gone for good.`,
+                },
+              )}`
+            : "";
+        toast({
+          title: disabling
+            ? t("Disabled", "Disabled")
+            : t("Moved to the recycle bin", "Moved to the recycle bin"),
+          description: disabling
+            ? `${t(
+                "{{count}} record(s) deleted from Cloudflare and kept here indefinitely. They do not resolve, and this is the only copy.",
+                {
+                  count: retained.length,
+                  defaultValue: `${retained.length} record(s) deleted from Cloudflare and kept here indefinitely. They do not resolve, and this is the only copy.`,
+                },
+              )}${evictionNote}`
+            : `${t(
+                "{{count}} record(s) deleted from Cloudflare. The only copy is in the recycle bin.",
+                {
+                  count: retained.length,
+                  defaultValue: `${retained.length} record(s) deleted from Cloudflare. The only copy is in the recycle bin.`,
+                },
+              )}${evictionNote}`,
+          action: (
+            <ToastAction
+              altText={t("Open the recycle bin", "Open the recycle bin")}
+              onClick={openRecycleBin}
+            >
+              {t("Recycle bin", "Recycle bin")}
+            </ToastAction>
+          ),
+        });
+      }
+
+      if (refused.length > 0) {
+        toast({
+          title: t("Still live at Cloudflare", "Still live at Cloudflare"),
+          description: t(
+            "{{count}} record(s) were not touched, so they still exist and still resolve: {{reasons}}",
+            {
+              count: refused.length,
+              reasons: describeRetainRefusals(refused),
+              defaultValue: `${refused.length} record(s) were not touched, so they still exist and still resolve: ${describeRetainRefusals(refused)}`,
+            },
+          ),
+          variant: "destructive",
+        });
+      }
+
+      if (storeFull.length > 0) {
+        const info = storeFull[0].decision;
+        if (info?.status === "store_full") {
+          setStoreFullPrompt({
+            zoneId,
+            zoneName,
+            reason,
+            records: storeFull.map((attempt) => attempt.record),
+            info,
+          });
+        }
+      }
+    },
+    [describeRetainRefusals, openRecycleBin, t, toast],
+  );
+
+  /**
+   * Delete records outright, keeping nothing.
+   *
+   * Only reachable from the `store_full` dialog, where the user has been told
+   * in those words that no copy will be kept. Everything else goes through
+   * {@link retainRecordsToStore}.
+   */
+  const deleteRecordsWithoutCopy = useCallback(
+    async (zoneId: string, records: readonly DNSRecord[]) => {
+      const deleted: string[] = [];
+      const failures: Array<{ record: DNSRecord; error: string }> = [];
+      for (const record of records) {
+        try {
+          await deleteDNSRecord(zoneId, record.id);
+          storageManager.clearRecordTags(zoneId, record.id);
+          deleted.push(record.id);
+        } catch (error) {
+          failures.push({ record, error: retentionFailureMessage(error) });
+        }
+      }
+      if (deleted.length > 0) {
+        const deletedIds = new Set(deleted);
+        updateTabByZone(zoneId, (prev) => ({
+          ...prev,
+          records: prev.records.filter((r) => !deletedIds.has(r.id)),
+          selectedIds: prev.selectedIds.filter((id) => !deletedIds.has(id)),
+        }));
+        toast({
+          title: t("Deleted, nothing kept", "Deleted, nothing kept"),
+          description: t(
+            "{{count}} record(s) deleted from Cloudflare with no copy kept. They cannot be restored.",
+            {
+              count: deleted.length,
+              defaultValue: `${deleted.length} record(s) deleted from Cloudflare with no copy kept. They cannot be restored.`,
+            },
+          ),
+          variant: "destructive",
+        });
+      }
+      if (failures.length > 0) {
+        toast({
+          title: t("Error", "Error"),
+          description: describeBulkUpdateFailures(failures),
+          variant: "destructive",
+        });
+      }
+    },
+    [deleteDNSRecord, t, toast, updateTabByZone],
+  );
+
+  /**
+   * The `store_full` way out that keeps the copy: make room, then retry.
+   *
+   * Emptying the bin is itself destructive — every entry it drops exists
+   * nowhere else — which is why the dialog says so before this runs, and why
+   * the retry only happens if the clear actually succeeded.
+   */
+  const emptyBinAndRetryRetain = useCallback(async () => {
+    const prompt = storeFullPrompt;
+    if (!prompt) return;
+    setStoreFullPrompt(null);
+    if (!(await emptyRecycleBin())) return;
+    const attempts = await retainRecordsToStore(
+      prompt.zoneId,
+      prompt.zoneName,
+      prompt.records,
+      prompt.reason,
+    );
+    const retained = applyRetainedRemovals(prompt.zoneId, attempts);
+    reportRetainPass(
+      prompt.zoneId,
+      prompt.zoneName,
+      prompt.reason,
+      attempts,
+      retained,
+    );
+  }, [
+    applyRetainedRemovals,
+    emptyRecycleBin,
+    reportRetainPass,
+    retainRecordsToStore,
+    storeFullPrompt,
+  ]);
+
+  /** The `store_full` way out that gives the copy up, having said so. */
+  const deletePromptedRecordsWithoutCopy = useCallback(async () => {
+    const prompt = storeFullPrompt;
+    if (!prompt) return;
+    setStoreFullPrompt(null);
+    await deleteRecordsWithoutCopy(prompt.zoneId, prompt.records);
+  }, [deleteRecordsWithoutCopy, storeFullPrompt]);
+
+  /** Disable, once the user has read what disabling actually does. */
+  const confirmDisableRecords = useCallback(async () => {
+    const prompt = disablePrompt;
+    if (!prompt) return;
+    setDisablePrompt(null);
+    const attempts = await retainRecordsToStore(
+      prompt.zoneId,
+      prompt.zoneName,
+      prompt.records,
+      RETENTION_REASON_DISABLED,
+    );
+    const retained = applyRetainedRemovals(prompt.zoneId, attempts);
+    reportRetainPass(
+      prompt.zoneId,
+      prompt.zoneName,
+      RETENTION_REASON_DISABLED,
+      attempts,
+      retained,
+    );
+  }, [
+    applyRetainedRemovals,
+    disablePrompt,
+    reportRetainPass,
+    retainRecordsToStore,
+  ]);
+
+  /**
+   * Delete one record.
+   *
+   * With the bin on this is a retain, not a delete followed by a retain: the
+   * native command keeps the copy before it removes the record, so the
+   * destructive half cannot run on its own. No history entry is pushed for a
+   * binned deletion — the bin entry *is* the way back, and a second one would
+   * let a redo call the plain delete and destroy the record with no copy left.
+   */
   const handleDeleteRecord = async (recordId: string) => {
     if (!activeTab) return;
     const deletedRecord = activeTab.records.find((r) => r.id === recordId);
+    const binned =
+      isDesktop() &&
+      deletedRecord !== undefined &&
+      shouldRetainDeletion(storageManager.getRecycleBinSettings());
+
+    if (binned && deletedRecord) {
+      const attempts = await retainRecordsToStore(
+        activeTab.zoneId,
+        activeTab.zoneName,
+        [deletedRecord],
+        RETENTION_REASON_DELETED,
+      );
+      const retained = applyRetainedRemovals(activeTab.zoneId, attempts);
+      reportRetainPass(
+        activeTab.zoneId,
+        activeTab.zoneName,
+        RETENTION_REASON_DELETED,
+        attempts,
+        retained,
+      );
+      return;
+    }
+
     try {
       await deleteDNSRecord(activeTab.zoneId, recordId);
       storageManager.clearRecordTags(activeTab.zoneId, recordId);
@@ -6567,6 +7490,12 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
    * a partial failure is silent unless it is read: only the ids it lists as
    * deleted leave the table, and anything it refused stays selected and
    * visible because it is still live at Cloudflare.
+   *
+   * With the bin on, the same honesty rule is enforced one record at a time
+   * through `retain_dns_record` instead — `delete_bulk_dns_records` cannot be
+   * used there, because it deletes without keeping anything — and, as with a
+   * single binned delete, no history entry is pushed: the bin entries are the
+   * way back, and a redo of a history entry would call the plain delete.
    */
   const handleBulkDelete = async () => {
     if (!activeTab || activeTab.kind !== "zone") return;
@@ -6576,6 +7505,27 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     const zoneName = activeTab.zoneName;
     const tabId = activeTab.id;
     const targeted = activeTab.records.filter((r) => targetIds.includes(r.id));
+
+    if (
+      isDesktop() &&
+      shouldRetainDeletion(storageManager.getRecycleBinSettings())
+    ) {
+      const attempts = await retainRecordsToStore(
+        zoneId,
+        zoneName,
+        targeted,
+        RETENTION_REASON_DELETED,
+      );
+      const retained = applyRetainedRemovals(zoneId, attempts);
+      reportRetainPass(
+        zoneId,
+        zoneName,
+        RETENTION_REASON_DELETED,
+        attempts,
+        retained,
+      );
+      return;
+    }
 
     try {
       const result = await deleteBulkDnsRecords(zoneId, targetIds);
@@ -8118,6 +9068,30 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         <Copy className="h-4 w-4 mr-2" />
                         {t("Copy selected", "Copy selected")}
                       </Button>
+                      {/* Disabling is retention, so it exists only where the
+                          store does. The confirmation — not this button — is
+                          where the user is told that Cloudflare has no
+                          disabled state and this app will hold the only
+                          copy. */}
+                      {isDesktop() && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() =>
+                            setDisablePrompt({
+                              zoneId: activeTab.zoneId,
+                              zoneName: activeTab.zoneName,
+                              records: activeTab.records.filter((record) =>
+                                activeTab.selectedIds.includes(record.id),
+                              ),
+                            })
+                          }
+                          disabled={!activeTab.selectedIds.length}
+                        >
+                          <PowerOff className="h-4 w-4 mr-2" />
+                          {t("Disable", "Disable")}
+                        </Button>
+                      )}
                       <Button
                         size="sm"
                         variant="outline"
@@ -12035,6 +13009,40 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                 </div>
                               </div>
                             </div>
+                            {/* The bin's contents, as opposed to its rules.
+                                The four rows above configure what retention
+                                does; this one is the way into what it has
+                                already kept, which is the only place a record
+                                that exists nowhere else can be put back or
+                                thrown away. */}
+                            <div
+                              className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center"
+                              data-setting-id="recycle-bin-contents"
+                            >
+                              <div className="font-medium">
+                                {t(
+                                  "Recycle bin contents",
+                                  "Recycle bin contents",
+                                )}
+                              </div>
+                              <div className="flex flex-wrap items-center gap-3">
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={openRecycleBin}
+                                  data-testid="open-recycle-bin"
+                                >
+                                  <Trash2 className="h-4 w-4 mr-2" />
+                                  {t("Open recycle bin", "Open recycle bin")}
+                                </Button>
+                                <div className="text-xs text-muted-foreground">
+                                  {t(
+                                    "Restore a deleted record, re-enable a disabled one, or forget an entry for good. Nothing listed there exists anywhere else.",
+                                    "Restore a deleted record, re-enable a disabled one, or forget an entry for good. Nothing listed there exists anywhere else.",
+                                  )}
+                                </div>
+                              </div>
+                            </div>
                           </>
                         )}
                       </div>
@@ -14280,6 +15288,469 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
             </Button>
             <Button className="flex-1" onClick={() => setShowCopyBuffer(false)}>
               {t("Close", "Close")}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+      {/* ── Disable ──────────────────────────────────────────────────────────
+          The whole honesty burden of the feature sits in this dialog, because
+          the word on the button is a lie everywhere else in the industry:
+          Cloudflare has no disabled state, so "disable" is a delete plus a
+          local backup. Nothing here may suggest a dormant record waits in the
+          zone. */}
+      {disablePrompt && (
+        <Dialog
+          open
+          onOpenChange={(open) => {
+            if (!open) setDisablePrompt(null);
+          }}
+        >
+          <DialogContent data-testid="disable-record-confirm">
+            <DialogHeader>
+              <DialogTitle>
+                {disablePrompt.records.length === 1
+                  ? t("Disable {{record}}?", {
+                      record: `${disablePrompt.records[0].type} ${disablePrompt.records[0].name}`,
+                      defaultValue: `Disable ${disablePrompt.records[0].type} ${disablePrompt.records[0].name}?`,
+                    })
+                  : t("Disable {{count}} records?", {
+                      count: disablePrompt.records.length,
+                      defaultValue: `Disable ${disablePrompt.records.length} records?`,
+                    })}
+              </DialogTitle>
+              <DialogDescription>
+                {t(
+                  "Cloudflare has no disabled state for a DNS record. Disabling means deleting it from Cloudflare and keeping the only copy in this app.",
+                  "Cloudflare has no disabled state for a DNS record. Disabling means deleting it from Cloudflare and keeping the only copy in this app.",
+                )}
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-2 text-xs text-muted-foreground">
+              <p>
+                {t(
+                  "It stops resolving immediately. It disappears from dig and from the Cloudflare dashboard, and its record id is gone for good — re-enabling creates a new record with a new id.",
+                  "It stops resolving immediately. It disappears from dig and from the Cloudflare dashboard, and its record id is gone for good — re-enabling creates a new record with a new id.",
+                )}
+              </p>
+              <p className="font-semibold text-foreground">
+                {t(
+                  "If this app's store is lost, the record is lost with it. This is a backup, not a toggle.",
+                  "If this app's store is lost, the record is lost with it. This is a backup, not a toggle.",
+                )}
+              </p>
+              <p>
+                {t(
+                  "A disabled record is kept indefinitely: it never expires, and the recycle bin never gives one up to make room.",
+                  "A disabled record is kept indefinitely: it never expires, and the recycle bin never gives one up to make room.",
+                )}
+              </p>
+              <div>
+                <div>
+                  {t(
+                    "Re-enabling cannot bring back:",
+                    "Re-enabling cannot bring back:",
+                  )}
+                </div>
+                <ul
+                  className="list-disc pl-5"
+                  data-testid="disable-record-losses"
+                >
+                  {RETAINED_FIELD_LOSSES.map((loss) => (
+                    <li key={loss}>{loss}</li>
+                  ))}
+                </ul>
+              </div>
+            </div>
+            <div
+              className="max-h-40 space-y-1 scrollbar-themed overflow-y-auto rounded border p-2"
+              data-testid="disable-record-list"
+            >
+              {disablePrompt.records.map((record) => (
+                <div
+                  key={record.id}
+                  className="border-b p-1 last:border-b-0"
+                  data-testid="disable-record-row"
+                >
+                  <div className="font-mono text-sm">
+                    {record.type} {record.name}
+                  </div>
+                  <div className="break-all text-xs text-muted-foreground">
+                    {record.content}
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div className="flex gap-2">
+              <Button
+                variant="outline"
+                className="flex-1"
+                onClick={() => setDisablePrompt(null)}
+              >
+                {t("Keep it resolving", "Keep it resolving")}
+              </Button>
+              <Button
+                variant="destructive"
+                className="flex-1"
+                onClick={() => void confirmDisableRecords()}
+              >
+                <PowerOff className="mr-1 h-3.5 w-3.5" />
+                {t(
+                  "Delete from Cloudflare, keep the only copy",
+                  "Delete from Cloudflare, keep the only copy",
+                )}
+              </Button>
+            </div>
+          </DialogContent>
+        </Dialog>
+      )}
+      {/* ── The store had no room ────────────────────────────────────────────
+          `store_full` is neither a success nor a crash, and must not read as
+          either: the records are still live and still resolving, because the
+          native command keeps the copy *before* it deletes and so never got
+          as far as deleting. Each button below is one of the three real ways
+          forward. */}
+      {storeFullPrompt && (
+        <Dialog
+          open
+          onOpenChange={(open) => {
+            if (!open) setStoreFullPrompt(null);
+          }}
+        >
+          <DialogContent data-testid="recycle-bin-full">
+            <DialogHeader>
+              <DialogTitle>
+                {t("The recycle bin is full", "The recycle bin is full")}
+              </DialogTitle>
+              <DialogDescription>
+                {t(
+                  "Nothing happened. {{count}} record(s) are still live at Cloudflare and still resolving, and no copy was kept — the copy is made before the delete, so a bin with no room stops both.",
+                  {
+                    count: storeFullPrompt.records.length,
+                    defaultValue: `Nothing happened. ${storeFullPrompt.records.length} record(s) are still live at Cloudflare and still resolving, and no copy was kept — the copy is made before the delete, so a bin with no room stops both.`,
+                  },
+                )}
+              </DialogDescription>
+            </DialogHeader>
+            <div
+              className="rounded-lg border border-border/60 bg-card/60 p-3 text-xs text-muted-foreground"
+              data-testid="recycle-bin-full-usage"
+            >
+              <div>
+                {t(
+                  "Holding {{held}} of {{maxEntries}} entries, {{usedKb}} KB of {{maxKb}} KB.",
+                  {
+                    held: storeFullPrompt.info.held,
+                    maxEntries: storeFullPrompt.info.maxEntries,
+                    usedKb: retainedStoreKb(storeFullPrompt.info.bytesHeld),
+                    maxKb: retainedStoreKb(storeFullPrompt.info.maxBytes),
+                    defaultValue: `Holding ${storeFullPrompt.info.held} of ${storeFullPrompt.info.maxEntries} entries, ${retainedStoreKb(storeFullPrompt.info.bytesHeld)} KB of ${retainedStoreKb(storeFullPrompt.info.maxBytes)} KB.`,
+                  },
+                )}
+              </div>
+              {storeFullPrompt.info.protected > 0 ? (
+                <div>
+                  {t(
+                    "{{count}} of them are disabled records, which are never given up to make room — forget one by hand if you no longer want it.",
+                    {
+                      count: storeFullPrompt.info.protected,
+                      defaultValue: `${storeFullPrompt.info.protected} of them are disabled records, which are never given up to make room — forget one by hand if you no longer want it.`,
+                    },
+                  )}
+                </div>
+              ) : null}
+            </div>
+            <div className="flex flex-col gap-2">
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setStoreFullPrompt(null);
+                  openRecycleBin();
+                }}
+              >
+                <Trash2 className="mr-1 h-3.5 w-3.5" />
+                {t(
+                  "Open the recycle bin and forget what I no longer need",
+                  "Open the recycle bin and forget what I no longer need",
+                )}
+              </Button>
+              <Button
+                variant="outline"
+                onClick={() => void emptyBinAndRetryRetain()}
+              >
+                {t(
+                  "Empty the whole bin and try again — every entry in it is gone for good",
+                  "Empty the whole bin and try again — every entry in it is gone for good",
+                )}
+              </Button>
+              <Button
+                variant="destructive"
+                onClick={() => void deletePromptedRecordsWithoutCopy()}
+              >
+                {t(
+                  "Delete without keeping a copy — this cannot be undone",
+                  "Delete without keeping a copy — this cannot be undone",
+                )}
+              </Button>
+              <Button variant="ghost" onClick={() => setStoreFullPrompt(null)}>
+                {t("Leave them alone", "Leave them alone")}
+              </Button>
+            </div>
+          </DialogContent>
+        </Dialog>
+      )}
+      {/* ── The bin itself ───────────────────────────────────────────────── */}
+      <Dialog
+        open={recycleBinOpen}
+        onOpenChange={(open) => {
+          setRecycleBinOpen(open);
+          if (!open) {
+            setRecycleBinForgetId(null);
+            setRecycleBinConfirmEmpty(false);
+          }
+        }}
+      >
+        <DialogContent className="max-w-3xl" data-testid="recycle-bin">
+          <DialogHeader>
+            <DialogTitle>{t("Recycle bin", "Recycle bin")}</DialogTitle>
+            <DialogDescription>
+              {t(
+                "Records this app deleted from Cloudflare and kept. None of them resolves and none of them is in the zone — a disabled record is not parked at Cloudflare, it is absent from it. This is the only copy.",
+                "Records this app deleted from Cloudflare and kept. None of them resolves and none of them is in the zone — a disabled record is not parked at Cloudflare, it is absent from it. This is the only copy.",
+              )}
+            </DialogDescription>
+          </DialogHeader>
+          <div
+            role="status"
+            data-testid="recycle-bin-summary"
+            className="text-xs text-muted-foreground"
+          >
+            {recycleBinStore
+              ? t(
+                  "{{held}} of {{maxEntries}} entries, {{usedKb}} KB of {{maxKb}} KB.",
+                  {
+                    held: recycleBinStore.totalHeld,
+                    maxEntries: recycleBinStore.maxEntries,
+                    usedKb: retainedStoreKb(recycleBinStore.bytesHeld),
+                    maxKb: retainedStoreKb(recycleBinStore.maxBytes),
+                    defaultValue: `${recycleBinStore.totalHeld} of ${recycleBinStore.maxEntries} entries, ${retainedStoreKb(recycleBinStore.bytesHeld)} KB of ${retainedStoreKb(recycleBinStore.maxBytes)} KB.`,
+                  },
+                )
+              : recycleBinLoading
+                ? t("Reading the recycle bin…", "Reading the recycle bin…")
+                : ""}
+            {recycleBinStore && recycleBinStore.expiredPendingPurge > 0
+              ? ` ${t(
+                  "{{count}} expired and not listed; they can no longer be restored, only swept.",
+                  {
+                    count: recycleBinStore.expiredPendingPurge,
+                    defaultValue: `${recycleBinStore.expiredPendingPurge} expired and not listed; they can no longer be restored, only swept.`,
+                  },
+                )}`
+              : ""}
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={recycleBinLoading || recycleBinBusy !== null}
+              onClick={() => void loadRecycleBin({ sweep: false })}
+            >
+              <RefreshCw className="mr-1 h-3.5 w-3.5" />
+              {t("Refresh", "Refresh")}
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={
+                !recycleBinStore?.expiredPendingPurge || recycleBinBusy !== null
+              }
+              onClick={() => void purgeRetainedExpired()}
+            >
+              {t("Sweep expired", "Sweep expired")}
+            </Button>
+            {recycleBinConfirmEmpty ? (
+              <Button
+                size="sm"
+                variant="destructive"
+                disabled={recycleBinBusy !== null}
+                onClick={() => void emptyRecycleBin()}
+              >
+                {t(
+                  "Confirm: empty the bin for good",
+                  "Confirm: empty the bin for good",
+                )}
+              </Button>
+            ) : (
+              <Button
+                size="sm"
+                variant="ghost"
+                disabled={!recycleBinEntries.length || recycleBinBusy !== null}
+                onClick={() => setRecycleBinConfirmEmpty(true)}
+              >
+                <Trash2 className="mr-1 h-3.5 w-3.5" />
+                {t("Empty the bin", "Empty the bin")}
+              </Button>
+            )}
+          </div>
+          {recycleBinError ? (
+            <div
+              role="alert"
+              data-testid="recycle-bin-error"
+              className="rounded border border-destructive/40 bg-destructive/10 p-2 text-xs"
+            >
+              {t("The recycle bin could not be read: {{error}}", {
+                error: recycleBinError,
+                defaultValue: `The recycle bin could not be read: ${recycleBinError}`,
+              })}
+            </div>
+          ) : null}
+          <div
+            className="max-h-80 space-y-1 scrollbar-themed overflow-y-auto rounded border p-2"
+            data-testid="recycle-bin-list"
+          >
+            {recycleBinEntries.map((entry) => {
+              // The engine's list already excludes expired entries, so this
+              // can only fire for an entry written by a newer build; it still
+              // has to say so rather than offer a restore that is refused.
+              const expired = isRetainedRecordExpired(entry, recycleBinReadAt);
+              const daysLeft = retainedRecordDaysLeft(entry, recycleBinReadAt);
+              const complete = isRetainedRecordRestorable(entry);
+              const restorable = complete && !expired;
+              return (
+                <div
+                  key={entry.entryId}
+                  data-testid="recycle-bin-row"
+                  data-entry-id={entry.entryId}
+                  className="space-y-1 border-b p-2 last:border-b-0"
+                >
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="rounded border px-1.5 py-0.5 text-[10px] uppercase tracking-wide">
+                      {entry.reasonKind === "disabled"
+                        ? t("Disabled", "Disabled")
+                        : entry.reasonKind === "deleted"
+                          ? t("Deleted", "Deleted")
+                          : t("Unknown reason", "Unknown reason")}
+                    </span>
+                    <span className="font-mono text-sm">
+                      {entry.type} {entry.name}
+                    </span>
+                    <span className="text-xs text-muted-foreground">
+                      {entry.zoneName}
+                    </span>
+                  </div>
+                  <div className="break-all text-xs text-muted-foreground">
+                    {entry.content}
+                  </div>
+                  <div className="text-xs text-muted-foreground">
+                    {entry.removedFromProviderAt
+                      ? t("Stopped resolving {{date}}.", {
+                          date: entry.removedFromProviderAt,
+                          defaultValue: `Stopped resolving ${entry.removedFromProviderAt}.`,
+                        })
+                      : t(
+                          "The date it stopped resolving was not recorded.",
+                          "The date it stopped resolving was not recorded.",
+                        )}{" "}
+                    {expired
+                      ? t(
+                          "Expired, so it can no longer be restored.",
+                          "Expired, so it can no longer be restored.",
+                        )
+                      : daysLeft === null
+                        ? t(
+                            "No expiry: kept until you forget it.",
+                            "No expiry: kept until you forget it.",
+                          )
+                        : t("{{count}} day(s) left.", {
+                            count: daysLeft,
+                            defaultValue: `${daysLeft} day(s) left.`,
+                          })}
+                  </div>
+                  {entry.localTags.length > 0 ? (
+                    <div className="text-xs text-muted-foreground">
+                      {t("Tags, re-attached on restore: {{tags}}", {
+                        tags: entry.localTags.join(", "),
+                        defaultValue: `Tags, re-attached on restore: ${entry.localTags.join(", ")}`,
+                      })}
+                    </div>
+                  ) : null}
+                  {!complete ? (
+                    <div className="text-xs text-amber-700 dark:text-amber-200">
+                      {t(
+                        "This entry is missing fields a create needs, so it cannot be put back automatically. Copy it out before forgetting it.",
+                        "This entry is missing fields a create needs, so it cannot be put back automatically. Copy it out before forgetting it.",
+                      )}
+                    </div>
+                  ) : null}
+                  <div className="flex flex-wrap gap-2">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={!restorable || recycleBinBusy !== null}
+                      onClick={() => void restoreRetainedEntry(entry)}
+                    >
+                      <RotateCcw className="mr-1 h-3.5 w-3.5" />
+                      {entry.reasonKind === "disabled"
+                        ? t("Re-enable", "Re-enable")
+                        : t("Restore", "Restore")}
+                    </Button>
+                    {recycleBinForgetId === entry.entryId ? (
+                      <Button
+                        size="sm"
+                        variant="destructive"
+                        disabled={recycleBinBusy !== null}
+                        onClick={() => void forgetRetainedEntry(entry)}
+                      >
+                        {t(
+                          "Confirm: forget for good",
+                          "Confirm: forget for good",
+                        )}
+                      </Button>
+                    ) : (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        disabled={recycleBinBusy !== null}
+                        onClick={() => setRecycleBinForgetId(entry.entryId)}
+                      >
+                        <Trash2 className="mr-1 h-3.5 w-3.5" />
+                        {t("Forget", "Forget")}
+                      </Button>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+            {!recycleBinLoading &&
+            !recycleBinError &&
+            recycleBinEntries.length === 0 ? (
+              <div
+                className="p-3 text-center text-xs text-muted-foreground"
+                data-testid="recycle-bin-empty"
+              >
+                {t(
+                  "Nothing is being kept. A deleted record appears here while the recycle bin is on, and a disabled one for as long as it stays disabled.",
+                  "Nothing is being kept. A deleted record appears here while the recycle bin is on, and a disabled one for as long as it stays disabled.",
+                )}
+              </div>
+            ) : null}
+          </div>
+          <div className="text-xs text-muted-foreground">
+            <div>
+              {t(
+                "Restoring creates the record again through the same API the rest of this app writes through, so it cannot bring back:",
+                "Restoring creates the record again through the same API the rest of this app writes through, so it cannot bring back:",
+              )}
+            </div>
+            <ul className="list-disc pl-5" data-testid="recycle-bin-losses">
+              {RETAINED_FIELD_LOSSES.map((loss) => (
+                <li key={loss}>{loss}</li>
+              ))}
+            </ul>
+          </div>
+          <div className="flex gap-2">
+            <Button className="flex-1" onClick={() => setRecycleBinOpen(false)}>
+              {t("Done", "Done")}
             </Button>
           </div>
         </DialogContent>

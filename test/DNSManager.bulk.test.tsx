@@ -21,6 +21,7 @@ import {
 import { DNSManager } from "../src/components/dns/DNSManager";
 import { Toaster } from "../src/components/ui/toaster";
 import { resetToastRuntimeForTests } from "../src/hooks/use-toast";
+import { storageManager } from "../src/lib/storage/storage";
 import {
   normalizeBulkDnsDeleteResult,
   TauriClient,
@@ -118,6 +119,12 @@ function mockBulkRuntime(options: BulkHarnessOptions = {}): {
   bulkCreateCalls: BulkCreateInput[];
 } {
   (window as unknown as { __TAURI__?: unknown }).__TAURI__ = {};
+  // The two bulk-delete cases below pin `delete_bulk_dns_records` and the undo
+  // stack, which is the path a deletion takes with the recycle bin **off**.
+  // With the bin on (the default) a bulk delete is one `retain_dns_record` per
+  // record and pushes no history entry, because the bin entry is the way back;
+  // that path has its own suite in `test/DNSManager.recycleBin.test.tsx`.
+  storageManager.setRecycleBinEnabled(false);
 
   const zoneRecords = options.records ?? [];
   const bulkDeleteCalls: string[][] = [];
@@ -306,6 +313,9 @@ afterEach(() => {
   cleanup();
   resetToastRuntimeForTests();
   mock.restoreAll();
+  // `storageManager` is a module singleton and `clearSettings` does not reach
+  // the recycle-bin leaves, so the one the harness writes is put back by hand.
+  storageManager.setRecycleBinEnabled(true);
   delete (window as unknown as { __TAURI__?: unknown }).__TAURI__;
   if (originalFetch) globalThis.fetch = originalFetch;
   else delete (globalThis as { fetch?: typeof fetch }).fetch;
