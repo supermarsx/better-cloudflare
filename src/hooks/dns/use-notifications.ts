@@ -3,6 +3,7 @@ import {
   TauriClient,
   type AppNotification,
   type NotificationCheckKind,
+  type NotificationKind,
   type NotificationQuery,
   type NotificationServiceStatus,
   type UnlistenFn,
@@ -31,6 +32,7 @@ export interface UseNotificationsResult {
   archive: (ids: string[]) => Promise<void>;
   unarchive: (ids: string[]) => Promise<void>;
   archiveAllRead: () => Promise<void>;
+  archiveKind: (kind: NotificationKind) => Promise<void>;
   dismiss: (ids: string[]) => Promise<void>;
   clearArchived: () => Promise<void>;
   checkNow: (kind?: NotificationCheckKind) => Promise<void>;
@@ -264,6 +266,26 @@ export function useNotifications(
     [run, query.scope],
   );
 
+  /**
+   * Clear one kind out of the inbox.
+   *
+   * The optimistic pass drops that kind rather than filtering on read state:
+   * the command archives read and unread alike, so showing anything else
+   * would contradict what just happened.
+   */
+  const archiveKind = useCallback(
+    (kind: NotificationKind) =>
+      run(
+        "Archive notifications of one kind",
+        (current) =>
+          query.scope === "archived"
+            ? current
+            : current.filter((item) => item.kind !== kind),
+        () => TauriClient.notificationsArchiveKind(kind),
+      ),
+    [run, query.scope],
+  );
+
   const dismiss = useCallback(
     (ids: string[]) =>
       run(
@@ -324,6 +346,7 @@ export function useNotifications(
     archive,
     unarchive,
     archiveAllRead,
+    archiveKind,
     dismiss,
     clearArchived,
     checkNow,

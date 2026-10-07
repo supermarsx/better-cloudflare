@@ -202,6 +202,17 @@ function installBackend(): Backend {
   );
   mock.method(
     TauriClient,
+    "notificationsArchiveKind",
+    record("archiveKind", (kind) => {
+      const before = backend.inbox.length;
+      backend.inbox = backend.inbox.filter(
+        (item) => item.kind !== kind || item.archivedAt !== null,
+      );
+      return before - backend.inbox.length;
+    }),
+  );
+  mock.method(
+    TauriClient,
     "notificationsDismiss",
     record("dismiss", (ids) => {
       backend.inbox = backend.inbox.filter(
@@ -644,4 +655,52 @@ test("both expiry actions carry accessible names naming the domain", async () =>
       `missing: ${name}`,
     );
   }
+});
+
+test("archiving record changes takes that kind alone, read or unread", async () => {
+  const backend = installBackend();
+  // A second record change, left unread: the button must not quietly skip it.
+  backend.inbox = [
+    ...backend.inbox,
+    {
+      ...backend.inbox.find((item) => item.kind === "record_change")!,
+      id: "ntf-change-unread",
+      readAt: null,
+      dedupeKey: "change:zone-main:rec-other:2026-08-06T07:40:00Z",
+    },
+  ];
+  await renderPanel();
+
+  const button = await screen.findByTestId("archive-record-changes");
+  assert.equal((button as HTMLButtonElement).disabled, false);
+  fireEvent.click(button);
+
+  await waitFor(() => assert.equal(names(backend, "archiveKind").length, 1));
+  assert.deepEqual(names(backend, "archiveKind")[0]?.args, ["record_change"]);
+  // The expiry notice is untouched; both record changes are gone.
+  await waitFor(() =>
+    assert.ok(
+      backend.inbox.every((item) => item.kind !== "record_change"),
+      "every record change was archived",
+    ),
+  );
+  assert.ok(
+    backend.inbox.some((item) => item.kind === "domain_expiry"),
+    "a notice of another kind survived",
+  );
+});
+
+test("with no record changes in the inbox the button is not offered", async () => {
+  const backend = installBackend();
+  backend.inbox = backend.inbox.filter((item) => item.kind !== "record_change");
+  await renderPanel();
+
+  const button = await screen.findByTestId("archive-record-changes");
+  assert.equal(
+    (button as HTMLButtonElement).disabled,
+    true,
+    "a control that would do nothing must say so",
+  );
+  fireEvent.click(button);
+  assert.deepEqual(names(backend, "archiveKind"), []);
 });

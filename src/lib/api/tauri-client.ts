@@ -1725,6 +1725,17 @@ export class TauriClient {
     return invoke("notifications_archive_all_read");
   }
 
+  /**
+   * Archive every unarchived notification of one kind, read or not, and
+   * report how many were archived.
+   */
+  static async notificationsArchiveKind(
+    kind: NotificationKind,
+  ): Promise<number> {
+    TauriClient.requireNotificationsDesktop();
+    return invoke("notifications_archive_kind", { kind });
+  }
+
   static async notificationsDismiss(ids: string[]): Promise<number> {
     TauriClient.requireNotificationsDesktop();
     return invoke("notifications_dismiss", { ids });

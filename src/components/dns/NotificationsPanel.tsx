@@ -214,6 +214,16 @@ export function NotificationsPanel({
             "No notifications yet. Domain expiry milestones and record changes made outside this app will show up here.",
             "No notifications yet. Domain expiry milestones and record changes made outside this app will show up here.",
           );
+  /**
+   * How many record-change notices are in the inbox right now.
+   *
+   * Counted from the loaded list rather than asked of the host: the button
+   * only needs to know whether to offer itself, and an inbox the user is
+   * looking at is the inbox they mean.
+   */
+  const recordChangeCount = inbox.items.filter(
+    (item) => item.kind === "record_change" && !item.archivedAt,
+  ).length;
 
   return (
     <Card
@@ -279,6 +289,26 @@ export function NotificationsPanel({
             >
               <Archive aria-hidden="true" className="h-3.5 w-3.5" />
               {t("Archive all read", "Archive all read")}
+            </Button>
+            {/* Record-change notices are the ones that arrive in volume, so
+                clearing just those is the bulk action worth its own button.
+                Disabled when the inbox holds none, so it is never a control
+                that looks like it did nothing. */}
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="gap-1"
+              data-testid="archive-record-changes"
+              disabled={recordChangeCount === 0}
+              title={t(
+                "Archive every record-change notice, read or unread",
+                "Archive every record-change notice, read or unread",
+              )}
+              onClick={() => void inbox.archiveKind("record_change")}
+            >
+              <Archive aria-hidden="true" className="h-3.5 w-3.5" />
+              {t("Archive record changes", "Archive record changes")}
             </Button>
           </div>
         </div>
