@@ -13,7 +13,7 @@ use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::model::{format_ts, parse_ts, Notification, NotificationQuery, Scope};
+use crate::model::{format_ts, parse_ts, Notification, NotificationKind, NotificationQuery, Scope};
 use crate::settings::RetentionSettings;
 
 pub const INBOX_FILE: &str = "inbox.json";
@@ -385,6 +385,22 @@ impl NotifyStore {
             affected += 1;
         }
         self.save_if(affected)
+    }
+
+    /// Archive every unarchived notification of one kind, read or not.
+    ///
+    /// Read state is deliberately not a filter. "Archive all the record
+    /// changes" means all of them — an unread one is exactly what someone
+    /// clearing that noise wants gone, and `archive` marks an unarchived item
+    /// read on the way out, so this leaves no phantom unread behind.
+    pub fn archive_kind(&mut self, kind: NotificationKind) -> Result<usize, StoreError> {
+        let ids: Vec<String> = self
+            .inbox
+            .iter()
+            .filter(|n| !n.is_archived() && n.kind == kind)
+            .map(|n| n.id.clone())
+            .collect();
+        self.archive(&ids)
     }
 
     pub fn archive_all_read(&mut self) -> Result<usize, StoreError> {

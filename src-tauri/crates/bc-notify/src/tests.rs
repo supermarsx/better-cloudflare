@@ -1280,6 +1280,71 @@ fn store_mark_archive_dismiss_counts_and_persistence() {
 }
 
 #[test]
+fn store_archive_kind_takes_one_kind_read_or_not_and_leaves_the_rest() {
+    let (_dir, mut store) = temp_store();
+    for i in 0..3 {
+        store
+            .insert_deduped(notification(
+                NotificationKind::RecordChange,
+                &format!("chg{i}"),
+                now(),
+            ))
+            .unwrap();
+    }
+    let keep = notification(NotificationKind::DomainExpiry, "exp", now());
+    let keep_id = keep.id.clone();
+    store.insert_deduped(keep).unwrap();
+    let svc = notification(NotificationKind::Service, "svc", now());
+    store.insert_deduped(svc).unwrap();
+
+    // Read state is not a filter: "archive all the record changes" means all
+    // of them, and an unread one is exactly what someone clearing that noise
+    // wants gone. Only one of the three is read here.
+    let unread_before = store.unread_count();
+    let changes: Vec<String> = store
+        .list(&NotificationQuery {
+            kind: Some("record_change".to_string()),
+            ..Default::default()
+        })
+        .into_iter()
+        .map(|n| n.id)
+        .collect();
+    assert_eq!(changes.len(), 3);
+    assert_eq!(store.mark_read(&changes[..1], true).unwrap(), 1);
+
+    assert_eq!(
+        store.archive_kind(NotificationKind::RecordChange).unwrap(),
+        3,
+        "every record change goes, read or unread"
+    );
+    // Archiving marks an unarchived item read on the way out, so the two
+    // archived-while-unread ones leave no phantom unread behind.
+    assert_eq!(store.unread_count(), unread_before - 3);
+
+    let archived: Vec<Notification> = archived_items(&store);
+    assert_eq!(archived.len(), 3);
+    assert!(
+        archived
+            .iter()
+            .all(|n| n.kind == NotificationKind::RecordChange),
+        "nothing of another kind was archived"
+    );
+    assert!(
+        store
+            .list(&NotificationQuery::default())
+            .iter()
+            .any(|n| n.id == keep_id),
+        "the expiry notice is still in the inbox"
+    );
+
+    // Idempotent: a second click finds nothing left of that kind.
+    assert_eq!(
+        store.archive_kind(NotificationKind::RecordChange).unwrap(),
+        0
+    );
+}
+
+#[test]
 fn store_list_filters_scope_kind_zone_limit_cursor() {
     let (_dir, mut store) = temp_store();
     let mut a = notification(NotificationKind::RecordChange, "a", now());

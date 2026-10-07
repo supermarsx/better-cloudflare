@@ -18,8 +18,8 @@ use bc_cloudflare_api::CloudflareClient;
 use bc_notify::model::{format_ts, parse_ts};
 use bc_notify::settings::ExpirySource;
 use bc_notify::{
-    days_left, Notification, NotificationQuery, NotificationSettings, NotifyStore, OwnChangeLedger,
-    PassKind, PassReport,
+    days_left, Notification, NotificationKind, NotificationQuery, NotificationSettings,
+    NotifyStore, OwnChangeLedger, PassKind, PassReport,
 };
 use bc_registrar::{DomainInfo, RegistrarCredential};
 use chrono::{DateTime, Utc};
@@ -43,7 +43,7 @@ const MIN_SLEEP: Duration = Duration::from_secs(1);
 
 /// Every command this module registers (asserted by `main.rs` tests).
 #[cfg(test)]
-pub const COMMAND_NAMES: [&str; 20] = [
+pub const COMMAND_NAMES: [&str; 21] = [
     "notifications_start",
     "notifications_stop",
     "notifications_status",
@@ -55,6 +55,7 @@ pub const COMMAND_NAMES: [&str; 20] = [
     "notifications_archive",
     "notifications_unarchive",
     "notifications_archive_all_read",
+    "notifications_archive_kind",
     "notifications_dismiss",
     "notifications_clear_archived",
     "notifications_reconfigure",
@@ -967,6 +968,19 @@ impl NotificationManager {
             .await
     }
 
+    /// Archive every unarchived notification of one kind.
+    ///
+    /// The kind arrives as a string from the renderer and is parsed before the
+    /// store is touched: an unrecognised one is an error rather than a silent
+    /// no-op, because a typo that archives nothing and reports success looks
+    /// exactly like an inbox that was already clear.
+    pub async fn archive_kind(&self, kind: String) -> Result<u32, String> {
+        let parsed = NotificationKind::parse(&kind)
+            .ok_or_else(|| format!("Unknown notification kind: {kind}"))?;
+        self.mutate(move |store| store.archive_kind(parsed).map(|n| n as u32))
+            .await
+    }
+
     pub async fn archive_all_read(&self) -> Result<u32, String> {
         self.mutate(|store| store.archive_all_read().map(|n| n as u32))
             .await
@@ -1363,6 +1377,15 @@ pub async fn notifications_archive_all_read(
     manager: State<'_, NotificationManager>,
 ) -> Result<u32, String> {
     manager.archive_all_read().await
+}
+
+/// Archive every unarchived notification of one kind, and report how many.
+#[tauri::command]
+pub async fn notifications_archive_kind(
+    manager: State<'_, NotificationManager>,
+    kind: String,
+) -> Result<u32, String> {
+    manager.archive_kind(kind).await
 }
 
 #[tauri::command]

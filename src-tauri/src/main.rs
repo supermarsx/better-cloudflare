@@ -400,6 +400,7 @@ fn main() {
             notifications::notifications_archive,
             notifications::notifications_unarchive,
             notifications::notifications_archive_all_read,
+            notifications::notifications_archive_kind,
             notifications::notifications_dismiss,
             notifications::notifications_clear_archived,
             notifications::notifications_reconfigure,
