@@ -7,11 +7,13 @@ use bc_cloudflare_api::{
     DNS_LIST_OPERATION,
 };
 use bc_error::{AppError, ProviderErrorDetail, RequestErrorSource, RequestFailureKind};
+use bc_storage::{AuditEntry, AuditOutcome, AuditTrail};
+use serde_json::Value;
 
 use crate::cloudflare_api::{CloudflareClient, DNSRecord, DNSRecordInput, Zone};
 use crate::storage::Storage;
 
-use super::log_audit;
+use super::trail::{self, RecordFacts};
 use crate::notifications::NotificationManager;
 
 const MAX_NATIVE_EXPORT_PAGE: u32 = 10_000;
@@ -789,6 +791,7 @@ mod validation_gate_tests {
             "zone-id".to_string(),
             "record-id".to_string(),
             record("MX", "example.com", "mail.example.com"),
+            None,
         )
         .await
         .expect_err("update must reject a record with no MX priority");
@@ -829,6 +832,292 @@ mod validation_gate_tests {
             validation_detail(&["first issue".to_string(), "second issue.".to_string()]),
             "first issue. second issue."
         );
+    }
+}
+
+/// What the trail records for a user's own DNS action, read back out of a
+/// store.
+///
+/// These go through the real command bodies rather than through
+/// `commands::trail` directly, so what is asserted is what a user's action
+/// actually writes. Only the refusal paths are reachable without a network —
+/// the validation gate runs before any HTTP call — which is why they carry the
+/// credential assertions: a refusal is the entry built from the most arguments,
+/// including both auth fields and the record the user typed. The success and
+/// provider-failure shapes are pinned by `commands::trail`'s own tests.
+#[cfg(test)]
+mod audit_trail_tests {
+    use serde_json::{json, Value};
+
+    use super::*;
+
+    /// A token and an account email no entry may ever contain, and content
+    /// that is key material — which, for a user's own action, the entry
+    /// deliberately does carry. See `commands::trail`'s header.
+    const TOKEN: &str = "cf-token-must-never-be-recorded";
+    const ACCOUNT_EMAIL: &str = "person@example.com";
+    /// Long enough that the bound on a recorded value actually bites — a real
+    /// DKIM key is hundreds of characters, and a fixture under the limit would
+    /// make the assertion about shortening vacuous.
+    const DKIM: &str = "v=DKIM1; k=rsa; p=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA-secret-key-material-that-keeps-going-well-past-the-recorded-value-limit-ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+
+    fn storage() -> Storage {
+        Storage::new(false)
+    }
+
+    async fn entries(storage: &Storage) -> Vec<Value> {
+        storage
+            .get_audit_entries()
+            .await
+            .expect("the memory-backed store must return its log")
+    }
+
+    fn invalid_txt() -> DNSRecordInput {
+        // An invalid *name* with valid TXT content, so the gate refuses the
+        // record while the content is still something worth recording.
+        DNSRecordInput {
+            r#type: "TXT".to_string(),
+            name: String::new(),
+            content: DKIM.to_string(),
+            comment: Some("rotation note".to_string()),
+            ttl: Some(300),
+            priority: None,
+            proxied: None,
+        }
+    }
+
+    async fn refused_create(storage: &Storage) -> Vec<Value> {
+        create_dns_record_impl(
+            storage,
+            TOKEN.to_string(),
+            Some(ACCOUNT_EMAIL.to_string()),
+            "zone-1".to_string(),
+            invalid_txt(),
+        )
+        .await
+        .expect_err("the gate must refuse a record with no name");
+        entries(storage).await
+    }
+
+    #[tokio::test]
+    async fn a_refused_create_is_recorded_as_a_refusal_and_names_the_record() {
+        let storage = storage();
+        let entries = refused_create(&storage).await;
+
+        assert_eq!(entries.len(), 1, "a refusal is one entry: {entries:?}");
+        let entry = &entries[0];
+        assert_eq!(entry["operation"], json!("dns:create"));
+        assert_eq!(entry["actor"], json!("user"));
+        assert_eq!(
+            entry["outcome"],
+            json!("denied"),
+            "a log of only successes hides the half a reader came for"
+        );
+        assert_eq!(entry["denied_by"], json!("record_validation"));
+        assert_eq!(entry["zone_id"], json!("zone-1"));
+        assert_eq!(entry["record_type"], json!("TXT"));
+        assert!(
+            entry["timestamp"].as_str().is_some_and(|ts| ts.len() > 10),
+            "every entry is timestamped"
+        );
+    }
+
+    #[tokio::test]
+    async fn no_credential_reaches_the_trail_but_the_users_own_content_does() {
+        let storage = storage();
+        let entries = refused_create(&storage).await;
+        let serialized = serde_json::to_string(&entries).expect("serialise the log");
+
+        for forbidden in [TOKEN, ACCOUNT_EMAIL, "api_key", "email"] {
+            assert!(
+                !serialized.contains(forbidden),
+                "{forbidden:?} reached the trail: {serialized}"
+            );
+        }
+        // The other half of the decision, asserted just as hard: the user's own
+        // record content is recorded, because a change log that will not say
+        // what a record holds has not answered the question it was opened for.
+        // Shortened, which is also why the whole DKIM value is not here.
+        let content = entries[0]["record"]["content"]
+            .as_str()
+            .expect("a user's own record content is recorded");
+        assert!(DKIM.starts_with(&content[..content.len().min(40)]));
+        assert!(
+            content.len() <= trail::MAX_CHANGE_VALUE_BYTES,
+            "content is bounded on the way in: {} bytes",
+            content.len()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_refused_update_names_the_record_it_was_refused_for() {
+        let storage = storage();
+        update_dns_record_impl(
+            &storage,
+            TOKEN.to_string(),
+            Some(ACCOUNT_EMAIL.to_string()),
+            "zone-1".to_string(),
+            "record-1".to_string(),
+            invalid_txt(),
+            Some(json!({ "type": "TXT", "name": "old.example.com", "content": "old" })),
+        )
+        .await
+        .expect_err("the gate must refuse a record with no name");
+        let entries = entries(&storage).await;
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0]["operation"], json!("dns:update"));
+        assert_eq!(entries[0]["outcome"], json!("denied"));
+        assert_eq!(
+            entries[0]["resource"],
+            json!("record-1"),
+            "the record the user was editing, so `own_record_ids_from_audit` \
+             still reads this entry the way it always has"
+        );
+        assert!(
+            entries[0].get("changes").is_none(),
+            "nothing changed, so there is no change set to claim"
+        );
+        assert!(!serde_json::to_string(&entries)
+            .expect("serialise")
+            .contains(TOKEN));
+    }
+
+    #[tokio::test]
+    async fn a_refused_batch_records_its_scale_rather_than_its_records() {
+        let storage = storage();
+        let batch = vec![
+            DNSRecordInput {
+                r#type: "A".to_string(),
+                name: "www.example.com".to_string(),
+                content: "203.0.113.1".to_string(),
+                comment: None,
+                ttl: Some(300),
+                priority: None,
+                proxied: None,
+            },
+            invalid_txt(),
+        ];
+        create_bulk_dns_records_impl(
+            &storage,
+            TOKEN.to_string(),
+            Some(ACCOUNT_EMAIL.to_string()),
+            "zone-1".to_string(),
+            batch,
+            Some(false),
+        )
+        .await
+        .expect_err("one invalid record must fail the batch");
+        let entries = entries(&storage).await;
+
+        assert_eq!(
+            entries.len(),
+            1,
+            "one entry for the operation, not one per record: {entries:?}"
+        );
+        let entry = &entries[0];
+        assert_eq!(entry["operation"], json!("dns:bulk_create"));
+        assert_eq!(entry["outcome"], json!("denied"));
+        assert_eq!(entry["resource"], json!("zone-1"));
+        assert_eq!(entry["records"], json!(2));
+        assert_eq!(entry["record_types"], json!("A, TXT"));
+        assert_eq!(entry["dry_run"], json!(false));
+        assert!(
+            entry.get("record").is_none(),
+            "a batch entry describes the batch, not one of its records"
+        );
+        assert!(
+            !serde_json::to_string(&entries)
+                .expect("serialise")
+                .contains(DKIM),
+            "and a batch does not carry every record's content"
+        );
+    }
+
+    #[test]
+    fn a_batch_names_its_distinct_types_once_each_in_a_stable_order() {
+        let record = |record_type: &str| DNSRecordInput {
+            r#type: record_type.to_string(),
+            name: "www.example.com".to_string(),
+            content: "203.0.113.1".to_string(),
+            comment: None,
+            ttl: None,
+            priority: None,
+            proxied: None,
+        };
+        assert_eq!(
+            batch_types(&[record("MX"), record("A"), record("MX"), record("TXT")]),
+            "A, MX, TXT"
+        );
+        assert_eq!(batch_types(&[]), "");
+    }
+}
+
+// ─── Recording a DNS action ─────────────────────────────────────────────────
+//
+// Every mutating command below settles through one of these, so a success, a
+// provider refusal and a local refusal are all described the same way and a
+// reader filtering the log on `outcome` sees every half of the picture rather
+// than only the successes. `commands::trail` holds the vocabulary and the line
+// around what an entry may carry.
+
+/// Open an entry for an action on one record, naming the zone and the record.
+fn record_entry(operation: &str, outcome: AuditOutcome, zone_id: &str) -> AuditEntry {
+    trail::user_action(operation, outcome).detail("zone_id", zone_id)
+}
+
+/// Record an action this application refused before any HTTP call.
+///
+/// The refusal comes first out of the entry's budget, like the tool-call half
+/// does: the reason is what a reader of a non-success entry wants first.
+fn record_denied(
+    storage: &Storage,
+    operation: &str,
+    zone_id: &str,
+    record_id: Option<&str>,
+    denied_by: &str,
+    facts: Option<&RecordFacts>,
+) {
+    let entry =
+        record_entry(operation, AuditOutcome::Denied, zone_id).detail("denied_by", denied_by);
+    storage.record(describe(with_resource(entry, record_id), facts));
+}
+
+/// Record an action Cloudflare did not carry out.
+///
+/// Worth as much as a success: a write that failed may still have landed —
+/// that is why `AuditOutcome::Failed` covers a call that left the application
+/// and stopped being observable — and a trail of only successes is a trail
+/// that cannot explain the zone.
+fn record_failed(
+    storage: &Storage,
+    operation: &str,
+    zone_id: &str,
+    record_id: Option<&str>,
+    error: &CloudflareError,
+    facts: Option<&RecordFacts>,
+) {
+    let entry = trail::attach_failure(
+        record_entry(operation, AuditOutcome::Failed, zone_id),
+        error,
+    );
+    storage.record(describe(with_resource(entry, record_id), facts));
+}
+
+fn with_resource(entry: AuditEntry, record_id: Option<&str>) -> AuditEntry {
+    match record_id {
+        Some(record_id) => entry.resource(record_id),
+        None => entry,
+    }
+}
+
+/// Name the record where one is known. A delete whose caller did not say what
+/// it was deleting has nothing to name, and an entry that invented a blank
+/// name would be worse than one that admits it does not have the record.
+fn describe(entry: AuditEntry, facts: Option<&RecordFacts>) -> AuditEntry {
+    match facts {
+        Some(facts) => trail::describe_record(entry, facts),
+        None => entry,
     }
 }
 
@@ -878,26 +1167,58 @@ async fn create_dns_record_impl(
     zone_id: String,
     record: DNSRecordInput,
 ) -> Result<DNSRecord, String> {
-    ensure_record_is_valid(&record, None)?;
+    let requested = RecordFacts::of_input(&record);
+    if let Err(refusal) = ensure_record_is_valid(&record, None) {
+        record_denied(
+            storage,
+            "dns:create",
+            &zone_id,
+            None,
+            trail::DENIED_BY_RECORD_VALIDATION,
+            Some(&requested),
+        );
+        return Err(refusal);
+    }
     let client = CloudflareClient::new(&api_key, email.as_deref());
-    let created = client
-        .create_dns_record(&zone_id, record)
-        .await
-        .map_err(|e| e.to_string())?;
-    log_audit(
-        storage,
-        serde_json::json!({
-            "operation": "dns:create",
-            "resource": created.id.clone().unwrap_or_default(),
-            "zone_id": zone_id,
-            "record_type": created.r#type,
-            "record_name": created.name,
-        }),
-    )
-    .await;
+    let created = match client.create_dns_record(&zone_id, record).await {
+        Ok(created) => created,
+        Err(error) => {
+            record_failed(
+                storage,
+                "dns:create",
+                &zone_id,
+                None,
+                &error,
+                Some(&requested),
+            );
+            return Err(error.to_string());
+        }
+    };
+    // The created record rather than the requested one: Cloudflare fills in a
+    // default TTL, normalises the name, and may refuse to proxy. What the trail
+    // should say the user created is what now exists.
+    storage.record(trail::describe_record(
+        record_entry("dns:create", AuditOutcome::Succeeded, &zone_id)
+            .resource(created.id.as_deref().unwrap_or_default()),
+        &RecordFacts::of_record(&created),
+    ));
     Ok(created)
 }
 
+/// Update one record, recording what changed about it.
+///
+/// `previous` is the record as the caller had it before the edit, and it is
+/// what turns `dns:update` from "something happened to this id" into a change
+/// set. Optional, and taken as a raw value, for two reasons: a caller that
+/// predates it keeps working, and a malformed one must cost the entry its
+/// change set rather than cost the user their edit — see
+/// [`RecordFacts::of_claim`]. Without it the entry records the record's state
+/// *after* the change, which still answers "what is it now" if not "what
+/// changed".
+///
+/// Tauri derives the IPC argument names from this signature, so `previous`
+/// travels under that name alongside `record`.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn update_dns_record(
     storage: State<'_, Storage>,
@@ -906,6 +1227,7 @@ pub async fn update_dns_record(
     zone_id: String,
     record_id: String,
     record: DNSRecordInput,
+    previous: Option<Value>,
     notifications: State<'_, NotificationManager>,
 ) -> Result<DNSRecord, String> {
     let updated = update_dns_record_impl(
@@ -915,6 +1237,7 @@ pub async fn update_dns_record(
         zone_id.clone(),
         record_id.clone(),
         record,
+        previous,
     )
     .await?;
     notifications.ledger().note(&zone_id, &record_id, "update");
@@ -928,27 +1251,53 @@ async fn update_dns_record_impl(
     zone_id: String,
     record_id: String,
     record: DNSRecordInput,
+    previous: Option<Value>,
 ) -> Result<DNSRecord, String> {
-    ensure_record_is_valid(&record, None)?;
+    let requested = RecordFacts::of_input(&record);
+    let before = previous.as_ref().and_then(RecordFacts::of_claim);
+    if let Err(refusal) = ensure_record_is_valid(&record, None) {
+        record_denied(
+            storage,
+            "dns:update",
+            &zone_id,
+            Some(&record_id),
+            trail::DENIED_BY_RECORD_VALIDATION,
+            Some(&requested),
+        );
+        return Err(refusal);
+    }
     let client = CloudflareClient::new(&api_key, email.as_deref());
-    let updated = client
-        .update_dns_record(&zone_id, &record_id, record)
-        .await
-        .map_err(|e| e.to_string())?;
-    log_audit(
-        storage,
-        serde_json::json!({
-            "operation": "dns:update",
-            "resource": record_id,
-            "zone_id": zone_id,
-            "record_type": updated.r#type,
-            "record_name": updated.name,
-        }),
-    )
-    .await;
+    let updated = match client.update_dns_record(&zone_id, &record_id, record).await {
+        Ok(updated) => updated,
+        Err(error) => {
+            record_failed(
+                storage,
+                "dns:update",
+                &zone_id,
+                Some(&record_id),
+                &error,
+                Some(&requested),
+            );
+            return Err(error.to_string());
+        }
+    };
+    let after = RecordFacts::of_record(&updated);
+    let entry = record_entry("dns:update", AuditOutcome::Succeeded, &zone_id).resource(&record_id);
+    storage.record(match before.as_ref() {
+        Some(before) => trail::describe_change(entry, before, &after),
+        None => trail::describe_record(entry, &after),
+    });
     Ok(updated)
 }
 
+/// Delete one record, recording what it was.
+///
+/// `previous` is the record about to be removed. It matters more here than
+/// anywhere else: once the delete lands, the id in `resource` names nothing,
+/// so an entry without it says only that *an* unidentifiable record went. The
+/// recycle-bin path (`commands::retention::retain_dns_record`) always has the
+/// record and always records it; this is the path that deletes outright.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn delete_dns_record(
     storage: State<'_, Storage>,
@@ -956,22 +1305,26 @@ pub async fn delete_dns_record(
     email: Option<String>,
     zone_id: String,
     record_id: String,
+    previous: Option<Value>,
     notifications: State<'_, NotificationManager>,
 ) -> Result<(), String> {
+    let removed = previous.as_ref().and_then(RecordFacts::of_claim);
     let client = CloudflareClient::new(&api_key, email.as_deref());
-    client
-        .delete_dns_record(&zone_id, &record_id)
-        .await
-        .map_err(|e| e.to_string())?;
-    log_audit(
-        &storage,
-        serde_json::json!({
-            "operation": "dns:delete",
-            "resource": record_id,
-            "zone_id": zone_id,
-        }),
-    )
-    .await;
+    if let Err(error) = client.delete_dns_record(&zone_id, &record_id).await {
+        record_failed(
+            &storage,
+            "dns:delete",
+            &zone_id,
+            Some(&record_id),
+            &error,
+            removed.as_ref(),
+        );
+        return Err(error.to_string());
+    }
+    storage.record(describe(
+        record_entry("dns:delete", AuditOutcome::Succeeded, &zone_id).resource(&record_id),
+        removed.as_ref(),
+    ));
     notifications.ledger().note(&zone_id, &record_id, "delete");
     Ok(())
 }
@@ -1003,6 +1356,35 @@ pub async fn create_bulk_dns_records(
     Ok(result)
 }
 
+/// The distinct record types in a batch, sorted, as one readable value.
+///
+/// What a bulk entry can say about its contents without saying it 400 times:
+/// "412 records: A, CNAME, MX, TXT" identifies an import, and the records
+/// themselves are then in the zone for anyone who wants them individually.
+fn batch_types(records: &[DNSRecordInput]) -> String {
+    let mut types: Vec<&str> = records
+        .iter()
+        .map(|record| record.r#type.as_str())
+        .collect();
+    types.sort_unstable();
+    types.dedup();
+    types.join(", ")
+}
+
+/// Open a bulk entry. One entry per operation, never one per record — see
+/// [`create_bulk_dns_records`].
+fn batch_entry(
+    operation: &str,
+    outcome: AuditOutcome,
+    zone_id: &str,
+    requested: usize,
+) -> AuditEntry {
+    trail::user_action(operation, outcome)
+        .resource(zone_id)
+        .detail("zone_id", zone_id)
+        .detail("records", requested as u64)
+}
+
 async fn create_bulk_dns_records_impl(
     storage: &Storage,
     api_key: String,
@@ -1011,26 +1393,71 @@ async fn create_bulk_dns_records_impl(
     records: Vec<DNSRecordInput>,
     dryrun: Option<bool>,
 ) -> Result<serde_json::Value, String> {
-    ensure_records_are_valid(&records)?;
+    let dry_run = dryrun.unwrap_or(false);
+    let requested = records.len();
+    let types = batch_types(&records);
+    if let Err(refusal) = ensure_records_are_valid(&records) {
+        storage.record(
+            batch_entry("dns:bulk_create", AuditOutcome::Denied, &zone_id, requested)
+                .detail("denied_by", trail::DENIED_BY_RECORD_VALIDATION)
+                .detail("dry_run", dry_run)
+                .detail("record_types", types.as_str()),
+        );
+        return Err(refusal);
+    }
     let client = CloudflareClient::new(&api_key, email.as_deref());
-    let result = client
-        .create_bulk_dns_records(&zone_id, records, dryrun.unwrap_or(false))
+    let result = match client
+        .create_bulk_dns_records(&zone_id, records, dry_run)
         .await
-        .map_err(|e| e.to_string())?;
-    log_audit(
-        storage,
-        serde_json::json!({
-            "operation": "dns:bulk_create",
-            "resource": zone_id,
-            "dry_run": dryrun.unwrap_or(false),
-            "created": result.get("created").and_then(|v| v.as_array()).map(|v| v.len()).unwrap_or(0),
-            "skipped": result.get("skipped").and_then(|v| v.as_array()).map(|v| v.len()).unwrap_or(0),
-        }),
-    )
-    .await;
+    {
+        Ok(result) => result,
+        Err(error) => {
+            storage.record(
+                trail::attach_failure(
+                    batch_entry("dns:bulk_create", AuditOutcome::Failed, &zone_id, requested),
+                    &error,
+                )
+                .detail("dry_run", dry_run)
+                .detail("record_types", types.as_str()),
+            );
+            return Err(error.to_string());
+        }
+    };
+    let counted = |key: &str| {
+        result
+            .get(key)
+            .and_then(|value| value.as_array())
+            .map_or(0, Vec::len) as u64
+    };
+    storage.record(
+        batch_entry(
+            "dns:bulk_create",
+            AuditOutcome::Succeeded,
+            &zone_id,
+            requested,
+        )
+        .detail("dry_run", dry_run)
+        .detail("created", counted("created"))
+        .detail("skipped", counted("skipped"))
+        .detail("record_types", types.as_str()),
+    );
     Ok(result)
 }
 
+/// Open a zone-level entry, naming the zone in both the fields a reader
+/// filters on: `resource`, which is what the action was aimed at, and
+/// `zone_id`, which is what every other zone-level entry calls it.
+fn zone_entry(operation: &str, outcome: AuditOutcome, zone_id: &str) -> AuditEntry {
+    trail::user_action(operation, outcome)
+        .resource(zone_id)
+        .detail("zone_id", zone_id)
+}
+
+/// Export a zone's records as text.
+///
+/// Recorded even though it changes nothing: an export is how a zone's contents
+/// leave the machine, and "when did a copy of this zone get made" is a
+/// question the log should answer.
 #[tauri::command]
 pub async fn export_dns_records(
     storage: State<'_, Storage>,
@@ -1041,41 +1468,70 @@ pub async fn export_dns_records(
     page: Option<u32>,
     per_page: Option<u32>,
 ) -> Result<String, String> {
-    if page.unwrap_or(1) == 0 || page.unwrap_or(1) > MAX_NATIVE_EXPORT_PAGE {
-        return Err(format!(
-            "DNS export page must be between 1 and {MAX_NATIVE_EXPORT_PAGE}"
+    let describe_request = |entry: AuditEntry| {
+        entry
+            .detail("format", format.as_str())
+            .optional_detail("page", page)
+            .optional_detail("per_page", per_page)
+    };
+    let refuse = |reason: &'static str, message: String| {
+        storage.record(describe_request(
+            zone_entry("dns:export", AuditOutcome::Denied, &zone_id)
+                .detail("denied_by", trail::DENIED_BY_REQUEST_BOUNDS)
+                .detail("refused_field", reason),
         ));
+        Err(message)
+    };
+    if page.unwrap_or(1) == 0 || page.unwrap_or(1) > MAX_NATIVE_EXPORT_PAGE {
+        return refuse(
+            "page",
+            format!("DNS export page must be between 1 and {MAX_NATIVE_EXPORT_PAGE}"),
+        );
     }
     if per_page.unwrap_or(100) == 0 || per_page.unwrap_or(100) > MAX_NATIVE_EXPORT_PER_PAGE {
-        return Err(format!(
-            "DNS export page size must be between 1 and {MAX_NATIVE_EXPORT_PER_PAGE}"
-        ));
+        return refuse(
+            "per_page",
+            format!("DNS export page size must be between 1 and {MAX_NATIVE_EXPORT_PER_PAGE}"),
+        );
     }
     if !matches!(format.as_str(), "json" | "csv" | "bind") {
-        return Err("DNS export format must be json, csv, or bind".to_string());
+        return refuse(
+            "format",
+            "DNS export format must be json, csv, or bind".to_string(),
+        );
     }
     let client = CloudflareClient::new(&api_key, email.as_deref());
-    let data = client
+    let data = match client
         .export_dns_records(&zone_id, &format, page, per_page)
         .await
-        .map_err(|e| e.to_string())?;
+    {
+        Ok(data) => data,
+        Err(error) => {
+            storage.record(describe_request(trail::attach_failure(
+                zone_entry("dns:export", AuditOutcome::Failed, &zone_id),
+                &error,
+            )));
+            return Err(error.to_string());
+        }
+    };
     if data.len() > bc_dns_tools::MAX_EXPORT_OUTPUT_BYTES {
+        // The request was dispatched and answered, so this is a failure rather
+        // than a refusal — the same distinction `bc_mcp`'s `ResultTooLarge`
+        // draws.
+        storage.record(describe_request(
+            zone_entry("dns:export", AuditOutcome::Failed, &zone_id)
+                .detail("failure", "result_too_large"),
+        ));
         return Err(format!(
             "DNS export output exceeds the safe {} byte limit",
             bc_dns_tools::MAX_EXPORT_OUTPUT_BYTES
         ));
     }
-    log_audit(
-        &storage,
-        serde_json::json!({
-            "operation": "dns:export",
-            "resource": zone_id,
-            "format": format,
-            "page": page,
-            "per_page": per_page,
-        }),
-    )
-    .await;
+    storage.record(describe_request(zone_entry(
+        "dns:export",
+        AuditOutcome::Succeeded,
+        &zone_id,
+    )));
     Ok(data)
 }
 
@@ -1088,21 +1544,34 @@ pub async fn purge_cache(
     purge_everything: bool,
     files: Option<Vec<String>>,
 ) -> Result<serde_json::Value, String> {
+    // The file list is a payload, not a target: its scale is recorded and its
+    // contents are not, exactly as the tool-call half treats it. A
+    // purge-everything is recorded as the flag it is, because it is the one
+    // cache action with zone-wide consequences.
+    let describe_scope = |entry: AuditEntry| {
+        entry
+            .detail("purge_everything", purge_everything)
+            .detail("files_count", files.as_ref().map_or(0, Vec::len) as u64)
+    };
     let client = CloudflareClient::new(&api_key, email.as_deref());
-    let result = client
+    let result = match client
         .purge_cache(&zone_id, purge_everything, files.clone())
         .await
-        .map_err(|e| e.to_string())?;
-    log_audit(
-        &storage,
-        serde_json::json!({
-            "operation": "cache:purge",
-            "resource": zone_id,
-            "purge_everything": purge_everything,
-            "files_count": files.as_ref().map(|v| v.len()).unwrap_or(0),
-        }),
-    )
-    .await;
+    {
+        Ok(result) => result,
+        Err(error) => {
+            storage.record(describe_scope(trail::attach_failure(
+                zone_entry("cache:purge", AuditOutcome::Failed, &zone_id),
+                &error,
+            )));
+            return Err(error.to_string());
+        }
+    };
+    storage.record(describe_scope(zone_entry(
+        "cache:purge",
+        AuditOutcome::Succeeded,
+        &zone_id,
+    )));
     Ok(result)
 }
 
@@ -1120,6 +1589,14 @@ pub async fn get_zone_setting(
         .map_err(|e| e.to_string())
 }
 
+/// Change one zone setting — SSL/TLS mode, minimum TLS version, Always Use
+/// HTTPS, and every other switch on the settings screen.
+///
+/// `previous` is the setting's current value as the caller had it, and makes
+/// the entry a before-and-after the way a record edit is. Optional: without it
+/// the entry says what the setting was changed *to*, which is where it has
+/// always been and under the key it has always used.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn update_zone_setting(
     storage: State<'_, Storage>,
@@ -1128,22 +1605,36 @@ pub async fn update_zone_setting(
     zone_id: String,
     setting_id: String,
     value: serde_json::Value,
+    previous: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, String> {
+    let describe_setting = |entry: AuditEntry| {
+        trail::describe_value_change(
+            entry
+                .resource(&setting_id)
+                .detail("zone_id", zone_id.as_str()),
+            "value",
+            previous.as_ref(),
+            &value,
+        )
+    };
     let client = CloudflareClient::new(&api_key, email.as_deref());
-    let result = client
+    let result = match client
         .update_zone_setting(&zone_id, &setting_id, value.clone())
         .await
-        .map_err(|e| e.to_string())?;
-    log_audit(
-        &storage,
-        serde_json::json!({
-            "operation": "zone_setting:update",
-            "resource": setting_id,
-            "zone_id": zone_id,
-            "value": value,
-        }),
-    )
-    .await;
+    {
+        Ok(result) => result,
+        Err(error) => {
+            storage.record(describe_setting(trail::attach_failure(
+                trail::user_action("zone_setting:update", AuditOutcome::Failed),
+                &error,
+            )));
+            return Err(error.to_string());
+        }
+    };
+    storage.record(describe_setting(trail::user_action(
+        "zone_setting:update",
+        AuditOutcome::Succeeded,
+    )));
     Ok(result)
 }
 
@@ -1165,25 +1656,51 @@ pub async fn update_dnssec(
     zone_id: String,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
+    // `dnssec_status` is lifted out of the payload because turning DNSSEC on
+    // or off is the whole action, and a reader should not have to parse a JSON
+    // string to see which way it went. `payload` keeps the key it has always
+    // had, now bounded.
+    let describe_payload = |entry: AuditEntry| {
+        entry
+            .optional_detail(
+                "dnssec_status",
+                payload
+                    .get("status")
+                    .and_then(serde_json::Value::as_str)
+                    .map(ToString::to_string),
+            )
+            .detail("payload", trail::setting_value(&payload))
+    };
     let client = CloudflareClient::new(&api_key, email.as_deref());
-    let result = client
-        .update_dnssec(&zone_id, payload.clone())
-        .await
-        .map_err(|e| e.to_string())?;
-    log_audit(
-        &storage,
-        serde_json::json!({
-            "operation": "dnssec:update",
-            "resource": zone_id,
-            "payload": payload,
-        }),
-    )
-    .await;
+    let result = match client.update_dnssec(&zone_id, payload.clone()).await {
+        Ok(result) => result,
+        Err(error) => {
+            storage.record(describe_payload(trail::attach_failure(
+                zone_entry("dnssec:update", AuditOutcome::Failed, &zone_id),
+                &error,
+            )));
+            return Err(error.to_string());
+        }
+    };
+    storage.record(describe_payload(zone_entry(
+        "dnssec:update",
+        AuditOutcome::Succeeded,
+        &zone_id,
+    )));
     Ok(result)
 }
 
 // ─── Bulk Operations ────────────────────────────────────────────────────────
 
+/// Delete several records by id in one call.
+///
+/// The entry is a summary, and that is all it can be: this command is handed
+/// ids and nothing else, and an id names nothing once its record is gone. The
+/// path the UI actually deletes a selection through is
+/// `commands::retention::retain_dns_record`, one record at a time, which has
+/// the whole record and both records it *and* keeps a restorable copy. So the
+/// per-record detail a reader wants from a multi-record deletion exists — it
+/// is just written by the command that has the records.
 #[tauri::command]
 pub async fn delete_bulk_dns_records(
     storage: State<'_, Storage>,
@@ -1193,20 +1710,30 @@ pub async fn delete_bulk_dns_records(
     record_ids: Vec<String>,
     notifications: State<'_, NotificationManager>,
 ) -> Result<serde_json::Value, String> {
+    let requested = record_ids.len();
     let client = CloudflareClient::new(&api_key, email.as_deref());
-    let result = client
-        .delete_bulk_dns_records(&zone_id, &record_ids)
-        .await
-        .map_err(|e| e.to_string())?;
-    log_audit(
-        &storage,
-        serde_json::json!({
-            "operation": "dns:bulk_delete",
-            "resource": zone_id,
-            "count": record_ids.len(),
-        }),
-    )
-    .await;
+    let result = match client.delete_bulk_dns_records(&zone_id, &record_ids).await {
+        Ok(result) => result,
+        Err(error) => {
+            storage.record(trail::attach_failure(
+                batch_entry("dns:bulk_delete", AuditOutcome::Failed, &zone_id, requested),
+                &error,
+            ));
+            return Err(error.to_string());
+        }
+    };
+    storage.record(
+        batch_entry(
+            "dns:bulk_delete",
+            AuditOutcome::Succeeded,
+            &zone_id,
+            requested,
+        )
+        // `count` is where this entry has always put the scale. `records`, from
+        // `batch_entry`, is where every other bulk entry puts it; both are
+        // written so a reader of either generation finds it.
+        .detail("count", requested as u64),
+    );
     for record_id in &record_ids {
         notifications.ledger().note(&zone_id, record_id, "delete");
     }

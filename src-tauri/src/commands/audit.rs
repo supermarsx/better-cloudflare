@@ -1,4 +1,5 @@
 use base64::Engine;
+use bc_storage::{AuditOutcome, AuditTrail};
 use chrono::Utc;
 use serde_json::{Map, Value};
 use tauri::{AppHandle, State};
@@ -6,7 +7,30 @@ use tauri::{AppHandle, State};
 use crate::app_config::AppConfigStore;
 use crate::storage::{Preferences, Storage};
 
+use super::trail;
 use super::{resolve_export_directory, serialize_audit_entries};
+
+/// Record that a copy of the trail left the application.
+///
+/// An export is how the log leaves the machine, so "when was a copy of this
+/// made, and in what shape" is a question the log should answer about itself.
+/// The format and the number of entries, and for a save the folder *preset*
+/// rather than the path: a path carries the user's account name, and the entry
+/// does not need it to be useful.
+fn record_export(
+    storage: &Storage,
+    operation: &str,
+    format: &str,
+    entries: usize,
+    destination: Option<&str>,
+) {
+    storage.record(
+        trail::user_action(operation, AuditOutcome::Succeeded)
+            .detail("format", format)
+            .detail("entries", entries as u64)
+            .optional_detail("destination", destination.map(str::to_string)),
+    );
+}
 
 // ─── App lifecycle ──────────────────────────────────────────────────────────
 
@@ -78,7 +102,10 @@ pub async fn export_audit_entries(
         .await
         .map_err(|e| e.to_string())?;
     let fmt = format.unwrap_or_else(|| "json".to_string());
-    serialize_audit_entries(entries, &fmt)
+    let count = entries.len();
+    let payload = serialize_audit_entries(entries, &fmt)?;
+    record_export(&storage, "audit:export", &fmt, count, None);
+    Ok(payload)
 }
 
 #[tauri::command]
@@ -94,6 +121,7 @@ pub async fn save_audit_entries(
         .await
         .map_err(|e| e.to_string())?;
     let fmt = format.unwrap_or_else(|| "json".to_string()).to_lowercase();
+    let count = entries.len();
     let payload = serialize_audit_entries(entries, &fmt)?;
     let extension = if fmt == "csv" { "csv" } else { "json" };
     let should_skip_confirm = skip_destination_confirm.unwrap_or(true);
@@ -106,6 +134,13 @@ pub async fn save_audit_entries(
         let file_name = format!("audit-log-{}.{}", stamp, extension);
         let path = base_dir.join(file_name);
         std::fs::write(&path, payload).map_err(|e| e.to_string())?;
+        record_export(
+            &storage,
+            "audit:save",
+            &fmt,
+            count,
+            Some(folder_preset.as_deref().unwrap_or("documents")),
+        );
         return Ok(path.display().to_string());
     }
 
@@ -120,9 +155,12 @@ pub async fn save_audit_entries(
         dialog = dialog.add_filter("JSON", &["json"]);
     }
     let Some(path) = dialog.save_file() else {
+        // Nothing happened and nothing left the machine, so there is nothing
+        // to record: the trail is a record of what was done.
         return Err("Save cancelled".to_string());
     };
     std::fs::write(&path, payload).map_err(|e| e.to_string())?;
+    record_export(&storage, "audit:save", &fmt, count, Some("chosen"));
     Ok(path.display().to_string())
 }
 
@@ -207,12 +245,35 @@ pub async fn save_topology_asset(
     Ok(path.display().to_string())
 }
 
+/// Erase the trail.
+///
+/// The erasure is itself recorded, in the log it just emptied. A trail that
+/// can be wiped without leaving a mark cannot be relied on for the one thing
+/// it is for, and a reader finding a single `audit:clear` entry knows exactly
+/// what they are looking at — including how much is no longer there. The
+/// count is read before the clear, because afterwards there is nothing to
+/// count.
 #[tauri::command]
 pub async fn clear_audit_entries(storage: State<'_, Storage>) -> Result<(), String> {
+    clear_audit_entries_with(&storage).await
+}
+
+/// The body of [`clear_audit_entries`], taking a plain reference so it is
+/// callable from tests without a Tauri runtime.
+async fn clear_audit_entries_with(storage: &Storage) -> Result<(), String> {
+    let cleared = storage
+        .get_audit_entries()
+        .await
+        .map_or(0, |entries| entries.len());
     storage
         .clear_audit_entries()
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    storage.record(
+        trail::user_action("audit:clear", AuditOutcome::Succeeded)
+            .detail("entries", cleared as u64),
+    );
+    Ok(())
 }
 
 // ─── Preferences ────────────────────────────────────────────────────────────
@@ -245,4 +306,67 @@ pub async fn update_preferences(
         )
         .await
         .map_err(|error| error.to_string())
+}
+
+#[cfg(test)]
+mod audit_self_record_tests {
+    use super::*;
+
+    async fn log(storage: &Storage) -> Vec<Value> {
+        storage
+            .get_audit_entries()
+            .await
+            .expect("the memory-backed store must return its log")
+    }
+
+    #[tokio::test]
+    async fn erasing_the_trail_leaves_a_mark_in_the_trail() {
+        let storage = Storage::new(false);
+        for index in 0..3_u64 {
+            storage.record(
+                trail::user_action("dns:create", AuditOutcome::Succeeded).detail("seq", index),
+            );
+        }
+
+        clear_audit_entries_with(&storage)
+            .await
+            .expect("clearing an existing log succeeds");
+
+        let entries = log(&storage).await;
+        assert_eq!(
+            entries.len(),
+            1,
+            "the erasure is the only thing left: {entries:?}"
+        );
+        assert_eq!(entries[0]["operation"], serde_json::json!("audit:clear"));
+        assert_eq!(entries[0]["actor"], serde_json::json!("user"));
+        assert_eq!(entries[0]["outcome"], serde_json::json!("succeeded"));
+        assert_eq!(
+            entries[0]["entries"],
+            serde_json::json!(3),
+            "a reader has to be able to see how much is no longer there"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_export_records_its_shape_and_not_the_path_it_was_written_to() {
+        let storage = Storage::new(false);
+        record_export(&storage, "audit:save", "csv", 42, Some("downloads"));
+
+        let entries = log(&storage).await;
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0]["operation"], serde_json::json!("audit:save"));
+        assert_eq!(entries[0]["format"], serde_json::json!("csv"));
+        assert_eq!(entries[0]["entries"], serde_json::json!(42));
+        assert_eq!(entries[0]["destination"], serde_json::json!("downloads"));
+
+        // A folder preset, never a path: a path carries the account name and
+        // the entry does not need it to be useful.
+        record_export(&storage, "audit:export", "json", 0, None);
+        let entries = log(&storage).await;
+        assert!(
+            entries[1].get("destination").is_none(),
+            "an in-app export has no destination to name"
+        );
+    }
 }

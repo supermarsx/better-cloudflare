@@ -232,6 +232,25 @@ impl AuditEntry {
         }
     }
 
+    /// Bytes [`Self::detail`] would still accept, including the next key's
+    /// own name.
+    ///
+    /// For a caller assembling a structured value that would rather shrink it
+    /// than have it dropped whole. A record edit's change set is the case this
+    /// exists for: the before and after values are the most informative thing
+    /// the entry carries, and losing the entire set because one TXT value was
+    /// long is the worst available outcome. Such a caller reads this, builds a
+    /// value that fits, and says how much it left out.
+    ///
+    /// Zero once the key count is spent, because no further key can be added
+    /// at any size.
+    pub fn remaining_detail_bytes(&self) -> usize {
+        if self.details.len() >= MAX_AUDIT_DETAIL_KEYS {
+            return 0;
+        }
+        MAX_AUDIT_DETAIL_BYTES.saturating_sub(self.detail_bytes)
+    }
+
     pub fn actor(&self) -> AuditActor {
         self.actor
     }
@@ -551,6 +570,61 @@ mod tests {
         let bounded = bounded_text(&long);
         assert!(bounded.len() <= MAX_AUDIT_TEXT_BYTES);
         assert!(long.starts_with(&bounded));
+    }
+
+    #[test]
+    fn the_reported_detail_room_is_the_room_a_detail_actually_has() {
+        let empty = AuditEntry::new(AuditActor::User, "test:op", AuditOutcome::Succeeded);
+        assert_eq!(empty.remaining_detail_bytes(), MAX_AUDIT_DETAIL_BYTES);
+
+        // A value exactly filling the reported room is kept; one byte more is
+        // dropped. That equivalence is the whole contract: a caller sizes a
+        // structured value against this number and expects it to survive.
+        //
+        // Structured, because that is the case this method exists for. A plain
+        // string is truncated to `MAX_AUDIT_TEXT_BYTES` before it is charged,
+        // so a long one can never overrun the budget in the first place; a
+        // nested value is charged what it actually occupies.
+        let spent = empty.detail("zone_id", "z".repeat(100).as_str());
+        let room = spent.remaining_detail_bytes();
+        assert_eq!(
+            room,
+            MAX_AUDIT_DETAIL_BYTES - 107,
+            "key name is charged too"
+        );
+
+        // `{"k":"vv…"}` serialises to the padding plus eight bytes.
+        let sized = |bytes: usize| json!({ "k": "v".repeat(bytes.saturating_sub(8)) });
+        let budget = room - "first".len();
+        assert_eq!(
+            detail_value_bytes(&sized(budget)),
+            budget,
+            "the fixture has to be the size it claims for the rest to mean anything"
+        );
+
+        let exact = spent.clone().detail("first", sized(budget));
+        assert!(
+            exact.detail_value("first").is_some(),
+            "a value sized to the reported room must fit"
+        );
+        let over = spent.detail("first", sized(budget + 1));
+        assert!(
+            over.detail_value("first").is_none(),
+            "and one byte more must not"
+        );
+    }
+
+    #[test]
+    fn no_room_is_reported_once_the_key_count_is_spent() {
+        let mut entry = AuditEntry::new(AuditActor::User, "test:op", AuditOutcome::Succeeded);
+        for key in SPARE_KEYS.into_iter().take(MAX_AUDIT_DETAIL_KEYS) {
+            entry = entry.detail(key, 1_u64);
+        }
+        assert_eq!(
+            entry.remaining_detail_bytes(),
+            0,
+            "bytes left over are not room when no key can be added"
+        );
     }
 
     #[test]

@@ -160,11 +160,31 @@ pub fn own_record_ids_from_audit(
 /// genuine outside change to that same record. Only a mutating tier counts
 /// for the same reason: a successful read says the record was looked at, not
 /// touched.
+///
+/// That rule now applies to the app's own commands as well, and it has to.
+/// They used to write an entry only after the change had landed, so every
+/// `dns:*` entry in an older log is a success by construction and the outcome
+/// was not worth reading. They now record refusals and provider failures too —
+/// which is the point, a trail of only successes cannot explain a zone — and
+/// without this check a delete Cloudflare rejected would mark the record as
+/// ours and silence the alarm for a real outside change to it.
+///
+/// So a missing `outcome` reads as a success and an explicit one has to say
+/// `succeeded`. Those are not the same default: absent means the entry predates
+/// the field, and the entries that predate it all landed.
 fn own_changed_record_id(entry: &Value) -> Option<&str> {
     let operation = entry.get("operation").and_then(Value::as_str)?;
     match operation {
-        // The app's own commands name the record in `resource`.
-        "dns:create" | "dns:update" | "dns:delete" => entry.get("resource").and_then(Value::as_str),
+        // The app's own commands name the record in `resource`. A disable is a
+        // delete and a restore is a create, both through
+        // `commands::retention`, so both move a record the app itself moved.
+        "dns:create" | "dns:update" | "dns:delete" | "dns:disable" | "dns:restore"
+        | "dns:retain" => {
+            if !settled_successfully(entry) {
+                return None;
+            }
+            entry.get("resource").and_then(Value::as_str)
+        }
         // A tool call names the tool in `resource`, so the record is a detail.
         "mcp:tool_call" | "assistant:tool_call" => {
             if entry.get("outcome").and_then(Value::as_str) != Some("succeeded") {
@@ -176,6 +196,20 @@ fn own_changed_record_id(entry: &Value) -> Option<&str> {
             }
         }
         _ => None,
+    }
+}
+
+/// Whether an entry says its action landed, treating an entry with no outcome
+/// *key* as one that did. See [`own_changed_record_id`].
+///
+/// A key that is present but not `succeeded` — including a value this build
+/// cannot read — counts as not ours. Claiming a change that was not ours
+/// silences the alarm for a real outside edit, and only one of the two ways to
+/// be wrong here hides something from the user.
+fn settled_successfully(entry: &Value) -> bool {
+    match entry.get("outcome") {
+        None => true,
+        Some(outcome) => outcome.as_str() == Some("succeeded"),
     }
 }
 
@@ -2540,6 +2574,86 @@ mod tests {
             }),
         ];
         assert!(own_record_ids_from_audit(&entries, None).is_empty());
+    }
+
+    /// The app's own commands now record refusals and provider failures, and
+    /// an action that did not land did not change the record. Claiming it as
+    /// ours would silence the notification for a genuine outside change to the
+    /// very same record -- the same reason the tool-call branch checks.
+    #[test]
+    fn a_user_action_that_changed_nothing_claims_no_record() {
+        let entries = vec![
+            json!({
+                "operation": "dns:update", "resource": "refused", "actor": "user",
+                "outcome": "denied", "denied_by": "record_validation",
+            }),
+            json!({
+                "operation": "dns:delete", "resource": "errored", "actor": "user",
+                "outcome": "failed", "failure": "provider_refused",
+            }),
+            json!({
+                "operation": "dns:create", "resource": "unreadable", "actor": "user",
+                "outcome": "something_newer",
+            }),
+            json!({
+                "operation": "dns:export", "resource": "zone-1", "actor": "user",
+                "outcome": "succeeded",
+            }),
+        ];
+        assert!(
+            own_record_ids_from_audit(&entries, None).is_empty(),
+            "only a change that landed is ours"
+        );
+    }
+
+    /// Every way the app itself moves a record, in the one list that decides
+    /// whether a change gets reported back to the user as someone else's.
+    ///
+    /// A disable removes a record and a restore creates one, both through
+    /// `commands::retention` rather than the plain delete and create, so both
+    /// have to be here or parking a record and bringing it back would each
+    /// raise a false alarm after a restart empties the in-memory ledger.
+    #[test]
+    fn every_operation_the_app_changes_a_record_through_is_claimed() {
+        let entries: Vec<Value> = [
+            "dns:create",
+            "dns:update",
+            "dns:delete",
+            "dns:disable",
+            "dns:restore",
+            "dns:retain",
+        ]
+        .into_iter()
+        .map(|operation| {
+            json!({
+                "operation": operation,
+                "resource": format!("by-{operation}"),
+                "actor": "user",
+                "outcome": "succeeded",
+            })
+        })
+        .collect();
+
+        assert_eq!(
+            own_record_ids_from_audit(&entries, None).len(),
+            entries.len(),
+            "claimed: {:?}",
+            own_record_ids_from_audit(&entries, None)
+        );
+    }
+
+    /// An entry written before the trail carried an outcome has no field to
+    /// read, and every one of those was written only after the change landed.
+    #[test]
+    fn an_entry_with_no_outcome_field_still_claims_its_record() {
+        let entries = vec![
+            json!({ "operation": "dns:create", "resource": "legacy-create" }),
+            json!({ "operation": "dns:delete", "resource": "legacy-delete" }),
+        ];
+        assert_eq!(
+            own_record_ids_from_audit(&entries, None),
+            HashSet::from(["legacy-create".to_string(), "legacy-delete".to_string()])
+        );
     }
 
     #[test]

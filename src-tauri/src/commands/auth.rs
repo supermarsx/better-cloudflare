@@ -1063,15 +1063,106 @@ pub async fn add_api_key(
         .map_err(|e| e.to_string())?;
     log_audit(
         &storage,
-        serde_json::json!({
-            "operation": "api_key:add",
-            "resource": id,
-            "label": label,
-            "email": email,
-        }),
+        api_key_audit_entry(
+            "api_key:add",
+            &id,
+            Some(label.as_str()),
+            Some(auth_mode(email.as_deref())),
+            None,
+        ),
     )
     .await;
     Ok(id)
+}
+
+/// Which kind of Cloudflare credential this is, without recording either half
+/// of it.
+///
+/// The account email used to be written into the entry. It is not a contact
+/// detail here: paired with a global API key it *is* half the credential, and
+/// `commands::trail` is explicit that no part of a credential reaches the
+/// trail in any form. Which of the two kinds was stored is the part worth
+/// knowing — a global key can do more than a scoped token — and the label is
+/// what identifies the entry to the user.
+///
+/// The return type is the boundary: a `&'static str` from a closed set of two
+/// cannot carry the argument it was derived from, whatever is passed in.
+fn auth_mode(email: Option<&str>) -> &'static str {
+    match email {
+        Some(email) if !email.trim().is_empty() => "global_key",
+        _ => "api_token",
+    }
+}
+
+/// The entry an API-key change records.
+///
+/// A named function rather than an inline `json!` so that the one thing that
+/// has to be true of these entries — that no part of the credential is in
+/// them, the account email included — is something a test can assert.
+///
+/// `auth_mode` is absent for an edit that did not touch the credential, rather
+/// than defaulted: an entry must not claim a credential kind the command never
+/// set.
+fn api_key_audit_entry(
+    operation: &str,
+    id: &str,
+    label: Option<&str>,
+    auth_mode: Option<&'static str>,
+    password_rotated: Option<bool>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "operation": operation,
+        "resource": id,
+        "label": label,
+        "auth_mode": auth_mode,
+        "password_rotated": password_rotated,
+        "success": true,
+    })
+}
+
+#[cfg(test)]
+mod api_key_audit_tests {
+    use super::*;
+
+    #[test]
+    fn the_credential_kind_is_recorded_and_neither_half_of_the_credential_is() {
+        let email = "person@example.com";
+        assert_eq!(auth_mode(Some(email)), "global_key");
+        assert_eq!(auth_mode(None), "api_token");
+        assert_eq!(
+            auth_mode(Some("   ")),
+            "api_token",
+            "a blank email is not a global-key pairing"
+        );
+
+        let entry = api_key_audit_entry(
+            "api_key:add",
+            "key-1",
+            Some("Work account"),
+            Some(auth_mode(Some(email))),
+            None,
+        );
+        assert_eq!(entry["operation"], serde_json::json!("api_key:add"));
+        assert_eq!(entry["resource"], serde_json::json!("key-1"));
+        assert_eq!(entry["label"], serde_json::json!("Work account"));
+        assert_eq!(entry["auth_mode"], serde_json::json!("global_key"));
+
+        let serialized = entry.to_string();
+        for forbidden in [email, "person", "example.com", "email"] {
+            assert!(
+                !serialized.contains(forbidden),
+                "{forbidden:?} reached the entry: {serialized}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_edit_that_did_not_touch_the_credential_claims_no_kind() {
+        let entry = api_key_audit_entry("api_key:update", "key-1", None, None, Some(true));
+        assert_eq!(entry["password_rotated"], serde_json::json!(true));
+        assert!(entry["auth_mode"].is_null());
+        assert!(entry["label"].is_null());
+    }
 }
 
 #[tauri::command]
@@ -1125,6 +1216,7 @@ pub async fn update_api_key(
         key_length = Some(updated_config.key_length);
         algorithm = Some(updated_config.algorithm);
     }
+    let password_rotated = encrypted_key.is_some();
     storage
         .update_api_key(
             id.clone(),
@@ -1139,12 +1231,13 @@ pub async fn update_api_key(
         .map_err(|e| e.to_string())?;
     log_audit(
         &storage,
-        serde_json::json!({
-            "operation": "api_key:update",
-            "resource": id,
-            "label": label,
-            "email": email,
-        }),
+        api_key_audit_entry(
+            "api_key:update",
+            &id,
+            label.as_deref(),
+            email.as_deref().map(|email| auth_mode(Some(email))),
+            Some(password_rotated),
+        ),
     )
     .await;
     Ok(())
@@ -1158,10 +1251,7 @@ pub async fn delete_api_key(storage: State<'_, Storage>, id: String) -> Result<(
         .map_err(|e| e.to_string())?;
     log_audit(
         &storage,
-        serde_json::json!({
-            "operation": "api_key:delete",
-            "resource": id,
-        }),
+        api_key_audit_entry("api_key:delete", &id, None, None, None),
     )
     .await;
     Ok(())

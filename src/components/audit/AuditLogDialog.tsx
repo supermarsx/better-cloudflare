@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import {
   Dialog,
   DialogContent,
@@ -11,12 +11,24 @@ import { TauriClient } from "@/lib/api/tauri-client";
 import { isDesktop } from "@/lib/environment";
 import { withObjectUrl } from "@/lib/runtime/resource-scope";
 
+/**
+ * One stored entry, as `bc_storage::audit::AuditEntry` serialises it.
+ *
+ * Flat, and open: the backend adds detail keys per operation, and an entry from
+ * a newer build has to render rather than break. The named fields are the ones
+ * every entry has, plus the ones this dialog reads to say what an action did —
+ * `commands::trail` is where their shapes are decided.
+ */
 type AuditEntry = {
   timestamp?: string;
   operation?: string;
   resource?: string;
   actor?: string;
   outcome?: string;
+  /** `{ field: { from, to } }` for an action whose before-state was known. */
+  changes?: unknown;
+  /** A record's own fields, for a creation, a deletion, or an edit without one. */
+  record?: unknown;
   [key: string]: unknown;
 };
 
@@ -70,6 +82,84 @@ const OUTCOME_CLASSES: Record<Outcome, string> = {
   denied: "text-destructive",
   failed: "text-destructive",
 };
+
+/** Stands in for a field that was not set on one side of a change. */
+const UNSET = "—";
+
+/**
+ * One line of "what the action did".
+ *
+ * `before` is `null` when the entry describes a record rather than a change to
+ * one — a creation, a deletion, or an edit whose before-state the caller did
+ * not supply. That is a different thing from a field that *was* unset, which
+ * the backend writes as a JSON null and which shows as {@link UNSET}; see
+ * `commands::trail` for why absence is never used to mean "unset".
+ */
+type ChangeRow = { field: string; before: string | null; after: string };
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function renderValue(value: unknown): string {
+  if (value === null || value === undefined) return UNSET;
+  if (typeof value === "string") return value;
+  return JSON.stringify(value);
+}
+
+function text(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+/**
+ * What the entry says the action did.
+ *
+ * `changes` when the before-state was known, `record` otherwise. Only one of
+ * the two is ever present, and the renderer does not care which operation
+ * produced it: a reader wants the fields either way.
+ */
+function changeRows(entry: AuditEntry): ChangeRow[] {
+  if (isObject(entry.changes)) {
+    return Object.entries(entry.changes).map(([field, pair]) => ({
+      field,
+      before: isObject(pair) ? renderValue(pair.from) : UNSET,
+      after: isObject(pair) ? renderValue(pair.to) : renderValue(pair),
+    }));
+  }
+  if (isObject(entry.record)) {
+    return Object.entries(entry.record).map(([field, value]) => ({
+      field,
+      before: null,
+      after: renderValue(value),
+    }));
+  }
+  return [];
+}
+
+/**
+ * Fields the entry could not afford to carry.
+ *
+ * The backend counts them rather than dropping them silently, so a reader can
+ * tell a record that changed in two ways from one whose third change did not
+ * fit the entry's budget.
+ */
+function omittedCount(entry: AuditEntry): number {
+  for (const key of ["changes_omitted", "record_omitted", "rule_omitted"]) {
+    const value = entry[key];
+    if (typeof value === "number" && value > 0) return value;
+  }
+  return 0;
+}
+
+/**
+ * Did the action record a change set that turned out to be empty?
+ *
+ * Worth saying out loud: the user saved a record and nothing about it was
+ * different, which is a fact about what happened rather than a gap in the log.
+ */
+function changedNothing(entry: AuditEntry): boolean {
+  return isObject(entry.changes) && Object.keys(entry.changes).length === 0;
+}
 
 interface AuditLogDialogProps {
   open: boolean;
@@ -284,6 +374,16 @@ export function AuditLogDialog({ open, onOpenChange }: AuditLogDialogProps) {
               {visible.map((entry, index) => {
                 const actor = actorOf(entry);
                 const outcome = outcomeOf(entry);
+                const rows = changeRows(entry);
+                const omitted = omittedCount(entry);
+                const subject = [
+                  text(entry.record_type),
+                  text(entry.record_name),
+                ]
+                  .filter(Boolean)
+                  .join(" ");
+                const reason =
+                  text(entry.denied_by) ?? text(entry.failure) ?? null;
                 return (
                   <div
                     className="rounded-md border p-3 text-sm"
@@ -306,10 +406,42 @@ export function AuditLogDialog({ open, onOpenChange }: AuditLogDialogProps) {
                           {OUTCOME_LABELS[outcome]}
                         </span>
                       )}
+                      {reason && (
+                        <span className="ml-2 text-xs text-destructive">
+                          {reason}
+                        </span>
+                      )}
                     </div>
+                    {subject && <div className="mt-1">{subject}</div>}
                     {entry.resource && (
                       <div className="font-mono text-xs mt-1">
                         {String(entry.resource)}
+                      </div>
+                    )}
+                    {rows.length > 0 && (
+                      <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 text-xs">
+                        {rows.map((row) => (
+                          <Fragment key={row.field}>
+                            <dt className="text-muted-foreground">
+                              {row.field}
+                            </dt>
+                            <dd className="font-mono break-all">
+                              {row.before === null
+                                ? row.after
+                                : `${row.before} → ${row.after}`}
+                            </dd>
+                          </Fragment>
+                        ))}
+                      </dl>
+                    )}
+                    {changedNothing(entry) && (
+                      <div className="mt-2 text-xs text-muted-foreground">
+                        No fields changed.
+                      </div>
+                    )}
+                    {omitted > 0 && (
+                      <div className="mt-1 text-xs text-muted-foreground">
+                        {`${omitted} further ${omitted === 1 ? "field was" : "fields were"} not recorded.`}
                       </div>
                     )}
                     <details className="mt-2">

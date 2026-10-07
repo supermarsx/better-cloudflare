@@ -41,6 +41,8 @@ use crate::cloudflare_api::{CloudflareClient, DNSRecord, DNSRecordInput};
 use crate::notifications::NotificationManager;
 use crate::storage::Storage;
 
+use super::trail::{self, RecordFacts};
+
 /// Records asked for per page while scanning a zone before a restore.
 const RESTORE_SCAN_PER_PAGE: u32 = 1_000;
 
@@ -289,8 +291,10 @@ pub async fn retain_dns_record(
         max_entries.map_or(retention::MAX_RETAINED_ENTRIES, |limit| limit as usize),
     );
     let snapshot = record.into_snapshot();
-    let record_type = snapshot.record_type.clone();
-    let record_name = snapshot.name.clone();
+    // Taken before the snapshot is moved into the entry. This is the record
+    // the trail has to be able to describe: after the delete it exists only in
+    // the store, and after a purge or an eviction not even there.
+    let facts = RecordFacts::of_snapshot(&snapshot);
     let reason_kind = RetentionReason::of(&reason);
     // A disable has no expiry whatever the caller passed: the bin's retention
     // window is not a deadline on a record the user parked.
@@ -313,7 +317,14 @@ pub async fn retain_dns_record(
         .retain_record(entry.into_value(), entry_limit, now)
         .await
         .map_err(|error| {
-            record_retain_failure(&storage, &reason, &zone_id, &record_id, &error.to_string());
+            record_retain_failure(
+                &storage,
+                &reason,
+                &zone_id,
+                &record_id,
+                Some(&facts),
+                &error.to_string(),
+            );
             format!("The record was not removed, because it could not be kept first: {error}")
         })?;
 
@@ -334,7 +345,7 @@ pub async fn retain_dns_record(
             bytes_held,
         } => {
             record_purged(&storage, &purged);
-            storage.record(
+            storage.record(trail::describe_record(
                 AuditEntry::new(
                     AuditActor::User,
                     retain_operation(reason_kind),
@@ -342,12 +353,14 @@ pub async fn retain_dns_record(
                 )
                 .resource(&record_id)
                 .detail("zone_id", zone_id.as_str())
-                .detail("record_type", record_type.as_str())
-                .detail("record_name", record_name.as_str())
                 .detail("reason", reason.as_str())
-                .detail("failure", "store_full")
+                // `denied_by` rather than `failure`: nothing was dispatched,
+                // and `failure` is the key a *failed* call uses. One
+                // vocabulary across the whole trail — see `commands::trail`.
+                .detail("denied_by", "store_full")
                 .detail("protected_entries", protected as u64),
-            );
+                &facts,
+            ));
             return Ok(RetainDecision::StoreFull {
                 held,
                 protected,
@@ -367,13 +380,20 @@ pub async fn retain_dns_record(
         // `already_present` — visible and harmless, unlike the alternative.
         let _ = storage.forget_retained_record(&entry_id).await;
         let message = error.to_string();
-        record_retain_failure(&storage, &reason, &zone_id, &record_id, &message);
+        record_retain_failure(
+            &storage,
+            &reason,
+            &zone_id,
+            &record_id,
+            Some(&facts),
+            &message,
+        );
         return Err(message);
     }
 
     notifications.ledger().note(&zone_id, &record_id, "delete");
 
-    storage.record(
+    storage.record(trail::describe_record(
         AuditEntry::new(
             AuditActor::User,
             retain_operation(reason_kind),
@@ -381,12 +401,11 @@ pub async fn retain_dns_record(
         )
         .resource(&record_id)
         .detail("zone_id", zone_id.as_str())
-        .detail("record_type", record_type.as_str())
-        .detail("record_name", record_name.as_str())
         .detail("reason", reason.as_str())
         .detail("retention_entry_id", entry_id.as_str())
         .optional_detail("retained_until", expires_at.clone()),
-    );
+        &facts,
+    ));
     record_purged(&storage, &purged);
     for item in &evicted {
         record_evicted(&storage, &item.entry, item.cause);
@@ -544,16 +563,15 @@ pub async fn restore_retained_record(
     // Only now is the entry expendable: the record is confirmed back.
     let entry_cleared = storage.forget_retained_record(&entry_id).await.is_ok();
 
-    storage.record(
+    storage.record(trail::describe_record(
         AuditEntry::new(AuditActor::User, "dns:restore", AuditOutcome::Succeeded)
             .resource(created.id.as_deref().unwrap_or_default())
             .detail("zone_id", entry.zone_id.as_str())
-            .detail("record_type", entry.snapshot.record_type.as_str())
-            .detail("record_name", entry.snapshot.name.as_str())
             .detail("reason", entry.reason.as_str())
             .detail("retention_entry_id", entry_id.as_str())
             .optional_detail("origin_record_id", entry.origin_record_id.clone()),
-    );
+        &RecordFacts::of_record(&created),
+    ));
 
     Ok(RestoreOutcome::Restored {
         entry_id,
@@ -604,7 +622,9 @@ pub async fn forget_retained_record(
     let Some(entry) = dropped.as_ref().and_then(RetainedRecord::of) else {
         return Ok(false);
     };
-    storage.record(
+    // The record is now gone for good — not in the zone, and no longer kept
+    // here — so this entry is the last description of it that will exist.
+    storage.record(trail::describe_record(
         AuditEntry::new(
             AuditActor::User,
             "retention:discard",
@@ -612,11 +632,10 @@ pub async fn forget_retained_record(
         )
         .resource(entry.origin_record_id.as_deref().unwrap_or_default())
         .detail("zone_id", entry.zone_id.as_str())
-        .detail("record_type", entry.snapshot.record_type.as_str())
-        .detail("record_name", entry.snapshot.name.as_str())
         .detail("reason", entry.reason.as_str())
         .detail("retention_entry_id", entry_id.as_str()),
-    );
+        &RecordFacts::of_snapshot(&entry.snapshot),
+    ));
     Ok(true)
 }
 
@@ -733,33 +752,35 @@ fn record_retain_failure(
     reason: &str,
     zone_id: &str,
     record_id: &str,
+    facts: Option<&RecordFacts>,
     message: &str,
 ) {
-    storage.record(
-        AuditEntry::new(
-            AuditActor::User,
-            retain_operation(RetentionReason::of(reason)),
-            AuditOutcome::Failed,
-        )
-        .resource(record_id)
-        .detail("zone_id", zone_id)
-        .detail("reason", reason)
-        .detail("error", message),
-    );
+    let entry = AuditEntry::new(
+        AuditActor::User,
+        retain_operation(RetentionReason::of(reason)),
+        AuditOutcome::Failed,
+    )
+    .resource(record_id)
+    .detail("zone_id", zone_id)
+    .detail("reason", reason)
+    .detail("error", message);
+    storage.record(match facts {
+        Some(facts) => trail::describe_record(entry, facts),
+        None => entry,
+    });
 }
 
 fn record_restore_failure(storage: &Storage, entry: &RetainedRecord, kind: &str, message: &str) {
-    storage.record(
+    storage.record(trail::describe_record(
         AuditEntry::new(AuditActor::User, "dns:restore", AuditOutcome::Failed)
             .resource(entry.origin_record_id.as_deref().unwrap_or_default())
             .detail("zone_id", entry.zone_id.as_str())
-            .detail("record_type", entry.snapshot.record_type.as_str())
-            .detail("record_name", entry.snapshot.name.as_str())
             .detail("reason", entry.reason.as_str())
             .detail("retention_entry_id", entry.entry_id.as_str())
             .detail("failure", kind)
             .detail("error", message),
-    );
+        &RecordFacts::of_snapshot(&entry.snapshot),
+    ));
 }
 
 /// One summary entry per purge run, not one per record.
@@ -792,18 +813,15 @@ fn record_purged(storage: &Storage, purged: &[Value]) {
 /// never be a thing that happened silently.
 fn record_evicted(storage: &Storage, entry: &Value, cause: EvictionCause) {
     let parsed = RetainedRecord::of(entry);
-    let (zone_id, record_type, record_name, reason) = parsed
+    let (zone_id, reason) = parsed
         .as_ref()
-        .map(|entry| {
-            (
-                entry.zone_id.clone(),
-                entry.snapshot.record_type.clone(),
-                entry.snapshot.name.clone(),
-                entry.reason.clone(),
-            )
-        })
+        .map(|entry| (entry.zone_id.clone(), entry.reason.clone()))
         .unwrap_or_default();
-    storage.record(
+    let facts = parsed
+        .as_ref()
+        .map(|entry| RecordFacts::of_snapshot(&entry.snapshot))
+        .unwrap_or_default();
+    storage.record(trail::describe_record(
         AuditEntry::new(AuditActor::User, "retention:evict", AuditOutcome::Succeeded)
             .resource(
                 parsed
@@ -813,10 +831,9 @@ fn record_evicted(storage: &Storage, entry: &Value, cause: EvictionCause) {
             )
             .detail("cause", cause.as_str())
             .detail("zone_id", zone_id.as_str())
-            .detail("record_type", record_type.as_str())
-            .detail("record_name", record_name.as_str())
             .detail("reason", reason.as_str()),
-    );
+        &facts,
+    ));
 }
 
 #[cfg(test)]

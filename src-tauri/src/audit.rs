@@ -1,25 +1,19 @@
-//! Audit logging – now handled by `bc_storage::Storage::add_audit_entry`.
+//! **Not compiled.** `main.rs` does not list `mod audit`, and has not since
+//! the audit log moved into the storage layer, so nothing in this file has ever
+//! reached a build.
 //!
-//! This module is kept for backward compatibility but all persistence
-//! is delegated to the storage layer.
+//! It is kept as a signpost rather than deleted, because the path is the one a
+//! reader looks under first. What used to be described here now lives in three
+//! places:
 //!
-//! The log has three writers, and [`bc_storage::audit`] is where their shared
-//! entry shape and the retention rule that keeps them from crowding each other
-//! out both live:
+//! * [`bc_storage::audit`] — the entry shape, the actor and outcome
+//!   vocabulary, the per-entry bounds, and the retention rule that keeps the
+//!   log's three writers from crowding each other out.
+//! * `crate::commands::trail` — how a **person's** action is described: the
+//!   record fields an entry carries, the before-and-after change set, and the
+//!   line around credentials and provider text.
+//! * `bc_mcp::audit` — the same job for a tool call, whether it arrived over
+//!   the MCP server's HTTP transport or from the in-app assistant.
 //!
-//! * **A person in the app.** The commands in `crate::commands` write through
-//!   `log_audit`, which still appends a plain JSON object; the storage layer
-//!   labels those entries `actor: "user"`, which is what they have always been.
-//! * **A client of the local MCP server.** Recorded in `bc_mcp`'s HTTP
-//!   transport, one entry per tool call including the ones it refuses, plus the
-//!   server's own start, stop and permission edits.
-//! * **The AI assistant.** Recorded in `bc_ai_agent`'s run ledger, one entry
-//!   per settled tool call — free-turn and plan step alike — plus the user's
-//!   approval of a plan.
-//!
-//! The two new writers reach the log through [`bc_storage::AuditTrail`], which
-//! makes the actor a required argument rather than something a caller can
-//! forget. `Storage::audit_trail` hands out the handle; the MCP commands in
-//! `crate::mcp_server` and the AI commands in `crate::ai_commands` pass it
-//! down, because the managers that need it are built in `main` before the
-//! managed `Storage` exists.
+//! Start with the first of those. If this module is ever wanted as a real
+//! module again, it needs a `mod audit;` in `main.rs` to exist at all.

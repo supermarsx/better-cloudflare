@@ -152,7 +152,10 @@ test("AuditLogDialog ignores stale loads across close and reopen", async () => {
     await Promise.resolve();
   });
 
-  assert.equal(screen.queryByText("stale-entry"), null);
+  assert.ok(
+    screen.queryByText("stale-entry") === null,
+    "a resolved load from a closed dialog must not reach the list",
+  );
   assert.ok(screen.getByText("fresh-entry"));
 });
 
@@ -228,8 +231,14 @@ test("AuditLogDialog filters by actor so the human record can be read alone", as
   });
   assert.ok(screen.getByText("dns:create"));
   assert.ok(screen.getByText("dns:delete"));
-  assert.equal(screen.queryByText("mcp:tool_call"), null);
-  assert.equal(screen.queryByText("assistant:tool_call"), null);
+  assert.ok(
+    screen.queryByText("mcp:tool_call") === null,
+    "a tool call is not the human record",
+  );
+  assert.ok(
+    screen.queryByText("assistant:tool_call") === null,
+    "nor is the assistant's",
+  );
   assert.equal(
     screen
       .getByRole("button", { name: "You (2)" })
@@ -266,7 +275,10 @@ test("AuditLogDialog filters by outcome so refused attempts can be read alone", 
     assert.ok(screen.getByText(/Showing 1 of 4 entries/));
   });
   assert.ok(screen.getByText("assistant:tool_call"));
-  assert.equal(screen.queryByText("dns:create"), null);
+  assert.ok(
+    screen.queryByText("dns:create") === null,
+    "a succeeded entry is not in the denied view",
+  );
 
   // Actor and outcome compose rather than replacing each other.
   await act(async () => {
@@ -303,5 +315,131 @@ test("AuditLogDialog revokes export URLs and removes links when click fails", as
     assert.ok(screen.getByText("download click failed"));
   });
   assert.deepEqual(revoked, ["blob:audit-export"]);
-  assert.equal(document.querySelector("a[download='audit-log.json']"), null);
+  assert.ok(
+    document.querySelector("a[download='audit-log.json']") === null,
+    "a failed click still removes the link it created",
+  );
+});
+
+/**
+ * What the dialog has to make legible: a record edit, with the fields that
+ * changed and both sides of each. `dns:update` naming only a record id answers
+ * "something happened" and not "what", which is the question the log is
+ * opened for.
+ */
+test("AuditLogDialog shows which fields a record edit changed", async () => {
+  (globalThis as unknown as { window?: unknown }).window = { __TAURI__: {} };
+  TauriClient.getAuditEntries = async () => [
+    {
+      timestamp: "2026-10-07T09:00:00Z",
+      operation: "dns:update",
+      resource: "record-1",
+      actor: "user",
+      outcome: "succeeded",
+      zone_id: "zone-1",
+      record_type: "A",
+      record_name: "www.example.com",
+      changes: {
+        content: { from: "203.0.113.1", to: "203.0.113.9" },
+        ttl: { from: 300, to: 1 },
+        comment: { from: "old note", to: null },
+      },
+    },
+  ];
+  TauriClient.exportAuditEntries = async () => "{}";
+
+  await act(async () => {
+    render(<AuditLogDialog open={true} onOpenChange={() => {}} />);
+  });
+
+  await waitFor(() => {
+    assert.ok(screen.getByText("A www.example.com"));
+  });
+  assert.ok(screen.getByText("203.0.113.1 → 203.0.113.9"));
+  assert.ok(screen.getByText("300 → 1"));
+  assert.ok(
+    screen.getByText("old note → —"),
+    "a field that was cleared reads as unset, not as missing",
+  );
+});
+
+test("AuditLogDialog shows what a deletion removed", async () => {
+  (globalThis as unknown as { window?: unknown }).window = { __TAURI__: {} };
+  TauriClient.getAuditEntries = async () => [
+    {
+      timestamp: "2026-10-07T09:00:00Z",
+      operation: "dns:delete",
+      resource: "record-1",
+      actor: "user",
+      outcome: "succeeded",
+      record_type: "MX",
+      record_name: "example.com",
+      record: { content: "mx1.example.com", ttl: 300, priority: 10 },
+    },
+  ];
+  TauriClient.exportAuditEntries = async () => "{}";
+
+  await act(async () => {
+    render(<AuditLogDialog open={true} onOpenChange={() => {}} />);
+  });
+
+  await waitFor(() => {
+    assert.ok(screen.getByText("MX example.com"));
+  });
+  // Matched on the `<dd>` rather than on the text, because the raw entry is
+  // also dumped into a `<pre>` further down: an assertion on the string alone
+  // would pass with the rendered rows gone entirely.
+  const cell = (value: string) =>
+    screen.queryByText(
+      (content, element) =>
+        element?.tagName === "DD" && content.trim() === value,
+    );
+  // A record snapshot has one side, so it renders as the value alone: there is
+  // no "before" for a record that is simply gone.
+  assert.ok(cell("mx1.example.com"), "the removed record's content is shown");
+  assert.ok(cell("300"));
+  assert.ok(cell("10"));
+  assert.ok(
+    cell("mx1.example.com → —") === null,
+    "a snapshot must not be rendered as a change from nothing",
+  );
+});
+
+test("AuditLogDialog says why an attempt was refused and what it left out", async () => {
+  (globalThis as unknown as { window?: unknown }).window = { __TAURI__: {} };
+  TauriClient.getAuditEntries = async () => [
+    {
+      timestamp: "2026-10-07T09:00:00Z",
+      operation: "dns:create",
+      actor: "user",
+      outcome: "denied",
+      denied_by: "record_validation",
+      record_type: "A",
+      record_name: "www.example.com",
+      record: { content: "not-an-ip" },
+      record_omitted: 2,
+    },
+    {
+      timestamp: "2026-10-07T09:01:00Z",
+      operation: "dns:update",
+      resource: "record-2",
+      actor: "user",
+      outcome: "succeeded",
+      changes: {},
+    },
+  ];
+  TauriClient.exportAuditEntries = async () => "{}";
+
+  await act(async () => {
+    render(<AuditLogDialog open={true} onOpenChange={() => {}} />);
+  });
+
+  await waitFor(() => {
+    assert.ok(screen.getByText("record_validation"));
+  });
+  assert.ok(screen.getByText("2 further fields were not recorded."));
+  assert.ok(
+    screen.getByText("No fields changed."),
+    "an empty change set is a fact about the action, not a gap in the log",
+  );
 });
