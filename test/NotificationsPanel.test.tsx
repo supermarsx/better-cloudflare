@@ -1,3 +1,8 @@
+// Absence is asserted with `assert.ok(x === null)` rather than
+// `assert.equal(x, null)`. On failure `assert.equal` builds a diff, which
+// deep-inspects the jsdom element it was handed and can exhaust the worker's
+// heap — so the test crashes instead of reporting, exactly when it is doing
+// its job. The same trap is documented in `test/AiAssistantPanel.test.tsx`.
 import assert from "node:assert/strict";
 import React from "react";
 import { afterEach, beforeEach, mock, test } from "node:test";
@@ -367,7 +372,10 @@ test("the Archived scope lists archived items and offers Unarchive", async () =>
   const archived = await screen.findByText("Monitoring started");
   const item = archived.closest("article") as HTMLElement;
   assert.equal(item.getAttribute("data-unread"), null);
-  assert.equal(within(item).queryByRole("button", { name: "Mark read" }), null);
+  assert.ok(
+    within(item).queryByRole("button", { name: "Mark read" }) === null,
+    "a read item offers no Mark read",
+  );
 
   fireEvent.click(within(item).getByRole("button", { name: "Unarchive" }));
   await waitFor(() => assert.equal(names(backend, "unarchive").length, 1));
@@ -553,7 +561,10 @@ test("the registry action stays away when there is nowhere to send the user", as
   renderPanel();
   await screen.findAllByTestId("notification-item");
 
-  assert.equal(within(expiryItem()).queryByText("Check registration"), null);
+  assert.ok(
+    within(expiryItem()).queryByText("Check registration") === null,
+    "no registration check offered here",
+  );
 });
 
 test("no registrar link when no configured registrar lists the domain", async () => {
@@ -567,7 +578,10 @@ test("no registrar link when no configured registrar lists the domain", async ()
   });
   await screen.findAllByTestId("notification-item");
 
-  assert.equal(screen.queryByTestId("registrar-site-link"), null);
+  assert.ok(
+    screen.queryByTestId("registrar-site-link") === null,
+    "no registrar link offered",
+  );
   // The in-app route is still offered; it needs no registrar identity.
   assert.ok(within(expiryItem()).getByText("Check registration"));
 });
@@ -581,7 +595,10 @@ test("no registrar link when the listing names a provider with no known site", a
   });
   await screen.findAllByTestId("notification-item");
 
-  assert.equal(screen.queryByTestId("registrar-site-link"), null);
+  assert.ok(
+    screen.queryByTestId("registrar-site-link") === null,
+    "no registrar link offered",
+  );
 });
 
 test("the registrar link appears with the real URL once the registrar is known", async () => {
