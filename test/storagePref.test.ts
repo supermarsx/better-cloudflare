@@ -131,3 +131,43 @@ test("clearing settings forgets the update-check preferences", async () => {
   assert.equal(storageManager.getUpdateCheckIntervalHours(), 24);
   assert.equal(storageManager.getUpdateCheckIncludePrereleases(), false);
 });
+
+test("a check is due when it has never run, and not again until the interval", async () => {
+  storageManager.clearSettings();
+  assert.equal(storageManager.getUpdateCheckLastCheckedAt(), null);
+  assert.equal(storageManager.isUpdateCheckDue(new Date()), true);
+
+  const at = new Date("2026-10-07T12:00:00.000Z");
+  storageManager.setUpdateCheckLastCheckedAt(at.toISOString());
+  storageManager.setUpdateCheckIntervalHours(24);
+
+  const hoursLater = (h: number) => new Date(at.getTime() + h * 60 * 60 * 1000);
+  assert.equal(storageManager.isUpdateCheckDue(hoursLater(1)), false);
+  assert.equal(storageManager.isUpdateCheckDue(hoursLater(23.9)), false);
+  assert.equal(storageManager.isUpdateCheckDue(hoursLater(24)), true);
+});
+
+test("a disabled check is never due, however long it has been", async () => {
+  // The switch has to beat the clock, or turning it off would still let a
+  // launch spend a request.
+  storageManager.clearSettings();
+  storageManager.setUpdateCheckLastCheckedAt("2020-01-01T00:00:00.000Z");
+  storageManager.setUpdateCheckEnabled(false);
+  assert.equal(storageManager.isUpdateCheckDue(new Date()), false);
+});
+
+test("a stamp in the future makes a check due rather than parking it", async () => {
+  // A clock moved back, or a profile copied from another machine, must not
+  // suppress checking until that future date arrives.
+  storageManager.clearSettings();
+  const future = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000);
+  storageManager.setUpdateCheckLastCheckedAt(future.toISOString());
+  assert.equal(storageManager.isUpdateCheckDue(new Date()), true);
+});
+
+test("an unreadable last-checked stamp is refused and reads as never", async () => {
+  storageManager.clearSettings();
+  storageManager.setUpdateCheckLastCheckedAt("whenever");
+  assert.equal(storageManager.getUpdateCheckLastCheckedAt(), null);
+  assert.equal(storageManager.isUpdateCheckDue(new Date()), true);
+});

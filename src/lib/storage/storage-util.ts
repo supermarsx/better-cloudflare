@@ -64,6 +64,11 @@ export interface BrowserSessionSettingsProfile {
   updateCheckIntervalHours?: number;
   /** Whether a pre-release counts as newer. Off means stable releases only. */
   updateCheckIncludePrereleases?: boolean;
+  /**
+   * RFC 3339 stamp of the last completed check, so the interval has something
+   * to measure from across launches. Absent means never checked.
+   */
+  updateCheckLastCheckedAt?: string;
   topologyResolutionMaxHops?: number;
   topologyResolverMode?: "dns" | "doh";
   topologyDnsServer?: string;
@@ -297,6 +302,7 @@ const SESSION_PROFILE_SCHEMA = {
   updateCheckEnabled: "boolean",
   updateCheckIntervalHours: "number",
   updateCheckIncludePrereleases: "boolean",
+  updateCheckLastCheckedAt: "string",
   topologyResolutionMaxHops: "number",
   topologyResolverMode: ["dns", "doh"],
   topologyDnsServer: "string",

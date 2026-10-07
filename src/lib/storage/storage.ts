@@ -1545,6 +1545,44 @@ export class StorageManager {
     return this.data.updateCheckIncludePrereleases === true;
   }
 
+  /**
+   * When the last check completed, so the interval survives a restart.
+   *
+   * Without this the interval measures from launch, which means every launch
+   * checks — the setting would read as a cadence while behaving as "always".
+   */
+  setUpdateCheckLastCheckedAt(when: string): void {
+    const parsed = Date.parse(when);
+    if (!Number.isFinite(parsed)) return;
+    const stamp = new Date(parsed).toISOString();
+    this.data.updateCheckLastCheckedAt = stamp;
+    this.save();
+    this.dispatchPreferencesChanged({ updateCheckLastCheckedAt: stamp });
+  }
+
+  /** The last completed check, or `null` for never. */
+  getUpdateCheckLastCheckedAt(): string | null {
+    const value = this.data.updateCheckLastCheckedAt;
+    if (typeof value !== "string") return null;
+    const parsed = Date.parse(value);
+    return Number.isFinite(parsed) ? new Date(parsed).toISOString() : null;
+  }
+
+  /**
+   * Whether a check is due: enabled, and either never run or longer ago than
+   * the configured interval. The clock is a parameter so a test can decide it.
+   */
+  isUpdateCheckDue(now: Date = new Date()): boolean {
+    if (!this.getUpdateCheckEnabled()) return false;
+    const last = this.getUpdateCheckLastCheckedAt();
+    if (last === null) return true;
+    const elapsedHours = (now.getTime() - Date.parse(last)) / (60 * 60 * 1000);
+    // A stamp in the future (a clock moved back, a copied profile) must not
+    // park the check forever: treat it as due rather than trusting it.
+    if (elapsedHours < 0) return true;
+    return elapsedHours >= this.getUpdateCheckIntervalHours();
+  }
+
   setLoadingOverlayTimeoutMs(ms: number): void {
     const clamped = Math.max(1000, Math.min(60000, Math.round(ms)));
     this.data.loadingOverlayTimeoutMs = clamped;
@@ -2221,6 +2259,7 @@ export class StorageManager {
     delete this.data.updateCheckEnabled;
     delete this.data.updateCheckIntervalHours;
     delete this.data.updateCheckIncludePrereleases;
+    delete this.data.updateCheckLastCheckedAt;
     delete this.data.topologyResolutionMaxHops;
     delete this.data.topologyResolverMode;
     delete this.data.topologyDnsServer;
