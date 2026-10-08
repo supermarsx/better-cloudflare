@@ -1865,17 +1865,34 @@ test("the provider and model are behind the toggle, stacked on a framed surface"
  *
  * The toggle flips the *effective* open state, and that state depends on
  * whether the conversation has a transcript yet — so a bare click is a race
- * against the conversation read and can just as easily close the editor. Going
- * through `aria-expanded` and then waiting for the editor is what makes the
- * queries that follow mean something, instead of failing later with a
- * confusing "unable to find a label".
+ * against the conversation read and can just as easily close the editor.
+ * Reading `aria-expanded` first narrows that race but does not remove it,
+ * because the value is derived rather than committed: `AiTurnSetup` computes
+ * `explicitOpen ?? conversation.messages.length === 0`, and resets
+ * `explicitOpen` to `null` every time the conversation id changes. So a single
+ * read can say "already open" one tick before the loaded transcript closes it
+ * again, and the editor lookup then waits out its entire timeout and reports a
+ * missing testid — which is what it did, intermittently and only under
+ * full-suite load.
+ *
+ * Asking repeatedly is what makes this deterministic: keep requesting open
+ * until the editor is actually mounted, rather than deciding once from a value
+ * that is still settling.
  */
 async function openTurnSetup(): Promise<HTMLElement> {
-  const toggle = await screen.findByTestId("ai-turn-setup-toggle");
-  if (toggle.getAttribute("aria-expanded") !== "true") {
-    fireEvent.click(toggle);
-  }
-  return screen.findByTestId("ai-turn-setup-editor");
+  await screen.findByTestId("ai-turn-setup-toggle");
+  await waitFor(() => {
+    if (screen.queryByTestId("ai-turn-setup-editor") === null) {
+      fireEvent.click(screen.getByTestId("ai-turn-setup-toggle"));
+    }
+    // `assert.ok` on a boolean, not `assert.equal` on the node: a failed
+    // absence assertion against a DOM element serialises the whole tree.
+    assert.ok(
+      screen.queryByTestId("ai-turn-setup-editor") !== null,
+      "the turn-setup editor did not open",
+    );
+  });
+  return screen.getByTestId("ai-turn-setup-editor");
 }
 
 // ── Persona, provider and model, per conversation ──────────────────────────
