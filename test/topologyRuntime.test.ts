@@ -691,8 +691,11 @@ test("initializes mermaid with the dagre renderer and no elk fallback", async ()
   const config = calls[calls.length - 1];
   assert.equal(config.securityLevel, "strict");
   assert.equal(config.htmlLabels, false);
-  assert.notEqual(config.flowchart?.defaultRenderer, "elk");
-  assert.equal(config.flowchart?.defaultRenderer, "dagre-wrapper");
+  // Mermaid 12 moved layout-engine choice from `flowchart.defaultRenderer` to
+  // the top-level `layout`, and bundles ELK as the new default - so naming
+  // dagre is now load-bearing rather than belt-and-braces.
+  assert.notEqual(config.layout, "elk");
+  assert.equal(config.layout, "dagre");
   assert.equal(config.flowchart?.useMaxWidth, false);
   assert.equal(config.flowchart?.wrappingWidth, 340);
 });

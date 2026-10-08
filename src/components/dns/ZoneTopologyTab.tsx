@@ -3167,11 +3167,13 @@ export function ZoneTopologyTab({
             ),
             fontFamily: "ui-sans-serif, system-ui, sans-serif",
           },
-          // Dagre is the only layout engine bundled; `defaultRenderer: "elk"`
-          // used to be set here but silently fell back to dagre because
-          // `@mermaid-js/layout-elk` is not a dependency.
+          // Mermaid 12 bundles ELK and makes it the default layout, and it
+          // dropped `flowchart.defaultRenderer` (dagre-wrapper is the only
+          // flowchart renderer left). Ask for dagre by name: the spacing and
+          // curve settings below are tuned for it, and ELK ignores them in
+          // favour of its own `elk.*` options.
+          layout: "dagre",
           flowchart: {
-            defaultRenderer: "dagre-wrapper",
             curve: "monotoneX",
             wrappingWidth: 340,
             nodeSpacing: 28,
