@@ -142,8 +142,38 @@ function platformRows(report: DiagnosticsReport): string[] {
   const target = [platform.os, platform.arch, platform.family]
     .filter((part): part is string => part !== null)
     .join(" / ");
+  // The OS on one line, because it is read as one fact. `edition` already
+  // contains the marketing name on Windows ("Windows 11 Professional"), so the
+  // type is only prepended when it would not repeat it.
+  const osParts = [
+    platform.osEdition ??
+      (platform.osName === null ? null : platform.osName) ??
+      null,
+    platform.osEdition !== null &&
+    platform.osName !== null &&
+    !platform.osEdition.toLowerCase().includes(platform.osName.toLowerCase())
+      ? `(${platform.osName})`
+      : null,
+    platform.osVersion,
+    platform.osCodename === null ? null : `"${platform.osCodename}"`,
+    platform.osBitness,
+  ].filter((part): part is string => part !== null && part.length > 0);
+
   return [
-    ...optionalRow("Target", target.length > 0 ? target : null),
+    ...optionalRow(
+      "Operating system",
+      osParts.length > 0 ? osParts.join(" ") : null,
+    ),
+    ...optionalRow("Build target", target.length > 0 ? target : null),
+    // Only when it differs from the build's: an x86_64 binary under Rosetta on
+    // an arm64 Mac is a real and confusing bug report, and a repeated row is
+    // noise in every other one.
+    ...optionalRow(
+      "Machine architecture",
+      platform.machineArch !== null && platform.machineArch !== platform.arch
+        ? platform.machineArch
+        : null,
+    ),
     ...optionalRow("User agent", platform.userAgent, true),
     ...optionalRow("Language", platform.language, true),
     ...optionalRow("Time zone", platform.timeZone, true),
@@ -194,56 +224,240 @@ function securityRows(report: DiagnosticsReport): string[] {
   ];
 }
 
-function servicesRows(report: DiagnosticsReport): string[] {
-  const { mcp, notifications, ai } = report.services;
-  const notificationState = [
+/**
+ * What update checking has been doing.
+ *
+ * `lastStatus` is absent unless a check ran in this session, and the row is
+ * then dropped rather than printed as "unknown" — see
+ * {@link DiagnosticsUpdatesSection.lastStatus}, which must not read as
+ * "up to date".
+ */
+function updateRows(report: DiagnosticsReport): string[] {
+  const { updates } = report;
+  const cadence =
+    updates.checkEnabled === null
+      ? null
+      : updates.checkEnabled
+        ? `every ${updates.intervalHours ?? "?"}h${updates.includePrereleases === true ? ", pre-releases included" : ""}`
+        : "disabled";
+  return [
+    ...optionalRow("Checking", cadence),
+    ...optionalRow("Last checked", updates.lastCheckedAt),
+    ...optionalRow("Check due now", yesNo(updates.checkDue)),
+    ...optionalRow("Last verdict", updates.lastStatus),
+    ...optionalRow(
+      "Latest release seen",
+      updates.latestSeenTag === null
+        ? null
+        : `${updates.latestSeenTag}${updates.latestIsPrerelease === true ? " (pre-release)" : ""}${updates.latestSeenPublishedAt === null ? "" : `, published ${updates.latestSeenPublishedAt}`}`,
+    ),
+  ];
+}
+
+/** How long the window has been open, in whole units a reader can scan. */
+function describeDuration(ms: number): string {
+  const seconds = Math.floor(ms / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 48) return `${hours}h ${minutes % 60}m`;
+  return `${Math.floor(hours / 24)}d ${hours % 24}h`;
+}
+
+function sessionRows(report: DiagnosticsReport): string[] {
+  const { session } = report;
+  return [
+    ...optionalRow("Window opened", session.startedAt),
+    ...optionalRow(
+      "Open for",
+      session.uptimeMs === null ? null : describeDuration(session.uptimeMs),
+    ),
+  ];
+}
+
+/**
+ * The notification service.
+ *
+ * One row per pass kind rather than six timestamp rows: "records — last …,
+ * next …" is the shape of the question, and collapsing it keeps the section
+ * readable now that it carries counters too.
+ */
+function notificationRows(report: DiagnosticsReport): string[] {
+  const notifications = report.notifications;
+  const state = [
     notifications.running === null
       ? null
       : notifications.running
         ? "running"
         : "stopped",
     notifications.enabled === true ? "enabled" : null,
+    notifications.enabled === false ? "disabled in settings" : null,
     notifications.paused === true ? "paused" : null,
-    notifications.quietHoursActive === true ? "quiet hours" : null,
+    notifications.quietHoursActive === true ? "quiet hours in force" : null,
   ].filter((part): part is string => part !== null);
 
+  const passRows = notifications.passes.flatMap((pass) => {
+    const schedule = [
+      pass.lastCheckAt === null ? null : `last ${pass.lastCheckAt}`,
+      pass.nextCheckAt === null ? null : `next ${pass.nextCheckAt}`,
+    ].filter((part): part is string => part !== null);
+    // A kind that has neither run nor been scheduled is a kind that is off;
+    // printing "unknown" twice for it would be three wasted lines per report.
+    if (schedule.length === 0 && pass.lastPass === null) return [];
+    const counters =
+      pass.lastPass === null
+        ? []
+        : [
+            `${pass.lastPass.zonesChecked ?? "?"} zones`,
+            `${pass.lastPass.notificationsCreated ?? "?"} created`,
+            pass.lastPass.notificationsRefreshed === null
+              ? null
+              : `${pass.lastPass.notificationsRefreshed} refreshed`,
+            pass.lastPass.notificationsSuperseded === null
+              ? null
+              : `${pass.lastPass.notificationsSuperseded} superseded`,
+            `${pass.lastPass.errors ?? "?"} errors`,
+            pass.lastPass.durationMs === null
+              ? null
+              : `${pass.lastPass.durationMs}ms`,
+            pass.lastPass.skipped === true ? "skipped" : null,
+            pass.lastPass.backoff === true ? "asked for backoff" : null,
+          ].filter((part): part is string => part !== null);
+    const detail = [schedule.join(", "), counters.join(", ")]
+      .filter((part) => part.length > 0)
+      .join(" — ");
+    const name = `${pass.kind.slice(0, 1).toUpperCase()}${pass.kind.slice(1)}`;
+    return [plainRow(`${name} pass`, detail)];
+  });
+
   return [
-    ...optionalRow("MCP server", yesNo(mcp.running)),
-    ...optionalRow("MCP binding", mcp.binding),
-    ...optionalRow("MCP port", mcp.port),
+    ...optionalRow("Service", state.length > 0 ? state.join(", ") : null),
+    ...optionalRow("Zones tracked", notifications.zonesTracked),
+    ...optionalRow("Unread", notifications.unread),
+    ...optionalRow("Backoff until", notifications.backoffUntil),
+    ...optionalRow("Last error", notifications.lastError, true),
+    ...passRows,
+  ];
+}
+
+function servicesRows(report: DiagnosticsReport): string[] {
+  const { mcp, assistant } = report.services;
+  const mcpCatalogue = [
+    mcp.toolsEnabled === null || mcp.toolsAvailable === null
+      ? null
+      : `${mcp.toolsEnabled} of ${mcp.toolsAvailable} tools enabled`,
+    mcp.promptsAvailable === null ? null : `${mcp.promptsAvailable} prompts`,
+    mcp.resourcesAvailable === null
+      ? null
+      : `${mcp.resourcesAvailable} resources`,
+  ].filter((part): part is string => part !== null);
+
+  const overrides = assistant.toolOverrides;
+  return [
     ...optionalRow(
-      "MCP tools",
-      mcp.toolsEnabled === null || mcp.toolsAvailable === null
+      "MCP server",
+      mcp.running === null
         ? null
-        : `${mcp.toolsEnabled} enabled of ${mcp.toolsAvailable}`,
+        : `${mcp.running ? "running" : "stopped"}${mcp.binding === null ? "" : `, ${mcp.binding}`}${mcp.port === null ? "" : `:${mcp.port}`}`,
+    ),
+    ...optionalRow(
+      "MCP catalogue",
+      mcpCatalogue.length > 0 ? mcpCatalogue.join(", ") : null,
     ),
     ...optionalRow("MCP last error", mcp.lastError, true),
     ...optionalRow(
-      "Notifications",
-      notificationState.length > 0 ? notificationState.join(", ") : null,
-    ),
-    ...optionalRow("Notifications zones tracked", notifications.zonesTracked),
-    ...optionalRow("Notifications unread", notifications.unread),
-    ...optionalRow("Last record check", notifications.lastRecordCheckAt),
-    ...optionalRow("Last expiry check", notifications.lastExpiryCheckAt),
-    ...optionalRow("Last audit check", notifications.lastAuditCheckAt),
-    ...optionalRow("Next record check", notifications.nextRecordCheckAt),
-    ...optionalRow("Next expiry check", notifications.nextExpiryCheckAt),
-    ...optionalRow("Next audit check", notifications.nextAuditCheckAt),
-    ...optionalRow("Notification backoff until", notifications.backoffUntil),
-    ...optionalRow("Notifications last error", notifications.lastError, true),
-    ...optionalRow(
-      "Last notification pass",
-      notifications.lastPass === null
+      "Assistant providers",
+      assistant.providersConfigured === null
         ? null
-        : `${notifications.lastPass.kind ?? "unknown"} in ${notifications.lastPass.durationMs ?? "?"}ms, ${notifications.lastPass.zonesChecked ?? "?"} zones, ${notifications.lastPass.notificationsCreated ?? "?"} created, ${notifications.lastPass.errors ?? "?"} errors`,
+        : `${assistant.providersConfigured} configured, ${assistant.providersWithStoredKey ?? "?"} with a stored key`,
     ),
-    ...optionalRow("AI providers configured", ai.providersConfigured),
     ...optionalRow(
-      "AI protocols",
-      ai.protocols.length > 0 ? ai.protocols.join(", ") : null,
+      "Assistant protocols",
+      assistant.protocols.length > 0 ? assistant.protocols.join(", ") : null,
     ),
-    ...optionalRow("AI providers with a stored key", ai.providersWithStoredKey),
+    ...optionalRow(
+      "Assistant personas",
+      assistant.personasTotal === null
+        ? null
+        : `${assistant.personasTotal} (${assistant.personasBuiltin ?? "?"} built in, ${assistant.personasCustom ?? "?"} custom)`,
+    ),
+    ...optionalRow("Assistant permission mode", assistant.permissionMode),
+    ...optionalRow(
+      "Assistant tool overrides",
+      overrides === null
+        ? null
+        : `${overrides.allow} allow, ${overrides.ask} ask, ${overrides.deny} deny`,
+    ),
+    ...optionalRow(
+      "Assistant tool availability",
+      assistant.toolsRegistered === null
+        ? null
+        : `${assistant.toolsUsable ?? "?"} usable of ${assistant.toolsGranted ?? "?"} granted, ${assistant.toolsRegistered} registered`,
+    ),
+    ...optionalRow(
+      "Assistant can dispatch",
+      yesNo(assistant.dispatchAvailable),
+    ),
+  ];
+}
+
+function storageRows(report: DiagnosticsReport): string[] {
+  const { recycleBin, offlineCache, auditTrail } = report.storage;
+  const actors = auditTrail.byActor
+    .filter((entry) => entry.count > 0)
+    .map((entry) => `${entry.actor} ${entry.count}`)
+    .join(", ");
+  const outcomes = auditTrail.byOutcome
+    .filter((entry) => entry.count > 0)
+    .map((entry) => `${entry.outcome} ${entry.count}`)
+    .join(", ");
+
+  return [
+    ...optionalRow(
+      "Recycle bin",
+      recycleBin.entriesHeld === null
+        ? null
+        : `${recycleBin.entriesHeld} held of ${recycleBin.maxEntries ?? "?"} (${recycleBin.disabled ?? "?"} disabled, ${recycleBin.binned ?? "?"} binned${(recycleBin.unknownReason ?? 0) > 0 ? `, ${recycleBin.unknownReason} unknown` : ""})`,
+    ),
+    ...optionalRow(
+      "Recycle bin expired",
+      recycleBin.expiredPendingPurge === null
+        ? null
+        : `${recycleBin.expiredPendingPurge} pending purge`,
+    ),
+    ...optionalRow(
+      "Recycle bin size",
+      recycleBin.bytesHeld === null
+        ? null
+        : `${recycleBin.bytesHeld} of ${recycleBin.maxBytes ?? "?"} bytes${recycleBin.percentOfByteCeiling === null ? "" : ` (${recycleBin.percentOfByteCeiling}%)`}`,
+    ),
+    ...optionalRow(
+      "Offline cache",
+      offlineCache.cachedZones === null
+        ? null
+        : `${offlineCache.cachedZones} zones, ${offlineCache.cachedZonesExpired ?? "?"} expired`,
+    ),
+    ...optionalRow(
+      "Offline cache age",
+      offlineCache.oldestCacheAgeMs === null
+        ? null
+        : `oldest ${describeDuration(offlineCache.oldestCacheAgeMs)}, newest ${offlineCache.newestCacheAgeMs === null ? "?" : describeDuration(offlineCache.newestCacheAgeMs)}`,
+    ),
+    ...optionalRow(
+      "Audit trail",
+      auditTrail.entries === null
+        ? null
+        : `${auditTrail.entries} entries of ${auditTrail.capacity ?? "?"}`,
+    ),
+    ...optionalRow(
+      "Audit trail span",
+      auditTrail.oldestAt === null
+        ? null
+        : `${auditTrail.oldestAt} to ${auditTrail.newestAt ?? "?"}`,
+    ),
+    ...optionalRow("Audit by actor", actors.length > 0 ? actors : null),
+    ...optionalRow("Audit by outcome", outcomes.length > 0 ? outcomes : null),
   ];
 }
 
@@ -257,10 +471,6 @@ function countsRows(report: DiagnosticsReport): string[] {
     ...optionalRow("Zones available", counts.zonesAvailable),
     ...optionalRow("Records loaded", counts.recordsLoaded),
     ...optionalRow("Record types", histogram.length > 0 ? histogram : null),
-    ...optionalRow("Cached zones", counts.cachedZones),
-    ...optionalRow("Cached zones expired", counts.cachedZonesExpired),
-    ...optionalRow("Oldest cache entry (ms)", counts.oldestCacheAgeMs),
-    ...optionalRow("Newest cache entry (ms)", counts.newestCacheAgeMs),
     ...optionalRow("API credentials stored", counts.apiCredentialsStored),
     ...optionalRow(
       "Registrar credentials stored",
@@ -349,10 +559,16 @@ export function renderDiagnosticsMarkdown(report: DiagnosticsReport): string {
   const body = [
     `Captured ${report.capturedAt} · ${report.schema}`,
     "",
+    // Ordered by how often a section is the answer; see the comment on
+    // `DiagnosticsReport`'s field order, which this mirrors.
     ...section("Build", buildRows(report)),
+    ...section("Updates", updateRows(report)),
     ...section("Platform", platformRows(report)),
+    ...section("Session", sessionRows(report)),
     ...section("Security", securityRows(report)),
+    ...section("Notifications", notificationRows(report)),
     ...section("Services", servicesRows(report)),
+    ...section("Storage", storageRows(report)),
     ...section("Counts", countsRows(report)),
     ...section("Dependencies", dependencyRows(report)),
     ...section("Dev server", devRows(report)),

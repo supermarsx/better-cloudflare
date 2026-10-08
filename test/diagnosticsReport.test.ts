@@ -46,6 +46,13 @@ const SECRETS = {
    * it is excluded by having no field to travel in.
    */
   devIdentityToken: "Zm9vYmFyYmF6cXV1eHdvbWJhdHNxdWlkb2N0bzEyMzQ1",
+  /**
+   * An assistant persona's system prompt. Free text the user wrote, and the
+   * longest free-text field in the application — people paste their whole
+   * working context into one, credentials included.
+   */
+  personaPrompt:
+    "You manage DNS. The account token is persona-prompt-MUST-NEVER-BE-PUBLISHED.",
 } as const;
 
 /**
@@ -55,23 +62,44 @@ const SECRETS = {
 const IDENTIFYING = {
   zoneName: "primary-zone-example.test",
   otherZoneName: "second-zone-example.test",
+  /** A zone only the recycle bin remembers — the workspace has it closed. */
+  binnedZoneName: "retired-zone-example.test",
   recordName: "selector._domainkey.primary-zone-example.test",
   recordContent: "v=DKIM1; p=MIIBIjANBgkqhkiG9w0-dkim-public-key-material",
   recordComment: "rotation note for the finance team",
+  binnedRecordName: "old-mail.retired-zone-example.test",
+  binnedRecordContent: "10 mx-provider-the-user-left.example",
+  binnedRecordComment: "deleted during the december migration",
   accountEmail: "named.person@example.invalid",
   accountId: "cf-account-identifier-0a1b2c3d",
+  retentionEntryId: "retention-entry-9f8e7d6c",
   localAccountName: "RealPersonName",
+  personaName: "Finance team DNS reviewer",
 } as const;
 
-/** Every value that must never appear, regardless of the opt-in. */
+/**
+ * Every value that must never appear, regardless of the opt-in.
+ *
+ * The recycle bin's zone name is here rather than in {@link CONSENT_GATED} on
+ * purpose: the opt-in publishes the zones the user is *looking at*, which is
+ * what they can see before they paste. A zone they closed months ago and a
+ * record they deleted from it are not on the screen and are not part of that
+ * consent.
+ */
 const ALWAYS_FORBIDDEN: readonly string[] = [
   ...Object.values(SECRETS),
   IDENTIFYING.recordName,
   IDENTIFYING.recordContent,
   IDENTIFYING.recordComment,
+  IDENTIFYING.binnedZoneName,
+  IDENTIFYING.binnedRecordName,
+  IDENTIFYING.binnedRecordContent,
+  IDENTIFYING.binnedRecordComment,
   IDENTIFYING.accountEmail,
   IDENTIFYING.accountId,
+  IDENTIFYING.retentionEntryId,
   IDENTIFYING.localAccountName,
+  IDENTIFYING.personaName,
 ];
 
 /** Values withheld by default and published only on an explicit opt-in. */
@@ -124,10 +152,22 @@ function loadedSnapshot(): DiagnosticsSnapshot {
       family: "windows",
       tauriVersion: "2.11.5",
       webviewVersion: "131.0.2903.70",
+      osRelease: {
+        osType: "Windows",
+        version: "10.0.26200",
+        edition: "Windows 11 Professional",
+        codename: null,
+        bitness: "64-bit",
+        architecture: "x86_64",
+      },
       keyring: {
         status: "unavailable",
         detail: `could not open C:\\Users\\${IDENTIFYING.localAccountName}\\AppData\\Roaming\\vault (password=${SECRETS.vaultPassword})`,
       },
+    },
+    session: {
+      startedAt: "2026-10-04T08:30:00.000Z",
+      uptimeMs: 185_400_000,
     },
     browser: {
       userAgent:
@@ -173,6 +213,9 @@ function loadedSnapshot(): DiagnosticsSnapshot {
         { name: "cf_list_dns_records", enabled: true },
         { name: "cf_delete_dns_record", enabled: false },
       ],
+      toolCount: 3,
+      promptCount: 4,
+      resourceCount: 5,
       lastError: `Authorization: Bearer ${SECRETS.mcpBearerToken} was rejected`,
     },
     notifications: {
@@ -196,7 +239,13 @@ function loadedSnapshot(): DiagnosticsSnapshot {
         durationMs: 812,
         zonesChecked: 2,
         notificationsCreated: 1,
+        // The four fields `PassSummary` does not forward yet. Present here so
+        // the report is driven as it will be once the Rust side sends them.
+        notificationsRefreshed: 3,
+        notificationsSuperseded: 1,
         errors: 0,
+        skipped: false,
+        backoff: false,
       },
     },
     aiProviders: [
@@ -217,6 +266,102 @@ function loadedSnapshot(): DiagnosticsSnapshot {
         hasApiKey: false,
       },
     ],
+    aiPersonas: [
+      { id: "builtin-dns", name: "DNS helper", builtin: true },
+      {
+        id: "custom-1",
+        name: IDENTIFYING.personaName,
+        description: `Reviews ${IDENTIFYING.zoneName} changes`,
+        systemPrompt: SECRETS.personaPrompt,
+        builtin: false,
+      },
+      {
+        id: "custom-2",
+        name: "Migration notes",
+        description: "",
+        systemPrompt: `Remember ${IDENTIFYING.recordContent}`,
+        builtin: false,
+      },
+    ],
+    aiPermissions: {
+      mode: "ask",
+      tools: {
+        cf_list_zones: "allow",
+        cf_list_dns_records: "allow",
+        cf_delete_dns_record: "deny",
+        cf_update_dns_record: "ask",
+        // An unknown permission value must widen no tally.
+        cf_future_tool: "escalate",
+      },
+      catalog: [{ name: "cf_list_zones" }, { name: "cf_delete_dns_record" }],
+      availability: {
+        dispatchAvailable: true,
+        grantedToolCount: 12,
+        usableToolCount: 9,
+        registeredToolCount: 48,
+      },
+    },
+    retainedStore: {
+      // Entries exactly as the command returns them: whole record snapshots.
+      entries: [
+        {
+          entry_id: IDENTIFYING.retentionEntryId,
+          reason: "deleted",
+          zone_id: "zone-retired",
+          zone_name: IDENTIFYING.binnedZoneName,
+          expires_at: "2026-11-01T00:00:00.000Z",
+          snapshot: {
+            record_type: "MX",
+            name: IDENTIFYING.binnedRecordName,
+            content: IDENTIFYING.binnedRecordContent,
+            comment: IDENTIFYING.binnedRecordComment,
+          },
+        },
+        {
+          entry_id: "retention-entry-disabled-1",
+          reason: "disabled",
+          zone_id: "zone-1",
+          zone_name: IDENTIFYING.zoneName,
+          snapshot: {
+            record_type: "TXT",
+            name: IDENTIFYING.recordName,
+            content: IDENTIFYING.recordContent,
+          },
+        },
+        { entry_id: "retention-entry-new-1", reason: "quarantined" },
+      ],
+      expiredPendingPurge: 1,
+      totalHeld: 3,
+      bytesHeld: 24_576,
+      maxBytes: 262_144,
+      maxEntries: 50,
+    },
+    auditSummary: {
+      entries: 847,
+      capacity: 1000,
+      oldestAt: "2026-09-01T07:00:00.000Z",
+      newestAt: "2026-10-06T11:59:00.000Z",
+      byActor: { user: 700, mcp_client: 100, assistant: 47 },
+      byOutcome: { succeeded: 800, failed: 30, denied: 17 },
+    },
+    updateCheck: {
+      current: "26.14",
+      status: "updateAvailable",
+      checkedAt: "2026-10-06T09:00:00.000Z",
+      latest: {
+        tag: "26.15",
+        url: "https://github.com/supermarsx/better-cloudflare/releases/tag/26.15",
+        publishedAt: "2026-10-05T18:00:00.000Z",
+        prerelease: false,
+      },
+    },
+    updateSettings: {
+      enabled: true,
+      intervalHours: 24,
+      includePrereleases: false,
+      lastCheckedAt: "2026-10-06T09:00:00.000Z",
+      due: false,
+    },
     counts: {
       zoneTabsOpen: 2,
       zonesAvailable: 2,
@@ -359,10 +504,12 @@ test("user data is reduced to counts and a record type histogram", () => {
 
   assert.equal(report.counts.zonesAvailable, 2);
   assert.equal(report.counts.recordsLoaded, 4);
-  assert.equal(report.counts.cachedZones, 2);
-  assert.equal(report.counts.cachedZonesExpired, 1);
-  assert.equal(report.counts.oldestCacheAgeMs, 900_000);
-  assert.equal(report.counts.newestCacheAgeMs, 5_000);
+  assert.deepEqual(report.storage.offlineCache, {
+    cachedZones: 2,
+    cachedZonesExpired: 1,
+    oldestCacheAgeMs: 900_000,
+    newestCacheAgeMs: 5_000,
+  });
   assert.deepEqual(report.counts.recordTypes, [
     // `a` and `A` are the same type; the histogram normalises case so a
     // mixed-case API reply does not split one type into two rows.
@@ -456,6 +603,282 @@ test("a zone with no readable name is counted as omitted, not printed blank", ()
   });
 });
 
+test("the platform section carries the OS release the target cannot", () => {
+  const report = buildDiagnosticsReport(loadedSnapshot());
+
+  // The whole reason `os_info` is a dependency: `os` is the compile target and
+  // says only "windows", and the user agent says "Windows NT 10.0" for every
+  // Windows 11 in existence.
+  assert.equal(report.platform.os, "windows");
+  assert.equal(report.platform.osName, "Windows");
+  assert.equal(report.platform.osVersion, "10.0.26200");
+  assert.equal(report.platform.osEdition, "Windows 11 Professional");
+  assert.equal(report.platform.osBitness, "64-bit");
+  assert.equal(report.platform.machineArch, "x86_64");
+
+  const markdown = renderDiagnosticsMarkdown(report);
+  assert.ok(
+    markdown.includes(
+      "- Operating system: Windows 11 Professional 10.0.26200 64-bit",
+    ),
+    `the OS belongs on one line:\n${markdown}`,
+  );
+  assert.ok(
+    !markdown.includes("Machine architecture"),
+    "the machine's architecture is a row only when it differs from the build's",
+  );
+});
+
+test("an emulated build reports both architectures", () => {
+  const report = buildDiagnosticsReport({
+    hostFacts: {
+      os: "macos",
+      arch: "x86_64",
+      osRelease: { osType: "Macos", version: "15.1", architecture: "arm64" },
+    },
+  });
+
+  assert.equal(report.platform.machineArch, "arm64");
+  assert.ok(
+    renderDiagnosticsMarkdown(report).includes("- Machine architecture: arm64"),
+    "an x86_64 binary on an arm64 machine is a real and confusing report",
+  );
+});
+
+test("an OS release field that is not a token is dropped", () => {
+  const report = buildDiagnosticsReport({
+    hostFacts: {
+      osRelease: {
+        osType: "Windows",
+        // A version is a short token. Prose here would be prose in the payload.
+        version: `11 but actually ${IDENTIFYING.recordContent}`,
+        bitness: "128-bit",
+      },
+    },
+  });
+
+  assert.equal(report.platform.osVersion, null);
+  assert.equal(
+    report.platform.osBitness,
+    null,
+    "`128-bit` is not in os_info's vocabulary",
+  );
+  assert.ok(!JSON.stringify(report).includes(IDENTIFYING.recordContent));
+});
+
+test("update checking reports its cadence, its verdict and the tag it saw", () => {
+  const report = buildDiagnosticsReport(loadedSnapshot());
+
+  assert.deepEqual(report.updates, {
+    checkEnabled: true,
+    intervalHours: 24,
+    includePrereleases: false,
+    lastCheckedAt: "2026-10-06T09:00:00.000Z",
+    checkDue: false,
+    lastStatus: "updateAvailable",
+    lastCheckAt: "2026-10-06T09:00:00.000Z",
+    latestSeenTag: "26.15",
+    latestSeenPublishedAt: "2026-10-05T18:00:00.000Z",
+    latestIsPrerelease: false,
+  });
+  assert.ok(
+    !JSON.stringify(report).includes("releases/tag/26.15"),
+    "the release URL is not reported; the tag is what a reader needs",
+  );
+});
+
+test("no check this session is not reported as up to date", () => {
+  const report = buildDiagnosticsReport({
+    updateSettings: { enabled: true, intervalHours: 24, due: true },
+  });
+
+  assert.equal(report.updates.checkDue, true);
+  assert.equal(
+    report.updates.lastStatus,
+    null,
+    "`null` means not checked here, which is not `upToDate`",
+  );
+  const markdown = renderDiagnosticsMarkdown(report);
+  assert.ok(
+    !markdown.includes("Last verdict"),
+    "an absent verdict is a dropped row, never a row reading `unknown`",
+  );
+  assert.ok(markdown.includes("- Check due now: yes"));
+});
+
+test("an update status outside the closed set is dropped", () => {
+  const report = buildDiagnosticsReport({
+    updateCheck: { status: `smuggled ${SECRETS.cloudflareApiToken}` },
+  });
+
+  assert.equal(report.updates.lastStatus, null);
+  assert.ok(!JSON.stringify(report).includes(SECRETS.cloudflareApiToken));
+});
+
+test("the session section says how long the window has been open", () => {
+  const report = buildDiagnosticsReport(loadedSnapshot());
+
+  assert.deepEqual(report.session, {
+    startedAt: "2026-10-04T08:30:00.000Z",
+    uptimeMs: 185_400_000,
+  });
+  assert.ok(
+    renderDiagnosticsMarkdown(report).includes("- Open for: 2d 3h"),
+    "a window open for two days explains stale state, which is the point",
+  );
+});
+
+test("notifications report each pass kind, its schedule and its counters", () => {
+  const report = buildDiagnosticsReport(loadedSnapshot());
+  const { notifications } = report;
+
+  assert.equal(notifications.running, true);
+  assert.equal(notifications.quietHoursActive, false);
+  assert.equal(notifications.zonesTracked, 2);
+  assert.equal(notifications.unread, 7);
+  assert.deepEqual(
+    notifications.passes.map((pass) => pass.kind),
+    ["records", "expiry", "audit"],
+    "every kind is a row, so a kind that never ran is visibly absent",
+  );
+
+  // The service retains one pass overall, so only its kind carries counters.
+  const [records, expiry, audit] = notifications.passes;
+  assert.deepEqual(records.lastPass, {
+    startedAt: "2026-10-06T11:55:00.000Z",
+    durationMs: 812,
+    zonesChecked: 2,
+    notificationsCreated: 1,
+    notificationsRefreshed: 3,
+    notificationsSuperseded: 1,
+    errors: 0,
+    skipped: false,
+    backoff: false,
+  });
+  assert.ok(expiry.lastPass === null, "expiry was not the most recent pass");
+  assert.ok(audit.lastPass === null, "and audit has never run");
+  assert.equal(audit.lastCheckAt, null);
+  assert.equal(expiry.lastCheckAt, "2026-10-06T06:00:00.000Z");
+
+  const markdown = renderDiagnosticsMarkdown(report);
+  assert.ok(markdown.includes("3 refreshed, 1 superseded"));
+  assert.ok(
+    !markdown.includes("Audit pass"),
+    "a kind that has neither run nor been scheduled is three wasted lines",
+  );
+});
+
+test("a pass whose refreshed counters are absent omits them rather than guessing", () => {
+  // What the current `PassSummary` actually sends: no refreshed/superseded.
+  const report = buildDiagnosticsReport({
+    notifications: {
+      lastRecordCheckAt: "2026-10-06T11:55:00.000Z",
+      lastPass: {
+        kind: "records",
+        startedAt: "2026-10-06T11:55:00.000Z",
+        durationMs: 10,
+        zonesChecked: 1,
+        notificationsCreated: 0,
+        errors: 0,
+      },
+    },
+  });
+  const pass = report.notifications.passes[0].lastPass;
+
+  assert.ok(pass !== null);
+  assert.equal(pass.notificationsRefreshed, null);
+  assert.equal(pass.notificationsSuperseded, null);
+  assert.equal(pass.skipped, null);
+  assert.ok(
+    !renderDiagnosticsMarkdown(report).includes("refreshed"),
+    "an absent counter is omitted, not printed as zero",
+  );
+});
+
+test("the recycle bin reports counts and bytes, never an entry", () => {
+  const report = buildDiagnosticsReport(loadedSnapshot());
+
+  assert.deepEqual(report.storage.recycleBin, {
+    entriesHeld: 3,
+    disabled: 1,
+    binned: 1,
+    // `"quarantined"` is a reason this build does not know, and is counted as
+    // unknown rather than passed through as text.
+    unknownReason: 1,
+    expiredPendingPurge: 1,
+    bytesHeld: 24_576,
+    maxBytes: 262_144,
+    maxEntries: 50,
+    percentOfByteCeiling: 9,
+  });
+  const text = JSON.stringify(report);
+  assert.ok(!text.includes("quarantined"), "an unknown reason is not echoed");
+  assert.ok(!text.includes("snapshot"), "no part of a record snapshot is read");
+});
+
+test("the recycle bin's own zones are redacted from prose even under the opt-in", () => {
+  // A zone the workspace has closed is not on the screen the user read before
+  // pasting, so it is not covered by the opt-in's consent.
+  const report = buildDiagnosticsReport(loadedSnapshot(), {
+    includeUserData: true,
+  });
+  const text = JSON.stringify(report);
+
+  assert.ok(!text.includes(IDENTIFYING.binnedZoneName));
+  assert.ok(!text.includes(IDENTIFYING.binnedRecordName));
+  assert.deepEqual(
+    report.userData?.zones.map((zone) => zone.name),
+    [IDENTIFYING.zoneName, IDENTIFYING.otherZoneName],
+    "only the zones the workspace has open are published",
+  );
+});
+
+test("the audit trail is counts and a date range, with every bucket present", () => {
+  const report = buildDiagnosticsReport(loadedSnapshot());
+
+  assert.deepEqual(report.storage.auditTrail, {
+    entries: 847,
+    capacity: 1000,
+    oldestAt: "2026-09-01T07:00:00.000Z",
+    newestAt: "2026-10-06T11:59:00.000Z",
+    byActor: [
+      { actor: "user", count: 700 },
+      { actor: "mcp_client", count: 100 },
+      { actor: "assistant", count: 47 },
+    ],
+    byOutcome: [
+      { outcome: "succeeded", count: 800 },
+      { outcome: "failed", count: 30 },
+      { outcome: "denied", count: 17 },
+    ],
+  });
+  assert.ok(
+    renderDiagnosticsMarkdown(report).includes(
+      "- Audit trail: 847 entries of 1000",
+    ),
+    "how close the trail is to evicting is why the capacity is reported",
+  );
+});
+
+test("an audit bucket a newer build invented puts no text in the payload", () => {
+  const report = buildDiagnosticsReport({
+    auditSummary: {
+      entries: 2,
+      byActor: { user: 1, [`smuggled ${SECRETS.cloudflareApiToken}`]: 1 },
+      byOutcome: { [IDENTIFYING.recordContent]: 1 },
+    },
+  });
+  const text = JSON.stringify(report);
+
+  // Driven from the closed vocabulary, not from the reply's keys.
+  assert.deepEqual(
+    report.storage.auditTrail.byActor.map((entry) => entry.actor),
+    ["user", "mcp_client", "assistant"],
+  );
+  assert.ok(!text.includes(SECRETS.cloudflareApiToken));
+  assert.ok(!text.includes(IDENTIFYING.recordContent));
+});
+
 test("the MCP server's binding is classified, never named", () => {
   assert.equal(classifyMcpBinding("127.0.0.1"), "loopback");
   assert.equal(classifyMcpBinding("127.1.2.3"), "loopback");
@@ -473,36 +896,97 @@ test("the MCP server's binding is classified, never named", () => {
   assert.equal(report.services.mcp.port, 8787);
   assert.equal(report.services.mcp.toolsEnabled, 2);
   assert.equal(report.services.mcp.toolsAvailable, 3);
+  assert.equal(report.services.mcp.promptsAvailable, 4);
+  assert.equal(report.services.mcp.resourcesAvailable, 5);
   assert.ok(
     !JSON.stringify(report).includes("127.0.0.1"),
     "the bind address is a network location and is not a diagnostic",
   );
 });
 
-test("AI providers are reduced to protocols, counts and whether a key exists", () => {
+test("the assistant is reduced to counts, closed-set tokens and booleans", () => {
   const report = buildDiagnosticsReport(loadedSnapshot());
 
-  assert.deepEqual(report.services.ai, {
+  assert.deepEqual(report.services.assistant, {
     providersConfigured: 2,
     protocols: ["anthropic", "openai"],
     providersWithStoredKey: 1,
+    personasTotal: 3,
+    personasBuiltin: 1,
+    personasCustom: 2,
+    permissionMode: "ask",
+    // `cf_future_tool: "escalate"` is in the input and in none of the tallies.
+    toolOverrides: { allow: 2, ask: 1, deny: 1 },
+    dispatchAvailable: true,
+    toolsGranted: 12,
+    toolsUsable: 9,
+    toolsRegistered: 48,
   });
   assert.ok(
     !JSON.stringify(report).includes("api.anthropic.com"),
     "a base URL is withheld even when it is a public endpoint, because the field cannot tell",
   );
+  assert.ok(
+    !JSON.stringify(report).includes("cf_delete_dns_record"),
+    "which tools someone granted is the shape of their workflow, not a diagnostic",
+  );
 });
 
-test("a protocol outside the closed set is dropped rather than echoed", () => {
+test("a persona's name, description and prompt never reach the payload", () => {
+  const report = buildDiagnosticsReport(
+    {
+      aiPersonas: [
+        {
+          id: "p1",
+          name: IDENTIFYING.personaName,
+          description: `About ${IDENTIFYING.zoneName}`,
+          systemPrompt: SECRETS.personaPrompt,
+          builtin: false,
+        },
+      ],
+    },
+    { includeUserData: true },
+  );
+  const text = JSON.stringify(report);
+
+  assert.equal(report.services.assistant.personasTotal, 1);
+  assert.equal(report.services.assistant.personasCustom, 1);
+  for (const forbidden of [
+    IDENTIFYING.personaName,
+    SECRETS.personaPrompt,
+    "About ",
+  ]) {
+    assert.ok(!text.includes(forbidden), `${forbidden} reached the payload`);
+  }
+});
+
+test("an absent assistant reports null rather than zero", () => {
+  const report = buildDiagnosticsReport({});
+
+  // Zero providers and "the assistant could not be asked" are different
+  // answers, and a report that conflated them would send someone looking for
+  // a configuration problem that does not exist.
+  assert.equal(report.services.assistant.providersConfigured, null);
+  assert.equal(report.services.assistant.personasTotal, null);
+  assert.equal(report.services.assistant.permissionMode, null);
+  assert.equal(report.services.assistant.toolOverrides, null);
+  assert.equal(report.services.assistant.toolsRegistered, null);
+  assert.deepEqual(report.services.assistant.protocols, []);
+});
+
+test("a protocol or permission mode outside its closed set is dropped", () => {
   const report = buildDiagnosticsReport({
     aiProviders: [
       { protocol: `smuggled ${SECRETS.aiProviderKey}`, hasApiKey: true },
       { protocol: "ollama", hasApiKey: false },
     ],
+    aiPermissions: { mode: `smuggled ${SECRETS.cloudflareApiToken}` },
   });
 
-  assert.deepEqual(report.services.ai.protocols, ["ollama"]);
+  assert.deepEqual(report.services.assistant.protocols, ["ollama"]);
+  assert.equal(report.services.assistant.permissionMode, null);
   assert.ok(!JSON.stringify(report).includes(SECRETS.aiProviderKey));
+  assert.ok(!JSON.stringify(report).includes(SECRETS.cloudflareApiToken));
 });
 
 test("an unstamped build is named as one rather than shown a placeholder", () => {
@@ -544,7 +1028,17 @@ test("an empty snapshot still produces a complete, well-formed payload", () => {
   assert.equal(report.schema, DIAGNOSTICS_SCHEMA);
   assert.equal(report.build.shell, "browser");
   assert.equal(report.services.mcp.running, null);
-  assert.deepEqual(report.services.ai.protocols, []);
+  assert.deepEqual(report.services.assistant.protocols, []);
+  assert.deepEqual(report.notifications.passes, [
+    { kind: "records", lastCheckAt: null, nextCheckAt: null, lastPass: null },
+    { kind: "expiry", lastCheckAt: null, nextCheckAt: null, lastPass: null },
+    { kind: "audit", lastCheckAt: null, nextCheckAt: null, lastPass: null },
+  ]);
+  assert.equal(report.storage.recycleBin.entriesHeld, null);
+  assert.equal(report.storage.auditTrail.entries, null);
+  assert.deepEqual(report.storage.auditTrail.byActor, []);
+  assert.equal(report.updates.lastStatus, null);
+  assert.equal(report.session.startedAt, null);
   assert.deepEqual(report.runtimeErrors, {
     retained: 0,
     shown: 0,
@@ -774,8 +1268,8 @@ test("a zone name in an error message is withheld even under the opt-in", () => 
   });
 
   assert.ok(
-    report.services.notifications.lastError?.includes("[zone]"),
-    `the zone name should be redacted in prose: ${report.services.notifications.lastError}`,
+    report.notifications.lastError?.includes("[zone]"),
+    `the zone name should be redacted in prose: ${report.notifications.lastError}`,
   );
   assert.deepEqual(
     report.userData?.zones.map((zone) => zone.name),

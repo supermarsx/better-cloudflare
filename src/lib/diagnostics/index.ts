@@ -5,7 +5,9 @@
  * - `collect-diagnostics.ts` gathers the inputs from the host and the browser.
  * - `diagnostics-markdown.ts` renders the text the copy button copies.
  * - `redaction.ts` scrubs the free-form strings.
- * - `host-facts.ts` is the `app_host_facts` command's frontend edge.
+ * - `host-facts.ts` is the frontend edge of `app_host_facts` and
+ *   `audit_trail_summary`.
+ * - `host-invoke.ts` is the one bounded `invoke` those commands go through.
  */
 import { copyTextToClipboard } from "@/lib/errors/runtime-reporting";
 
@@ -22,7 +24,11 @@ export {
   DIAGNOSTICS_SCHEMA,
 } from "./diagnostics-report";
 export type {
+  DiagnosticsAiPermissions,
+  DiagnosticsAiPersona,
   DiagnosticsAiProvider,
+  DiagnosticsAuditSummary,
+  DiagnosticsAuditTrailSection,
   DiagnosticsBiometricStatus,
   DiagnosticsBrowserFacts,
   DiagnosticsBuildSection,
@@ -31,15 +37,26 @@ export type {
   DiagnosticsDevFacts,
   DiagnosticsErrorEntry,
   DiagnosticsMcpStatus,
+  DiagnosticsNotificationPass,
+  DiagnosticsNotificationsSection,
   DiagnosticsNotificationStatus,
+  DiagnosticsOfflineCacheSection,
   DiagnosticsOptions,
   DiagnosticsPasskeyStatus,
   DiagnosticsPlatformSection,
   DiagnosticsRecord,
+  DiagnosticsRecycleBinSection,
   DiagnosticsReport,
+  DiagnosticsRetainedStore,
   DiagnosticsSecuritySection,
   DiagnosticsServicesSection,
+  DiagnosticsSessionFacts,
+  DiagnosticsSessionSection,
   DiagnosticsSnapshot,
+  DiagnosticsStorageSection,
+  DiagnosticsUpdateCheck,
+  DiagnosticsUpdateSettings,
+  DiagnosticsUpdatesSection,
   DiagnosticsUserDataSection,
   DiagnosticsWorkspaceCounts,
   DiagnosticsZone,
@@ -51,6 +68,8 @@ export {
   collectDevFacts,
   collectDiagnosticsReport,
   collectDiagnosticsSnapshot,
+  collectSessionFacts,
+  collectUpdateSettings,
   describeBrowserFacts,
   describeDevServer,
 } from "./collect-diagnostics";
@@ -84,12 +103,20 @@ export type {
   DiagnosticsScrubberOptions,
 } from "./redaction";
 
-export { fetchHostFacts, HOST_FACTS_COMMAND } from "./host-facts";
+export {
+  AUDIT_SUMMARY_COMMAND,
+  fetchAuditTrailSummary,
+  fetchHostFacts,
+  HOST_FACTS_COMMAND,
+} from "./host-facts";
 export type {
+  AuditTrailSummary,
   HostFacts,
   KeyringAvailability,
   KeyringProbe,
+  OsRelease,
 } from "./host-facts";
+export { hostInvoke } from "./host-invoke";
 
 /** Which rendering the copy button puts on the clipboard. */
 export type DiagnosticsCopyFormat = "markdown" | "json";

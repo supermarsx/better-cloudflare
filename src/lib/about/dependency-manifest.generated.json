@@ -3424,6 +3424,7 @@
       "idna",
       "ipnet",
       "keyring",
+      "os_info",
       "pbkdf2",
       "rand",
       "reqwest",
@@ -3991,6 +3992,12 @@
         "name": "cfg-if",
         "version": "1.0.4",
         "license": "MIT OR Apache-2.0",
+        "workspace": false
+      },
+      {
+        "name": "cfg_aliases",
+        "version": "0.2.2",
+        "license": "MIT",
         "workspace": false
       },
       {
@@ -5362,6 +5369,12 @@
         "workspace": false
       },
       {
+        "name": "nix",
+        "version": "0.31.3",
+        "license": "MIT",
+        "workspace": false
+      },
+      {
         "name": "nom",
         "version": "7.1.3",
         "license": "MIT",
@@ -5605,6 +5618,12 @@
         "name": "ordered-stream",
         "version": "0.2.0",
         "license": "MIT OR Apache-2.0",
+        "workspace": false
+      },
+      {
+        "name": "os_info",
+        "version": "3.15.0",
+        "license": "MIT",
         "workspace": false
       },
       {

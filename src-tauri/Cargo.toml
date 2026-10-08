@@ -22,6 +22,14 @@ dirs = "6"
 tokio = { version = "1", features = ["sync", "macros", "rt", "time"] }
 url = "2"
 zeroize = "1"
+# The OS name, release and edition for the diagnostics report — "Windows 11
+# 26200", not "windows". `std::env::consts::OS` reports the target this binary
+# was *compiled* for and carries no version at all, and the version inferred
+# from the webview user agent is wrong on Windows by design (every Windows 11
+# reports `Windows NT 10.0`). `default-features = false` drops the crate's
+# optional `serde` derives: `HostFacts` maps the fields by hand rather than
+# serialising a foreign type into a payload the frontend reads.
+os_info = { version = "3", default-features = false }
 
 # Workspace crates
 bc-crypto = { path = "crates/bc-crypto" }

@@ -1,29 +1,23 @@
 /**
- * The frontend's view of `app_host_facts` (`src-tauri/src/diagnostics_commands.rs`).
+ * The frontend's view of `src-tauri/src/diagnostics_commands.rs`.
  *
- * These are the facts the webview cannot see for itself: the release tag
- * stamped into the binary, the target it was compiled for, the Tauri and
- * webview versions, and whether the OS keyring is answering. In the browser
- * dev server there is no host to ask, and every consumer treats `null` as
- * "not a desktop build" rather than as a failure.
+ * Two commands. `app_host_facts` reports what the webview cannot see for
+ * itself: the release tag stamped into the binary, the target it was compiled
+ * for, what the OS says about itself, the Tauri and webview versions, and
+ * whether the keyring is answering. `audit_trail_summary` counts the audit
+ * trail host-side so that no entry crosses the IPC boundary — the trail
+ * records record content, and the report is built to be pasted in public.
  *
- * The invoke is built from `tauri-client.ts`'s own exported pieces —
- * {@link withTauriUiTimeout}, {@link getTauriInvokeTimeoutMs} and
- * {@link normalizeTauriInvokeError} — so this command gets the same deadline,
- * the same abort handling and the same error normalisation as every other
- * command, without a second invoke implementation to keep in step.
+ * In the browser dev server there is no host to ask, and every consumer treats
+ * `null` as "not a desktop build" rather than as a failure.
  */
-import { invoke as tauriInvoke } from "@tauri-apps/api/core";
-
-import {
-  getTauriInvokeTimeoutMs,
-  normalizeTauriInvokeError,
-  withTauriUiTimeout,
-} from "@/lib/api/tauri-client";
 import { isDesktop } from "@/lib/environment";
 
-/** The command this module calls. Registered in `main.rs` by the app shell. */
+import { hostInvoke } from "./host-invoke";
+
+/** The commands this module calls. Both registered in `main.rs`. */
 export const HOST_FACTS_COMMAND = "app_host_facts";
+export const AUDIT_SUMMARY_COMMAND = "audit_trail_summary";
 
 /** Mirrors `KeyringAvailability`. */
 export type KeyringAvailability = "available" | "unavailable" | "unknown";
@@ -33,6 +27,25 @@ export interface KeyringProbe {
   status: KeyringAvailability;
   /** The backend's refusal text, if there was one. Free-form; scrub it. */
   detail?: string | null;
+}
+
+/**
+ * Mirrors `OsRelease` — what the OS says about itself, from `os_info`.
+ *
+ * This is the field {@link HostFacts.os} cannot be. `os` is the compile
+ * target, so it says `"windows"` and carries no release; and the webview user
+ * agent is no substitute, because every Windows 11 reports `Windows NT 10.0`
+ * in its UA by design. `"Windows 11 Professional 10.0.26200"` only exists
+ * because the host asked the OS.
+ */
+export interface OsRelease {
+  osType?: string | null;
+  version?: string | null;
+  edition?: string | null;
+  codename?: string | null;
+  bitness?: string | null;
+  /** The machine's own architecture, which an emulated build's differs from. */
+  architecture?: string | null;
 }
 
 /** Mirrors `HostFacts`. */
@@ -48,6 +61,7 @@ export interface HostFacts {
   family?: string | null;
   tauriVersion?: string | null;
   webviewVersion?: string | null;
+  osRelease?: OsRelease | null;
   keyring?: KeyringProbe | null;
 }
 
@@ -63,17 +77,50 @@ export async function fetchHostFacts(
 ): Promise<HostFacts | null> {
   if (!isDesktop()) return null;
   try {
-    return await withTauriUiTimeout(
-      tauriInvoke<HostFacts>(HOST_FACTS_COMMAND),
-      HOST_FACTS_COMMAND,
-      getTauriInvokeTimeoutMs(HOST_FACTS_COMMAND),
+    return await hostInvoke<HostFacts>(HOST_FACTS_COMMAND, {}, signal);
+  } catch {
+    // Swallowed on purpose: which probe failed is not itself a diagnostic
+    // worth risking a thrown error on a diagnostics screen, and the missing
+    // row is already visible in the payload as a `null`.
+    return null;
+  }
+}
+
+/**
+ * Mirrors `AuditTrailSummary` — the audit trail reduced to counts.
+ *
+ * The maps are keyed by `AuditActor::as_str` and `AuditOutcome::as_str`. The
+ * builder reads them through the closed vocabularies rather than iterating the
+ * reply's keys, so a key a newer build invents cannot put its own text in the
+ * payload.
+ */
+export interface AuditTrailSummary {
+  entries?: number | null;
+  capacity?: number | null;
+  oldestAt?: string | null;
+  newestAt?: string | null;
+  byActor?: Record<string, number> | null;
+  byOutcome?: Record<string, number> | null;
+}
+
+/**
+ * Ask the host to count the audit trail.
+ *
+ * The counting happens on the other side of the IPC boundary and that is the
+ * whole point — see the module comment in `diagnostics_commands.rs`. Never
+ * rejects, for the same reason {@link fetchHostFacts} does not.
+ */
+export async function fetchAuditTrailSummary(
+  signal?: AbortSignal,
+): Promise<AuditTrailSummary | null> {
+  if (!isDesktop()) return null;
+  try {
+    return await hostInvoke<AuditTrailSummary>(
+      AUDIT_SUMMARY_COMMAND,
+      {},
       signal,
     );
-  } catch (error) {
-    // Normalised for its side effect of classifying the failure; the value is
-    // deliberately dropped, because which probe failed is not itself a
-    // diagnostic worth risking a thrown error on a diagnostics screen.
-    void normalizeTauriInvokeError(error, HOST_FACTS_COMMAND);
+  } catch {
     return null;
   }
 }

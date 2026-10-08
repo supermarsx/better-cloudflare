@@ -17,7 +17,9 @@
 import { TauriClient } from "@/lib/api/tauri-client";
 import { isDesktop } from "@/lib/environment";
 import { getRuntimeDiagnostics } from "@/lib/errors/runtime-reporting";
+import { createRecordRetentionClient } from "@/lib/records/retention";
 import { getCacheIndexEntries } from "@/lib/storage/offline-cache";
+import { storageManager } from "@/lib/storage/storage";
 
 import {
   buildDiagnosticsReport,
@@ -26,10 +28,26 @@ import {
   type DiagnosticsOptions,
   type DiagnosticsRecord,
   type DiagnosticsReport,
+  type DiagnosticsSessionFacts,
   type DiagnosticsSnapshot,
+  type DiagnosticsUpdateCheck,
+  type DiagnosticsUpdateSettings,
   type DiagnosticsZone,
 } from "./diagnostics-report";
-import { fetchHostFacts } from "./host-facts";
+import { fetchAuditTrailSummary, fetchHostFacts } from "./host-facts";
+import { hostInvoke } from "./host-invoke";
+
+/**
+ * The recycle bin's command surface, over the diagnostics invoke.
+ *
+ * `createRecordRetentionClient` takes an `invoke` rather than importing the
+ * client, which is what lets the diagnostics collector reuse it without
+ * depending on whichever component owns the bin's UI.
+ */
+const retentionClient = createRecordRetentionClient(
+  <T>(command: string, args: Record<string, unknown>): Promise<T> =>
+    hostInvoke<T>(command, args),
+);
 
 /**
  * What the caller knows and the collector cannot discover.
@@ -45,6 +63,15 @@ export interface DiagnosticsCollectionInput {
   records?: readonly DiagnosticsRecord[] | null;
   zoneTabsOpen?: number | null;
   passkeysRegistered?: number | null;
+  /**
+   * The last `update_check` result, if one ran in this session.
+   *
+   * Passed in rather than fetched: a check is a network request to GitHub,
+   * which rate-limits unauthenticated callers, and opening a diagnostics panel
+   * must not spend one. The settings around it are persisted and read directly;
+   * only the verdict needs handing over.
+   */
+  updateCheck?: DiagnosticsUpdateCheck | null;
   signal?: AbortSignal;
 }
 
@@ -182,6 +209,9 @@ export async function collectDiagnosticsSnapshot(
   input: DiagnosticsCollectionInput = {},
 ): Promise<DiagnosticsSnapshot> {
   const desktop = isDesktop();
+  const onDesktop = <T>(probe: () => Promise<T>): Promise<T | null> =>
+    desktop ? attempt(probe) : Promise.resolve(null);
+
   const [
     hostFacts,
     biometrics,
@@ -189,25 +219,26 @@ export async function collectDiagnosticsSnapshot(
     mcp,
     notifications,
     aiProviders,
+    aiPersonas,
+    aiPermissions,
+    retainedStore,
+    auditSummary,
     apiCredentialsStored,
     registrarCredentialsStored,
   ] = await Promise.all([
     desktop ? fetchHostFacts(input.signal) : Promise.resolve(null),
-    desktop
-      ? attempt(() => TauriClient.biometricStatus())
-      : Promise.resolve(null),
-    desktop
-      ? attempt(() => TauriClient.getPasskeyStatus())
-      : Promise.resolve(null),
-    desktop
-      ? attempt(() => TauriClient.getMcpServerStatus())
-      : Promise.resolve(null),
-    desktop
-      ? attempt(() => TauriClient.notificationsStatus())
-      : Promise.resolve(null),
-    desktop
-      ? attempt(() => TauriClient.aiListProviders())
-      : Promise.resolve(null),
+    onDesktop(() => TauriClient.biometricStatus()),
+    onDesktop(() => TauriClient.getPasskeyStatus()),
+    onDesktop(() => TauriClient.getMcpServerStatus()),
+    onDesktop(() => TauriClient.notificationsStatus()),
+    onDesktop(() => TauriClient.aiListProviders()),
+    onDesktop(() => TauriClient.aiListPersonas()),
+    onDesktop(() => TauriClient.aiGetPermissions()),
+    // Reading the bin does not purge it: `list_retained_records` says so
+    // explicitly, which is what makes it safe to call from a screen whose only
+    // job is to look.
+    onDesktop(() => retentionClient.list()),
+    desktop ? fetchAuditTrailSummary(input.signal) : Promise.resolve(null),
     desktop ? count(() => TauriClient.getApiKeys()) : Promise.resolve(null),
     desktop
       ? count(() => TauriClient.listRegistrarCredentials())
@@ -219,12 +250,19 @@ export async function collectDiagnosticsSnapshot(
     shell: desktop ? "desktop" : "browser",
     hostFacts,
     browser: collectBrowserFacts(),
+    session: collectSessionFacts(),
     dev: collectDevFacts(),
     biometrics,
     passkeys,
     mcp,
     notifications,
     aiProviders,
+    aiPersonas,
+    aiPermissions,
+    retainedStore,
+    auditSummary,
+    updateCheck: input.updateCheck ?? null,
+    updateSettings: attemptSync(() => collectUpdateSettings()),
     counts: {
       zoneTabsOpen: input.zoneTabsOpen ?? null,
       zonesAvailable: input.zones?.length ?? null,
@@ -236,6 +274,41 @@ export async function collectDiagnosticsSnapshot(
     records: input.records ?? null,
     cache: attemptSync(() => getCacheIndexEntries()),
     runtimeErrors: getRuntimeDiagnostics(),
+  };
+}
+
+/**
+ * The update-check preferences as stored.
+ *
+ * `due` is evaluated here rather than stored, because "is a check overdue" is
+ * a question about now — a report that said "due" an hour ago answers nothing.
+ */
+export function collectUpdateSettings(): DiagnosticsUpdateSettings {
+  return {
+    enabled: storageManager.getUpdateCheckEnabled(),
+    intervalHours: storageManager.getUpdateCheckIntervalHours(),
+    includePrereleases: storageManager.getUpdateCheckIncludePrereleases(),
+    lastCheckedAt: storageManager.getUpdateCheckLastCheckedAt(),
+    due: storageManager.isUpdateCheckDue(),
+  };
+}
+
+/**
+ * How long this window has been open.
+ *
+ * `performance.timeOrigin` is when the document started, which in a desktop
+ * build is app launch unless the webview has been reloaded. It is labelled as
+ * the window's lifetime rather than the process's for exactly that reason —
+ * and it is the number that explains stale frontend state, which is what a
+ * reader of this section is actually chasing.
+ */
+export function collectSessionFacts(): DiagnosticsSessionFacts | null {
+  if (typeof performance === "undefined") return null;
+  const origin = performance.timeOrigin;
+  if (!Number.isFinite(origin) || origin <= 0) return null;
+  return {
+    startedAt: new Date(origin).toISOString(),
+    uptimeMs: Math.max(0, Math.round(Date.now() - origin)),
   };
 }
 

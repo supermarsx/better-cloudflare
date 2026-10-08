@@ -15,9 +15,26 @@
  * thing a later "include recent activity in diagnostics" change would undo
  * without anyone noticing — the content would arrive through the entries, not
  * through the records `diagnosticsReport.test.ts` watches.
+ *
+ * # The report now does say something about the trail
+ *
+ * It says how many entries there are, when the oldest and newest were written,
+ * and how they split by actor and by outcome. That is six numbers and two
+ * timestamps, and none of it is an entry.
+ *
+ * The obvious way to produce it — fetch the entries, count them in the
+ * renderer — is exactly what this file forbids, so it is not how it is done.
+ * `audit_trail_summary` counts on the host side and returns only the counts,
+ * which means an entry is never transmitted at all. That is a *stronger*
+ * guarantee than a renderer that merely chooses not to ask: the content cannot
+ * reach the webview even if a later change wanted it to. Both halves are
+ * pinned below.
  */
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
 import { afterEach, test } from "node:test";
+import { fileURLToPath } from "node:url";
 
 import { collectDiagnosticsSnapshot } from "../src/lib/diagnostics/collect-diagnostics";
 import {
@@ -29,7 +46,17 @@ import {
   renderDiagnosticsJson,
   renderDiagnosticsMarkdown,
 } from "../src/lib/diagnostics/diagnostics-markdown";
+import { AUDIT_SUMMARY_COMMAND } from "../src/lib/diagnostics/host-facts";
 import { TauriClient } from "../src/lib/api/tauri-client";
+
+const repositoryRoot = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "..",
+);
+
+function readRepositoryFile(relativePath: string): string {
+  return fs.readFileSync(path.join(repositoryRoot, relativePath), "utf8");
+}
 
 /** Key material a trail entry legitimately carries and a report must not. */
 const TRAIL_SECRET = "v=DKIM1; p=MIIBIjANBgkqhkiG9w0-secret-key-material";
@@ -117,4 +144,102 @@ test("no rendering of a report has a place to put a trail entry", () => {
       `${label} carried an audit operation`,
     );
   }
+});
+
+test("the host-side summary is the only audit command the report names", () => {
+  // The collector reaches the trail through one command, and that command is
+  // the counting one. A grep is the right check here: the guarantee is about
+  // which command names appear in the module at all, not about what one call
+  // happened to return.
+  const collector = readRepositoryFile(
+    "src/lib/diagnostics/collect-diagnostics.ts",
+  );
+  const hostFacts = readRepositoryFile("src/lib/diagnostics/host-facts.ts");
+
+  assert.equal(AUDIT_SUMMARY_COMMAND, "audit_trail_summary");
+  assert.ok(
+    hostFacts.includes(AUDIT_SUMMARY_COMMAND),
+    "the summary command is reached through host-facts.ts",
+  );
+  for (const forbidden of [
+    "get_audit_entries",
+    "getAuditEntries",
+    "export_audit_entries",
+    "exportAuditEntries",
+  ] as const) {
+    assert.ok(
+      !collector.includes(forbidden) && !hostFacts.includes(forbidden),
+      `${forbidden} would bring whole entries into the renderer`,
+    );
+  }
+});
+
+test("the counting command returns no field that could hold an entry", () => {
+  // Driven with a reply that smuggles entry-shaped fields alongside the
+  // counts, because a host command is still an input and is still projected.
+  const report = buildDiagnosticsReport(
+    {
+      auditSummary: {
+        entries: 3,
+        capacity: 1000,
+        oldestAt: "2026-09-01T07:00:00.000Z",
+        newestAt: "2026-10-07T09:00:00.000Z",
+        byActor: { user: 3 },
+        byOutcome: { succeeded: 3 },
+        // Not in `AuditTrailSummary`, and so not read.
+        ...({
+          recentEntries: trailWithSecrets(),
+          lastOperation: "dns:update",
+          lastResource: "record-1",
+        } as Record<string, unknown>),
+      },
+    },
+    { includeUserData: true },
+  );
+
+  assert.equal(report.storage.auditTrail.entries, 3);
+  assert.equal(report.storage.auditTrail.capacity, 1000);
+  for (const [label, text] of [
+    ["JSON.stringify", JSON.stringify(report)],
+    ["renderDiagnosticsJson", renderDiagnosticsJson(report)],
+    ["renderDiagnosticsMarkdown", renderDiagnosticsMarkdown(report)],
+  ] as const) {
+    assert.ok(
+      text.includes(DIAGNOSTICS_SCHEMA),
+      `${label} produced no payload to search`,
+    );
+    for (const forbidden of [
+      TRAIL_SECRET,
+      "dns:update",
+      "record-1",
+      "selector._domainkey.example.com",
+      "recentEntries",
+      "lastOperation",
+    ]) {
+      assert.ok(
+        !text.includes(forbidden),
+        `${forbidden} reached ${label} through the audit summary`,
+      );
+    }
+  }
+});
+
+test("the reported trail capacity is the one bc-storage evicts to", () => {
+  // `MAX_AUDIT_ENTRIES` is private to bc-storage, so the capacity is mirrored
+  // in `diagnostics_commands.rs`. This is what keeps the mirror honest, and is
+  // cheaper than widening another crate's surface for one diagnostics line.
+  const storage = readRepositoryFile("src-tauri/crates/bc-storage/src/lib.rs");
+  const commands = readRepositoryFile("src-tauri/src/diagnostics_commands.rs");
+
+  const actual = /const MAX_AUDIT_ENTRIES: usize = (\d+);/u.exec(storage)?.[1];
+  const mirrored = /pub const AUDIT_TRAIL_CAPACITY: usize = (\d+);/u.exec(
+    commands,
+  )?.[1];
+
+  assert.ok(actual !== undefined, "bc-storage declares MAX_AUDIT_ENTRIES");
+  assert.equal(
+    mirrored,
+    actual,
+    "AUDIT_TRAIL_CAPACITY mirrors MAX_AUDIT_ENTRIES and has drifted",
+  );
 });

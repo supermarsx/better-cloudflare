@@ -23,6 +23,8 @@ import {
   collectDevFacts,
   collectDiagnosticsReport,
   collectDiagnosticsSnapshot,
+  collectSessionFacts,
+  collectUpdateSettings,
   describeBrowserFacts,
   describeDevServer,
 } from "../src/lib/diagnostics/collect-diagnostics";
@@ -31,7 +33,17 @@ import {
 // put back the same way rather than by assignment.
 const realIntlDescriptor = Object.getOwnPropertyDescriptor(globalThis, "Intl");
 
+/**
+ * The harness installs `window` as a getter whose setter forwards only the
+ * three Tauri probe flags (`test/node-test-env.ts`). So assigning
+ * `{ __TAURI__: {} }` is how `isDesktop()` is made to answer true, and
+ * assigning `undefined` is how those flags are cleared again — a stub object
+ * will not replace the window itself.
+ */
+const globals = globalThis as unknown as { window?: unknown };
+
 afterEach(() => {
+  globals.window = undefined;
   if (realIntlDescriptor !== undefined) {
     Object.defineProperty(globalThis, "Intl", realIntlDescriptor);
   }
@@ -221,12 +233,100 @@ test("the snapshot skips every host probe when there is no desktop shell", async
   assert.equal(snapshot.mcp, null);
   assert.equal(snapshot.notifications, null);
   assert.equal(snapshot.aiProviders, null);
+  assert.equal(snapshot.aiPersonas, null);
+  assert.equal(snapshot.aiPermissions, null);
+  assert.equal(snapshot.retainedStore, null);
+  assert.equal(snapshot.auditSummary, null);
   assert.equal(snapshot.biometrics, null);
   assert.equal(snapshot.passkeys, null);
   assert.equal(snapshot.counts?.apiCredentialsStored, null);
   assert.ok(snapshot.capturedAt instanceof Date);
-  // The browser reads still happen, because they do not need a host.
+  // The reads that need no host still happen.
   assert.ok(snapshot.browser);
+  assert.ok(snapshot.session);
+  assert.ok(snapshot.updateSettings);
+});
+
+test("every host probe is attempted on desktop, and a failure costs one row", async () => {
+  // No Tauri bridge is actually present, so every native probe rejects. That
+  // is the case worth pinning: the snapshot must still come back whole, with
+  // the unreachable rows as `null`, because a diagnostics screen is opened
+  // precisely when something is already broken.
+  globals.window = { __TAURI__: {} };
+
+  const snapshot = await collectDiagnosticsSnapshot();
+
+  assert.equal(snapshot.shell, "desktop");
+  for (const [label, value] of [
+    ["hostFacts", snapshot.hostFacts],
+    ["mcp", snapshot.mcp],
+    ["notifications", snapshot.notifications],
+    ["aiProviders", snapshot.aiProviders],
+    ["aiPersonas", snapshot.aiPersonas],
+    ["aiPermissions", snapshot.aiPermissions],
+    ["retainedStore", snapshot.retainedStore],
+    ["auditSummary", snapshot.auditSummary],
+  ] as const) {
+    assert.ok(value === null, `${label} should be null, not a thrown error`);
+  }
+  assert.ok(snapshot.session, "the session read needs no host");
+  assert.ok(snapshot.updateSettings, "nor do the update preferences");
+});
+
+test("the update preferences are read from storage, and due-ness from now", async () => {
+  const settings = collectUpdateSettings();
+
+  assert.equal(typeof settings.enabled, "boolean");
+  assert.equal(typeof settings.intervalHours, "number");
+  assert.equal(typeof settings.includePrereleases, "boolean");
+  // `due` is evaluated at collection time rather than stored: "a check is
+  // overdue" is a question about now, and a stored answer would be stale.
+  assert.equal(typeof settings.due, "boolean");
+  assert.ok(
+    settings.lastCheckedAt === null ||
+      typeof settings.lastCheckedAt === "string",
+  );
+});
+
+test("session facts report the window's own lifetime", () => {
+  const facts = collectSessionFacts();
+
+  assert.ok(facts, "a page always has a time origin");
+  assert.equal(typeof facts.startedAt, "string");
+  assert.ok(
+    typeof facts.uptimeMs === "number" && facts.uptimeMs >= 0,
+    "uptime is never negative, even if the clock moved",
+  );
+  assert.ok(
+    Date.parse(facts.startedAt as string) <= Date.now(),
+    "the window cannot have opened in the future",
+  );
+});
+
+test("no time origin means no session section rather than a fabricated one", () => {
+  const original = Object.getOwnPropertyDescriptor(globalThis, "performance");
+  try {
+    Object.defineProperty(globalThis, "performance", {
+      configurable: true,
+      writable: true,
+      value: { timeOrigin: Number.NaN },
+    });
+    assert.ok(collectSessionFacts() === null);
+
+    Object.defineProperty(globalThis, "performance", {
+      configurable: true,
+      writable: true,
+      value: { timeOrigin: 0 },
+    });
+    assert.ok(
+      collectSessionFacts() === null,
+      "a zero origin is absent, not 1970",
+    );
+  } finally {
+    if (original !== undefined) {
+      Object.defineProperty(globalThis, "performance", original);
+    }
+  }
 });
 
 test("the caller's zones and records reach the snapshot untouched", async () => {

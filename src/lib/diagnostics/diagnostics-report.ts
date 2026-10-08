@@ -50,6 +50,7 @@ import {
   type RuntimeDiagnostic,
   type RuntimeErrorSource,
 } from "@/lib/errors/runtime-reporting";
+import { retentionReasonKind } from "@/lib/records/retention";
 import { PROVIDER_PROTOCOLS } from "@/types/ai";
 
 import { DEPENDENCY_TOTALS } from "@/lib/about/dependency-totals.generated";
@@ -59,8 +60,15 @@ import {
 } from "./redaction";
 import type { HostFacts, KeyringAvailability } from "./host-facts";
 
-/** Identifies the payload shape in a pasted blob. */
-export const DIAGNOSTICS_SCHEMA = "better-cloudflare-diagnostics/1";
+/**
+ * Identifies the payload shape in a pasted blob.
+ *
+ * `/2` moved the notification service out of `services` into its own section
+ * and added `updates`, `session` and `storage`. A reader comparing two pasted
+ * reports can tell which shape each is rather than inferring it from which
+ * keys happen to be present.
+ */
+export const DIAGNOSTICS_SCHEMA = "better-cloudflare-diagnostics/2";
 
 /** Byte ceilings for the free-form strings the payload carries. */
 const TEXT_LIMITS = {
@@ -106,6 +114,19 @@ export interface DiagnosticsMcpStatus {
   enabledTools?: unknown;
   enabled_tools?: unknown;
   tools?: unknown;
+  /**
+   * `tool_count`, `prompt_count` and `resource_count` are sent by
+   * `McpServerStatus` in `bc-mcp/src/lib.rs` but are absent from the frontend
+   * interface in `tauri-client.ts`. They are declared here because this input
+   * type describes the *reply*, not that interface — which is the same reason
+   * `authToken` is declared above.
+   */
+  toolCount?: unknown;
+  tool_count?: unknown;
+  promptCount?: unknown;
+  prompt_count?: unknown;
+  resourceCount?: unknown;
+  resource_count?: unknown;
   lastError?: unknown;
   last_error?: unknown;
 }
@@ -195,6 +216,109 @@ export interface DiagnosticsCacheEntry {
   expired?: unknown;
 }
 
+/**
+ * `list_retained_records`, verbatim — the recycle bin's own view of itself.
+ *
+ * `entries` is the trap. Each one holds a record snapshot: its name, its
+ * content, its comment and the zone it came from, which is the densest
+ * concentration of user data this application keeps. The builder reads each
+ * entry's `reason` and nothing else, so the bin contributes counts and bytes.
+ */
+export interface DiagnosticsRetainedStore {
+  /** Record snapshots. Only `reason` is ever read off one. */
+  entries?: unknown;
+  expiredPendingPurge?: unknown;
+  totalHeld?: unknown;
+  bytesHeld?: unknown;
+  maxBytes?: unknown;
+  maxEntries?: unknown;
+}
+
+/**
+ * `audit_trail_summary`, verbatim.
+ *
+ * Already counts by the time it arrives: the command computes this host-side
+ * precisely so a trail entry never crosses the IPC boundary. See the module
+ * comment in `src-tauri/src/diagnostics_commands.rs`, and
+ * `test/diagnosticsAuditIsolation.test.ts`.
+ */
+export interface DiagnosticsAuditSummary {
+  entries?: unknown;
+  capacity?: unknown;
+  oldestAt?: unknown;
+  newestAt?: unknown;
+  byActor?: unknown;
+  byOutcome?: unknown;
+}
+
+/**
+ * One persona from `ai_list_personas`, verbatim.
+ *
+ * `name`, `description` and `systemPrompt` are all free text the user wrote —
+ * a system prompt especially can contain anything, including the zone names
+ * and record values they were working on. None of the three is read; a persona
+ * contributes one to a count and whether it is built in.
+ */
+export interface DiagnosticsAiPersona {
+  id?: unknown;
+  /** Free text. Never read. */
+  name?: unknown;
+  /** Free text. Never read. */
+  description?: unknown;
+  /** Free text, and the longest of the three. Never read. */
+  systemPrompt?: unknown;
+  builtin?: unknown;
+}
+
+/** `ai_get_permissions`, verbatim: the stored policy plus what it resolves to. */
+export interface DiagnosticsAiPermissions {
+  mode?: unknown;
+  /** Per-tool overrides. Counted by value; tool names are not reported. */
+  tools?: unknown;
+  /** The catalogue. Only its length is read. */
+  catalog?: unknown;
+  availability?: unknown;
+}
+
+/**
+ * An `UpdateCheck` as `update_check` returned it, verbatim.
+ *
+ * Nothing here is user data: the releases list is public and the request is
+ * unauthenticated. `latest.url` is validated host-side to be a `github.com`
+ * page before it is returned, and is still reported as a tag rather than a URL
+ * — a tag is what a reader needs, and a URL is a thing that could later point
+ * somewhere else.
+ */
+export interface DiagnosticsUpdateCheck {
+  current?: unknown;
+  latest?: unknown;
+  status?: unknown;
+  checkedAt?: unknown;
+}
+
+/** The update-check preferences, from `storageManager`. */
+export interface DiagnosticsUpdateSettings {
+  enabled?: unknown;
+  intervalHours?: unknown;
+  includePrereleases?: unknown;
+  lastCheckedAt?: unknown;
+  due?: unknown;
+}
+
+/**
+ * How long this window has been open.
+ *
+ * The *page's* lifetime, not the process's, and labelled that way. It is the
+ * number that actually explains stale frontend state, a leaked listener or a
+ * cache that should have expired — and unlike a process start time it needs no
+ * hook in `main.rs`.
+ */
+export interface DiagnosticsSessionFacts {
+  /** `performance.timeOrigin` as an ISO timestamp. */
+  startedAt?: unknown;
+  uptimeMs?: unknown;
+}
+
 /** Browser-side facts, read from `window`/`navigator` by the collector. */
 export interface DiagnosticsBrowserFacts {
   /** The webview's user agent. Carries the OS release, which Rust does not. */
@@ -242,12 +366,19 @@ export interface DiagnosticsSnapshot {
   shell?: "desktop" | "browser" | null;
   hostFacts?: HostFacts | null;
   browser?: DiagnosticsBrowserFacts | null;
+  session?: DiagnosticsSessionFacts | null;
   dev?: DiagnosticsDevFacts | null;
   biometrics?: DiagnosticsBiometricStatus | null;
   passkeys?: DiagnosticsPasskeyStatus | null;
   mcp?: DiagnosticsMcpStatus | null;
   notifications?: DiagnosticsNotificationStatus | null;
   aiProviders?: readonly DiagnosticsAiProvider[] | null;
+  aiPersonas?: readonly DiagnosticsAiPersona[] | null;
+  aiPermissions?: DiagnosticsAiPermissions | null;
+  retainedStore?: DiagnosticsRetainedStore | null;
+  auditSummary?: DiagnosticsAuditSummary | null;
+  updateCheck?: DiagnosticsUpdateCheck | null;
+  updateSettings?: DiagnosticsUpdateSettings | null;
   counts?: DiagnosticsWorkspaceCounts | null;
   zones?: readonly DiagnosticsZone[] | null;
   records?: readonly DiagnosticsRecord[] | null;
@@ -286,7 +417,20 @@ export interface DiagnosticsPlatformSection {
   os: string | null;
   arch: string | null;
   family: string | null;
-  /** The OS release is only legible here; Rust reports no version. */
+  /**
+   * What the OS says about itself — `"Windows 11 Professional 10.0.26200"`.
+   *
+   * The reason `os_info` is a dependency. {@link os} is the compile target and
+   * carries no release, and the user agent cannot substitute: every Windows 11
+   * reports `Windows NT 10.0` in its UA by design.
+   */
+  osName: string | null;
+  osVersion: string | null;
+  osEdition: string | null;
+  osCodename: string | null;
+  osBitness: string | null;
+  /** The machine's architecture, which an emulated build's differs from. */
+  machineArch: string | null;
   userAgent: string | null;
   language: string | null;
   timeZone: string | null;
@@ -295,6 +439,32 @@ export interface DiagnosticsPlatformSection {
   online: boolean | null;
   prefersDarkColorScheme: boolean | null;
   prefersReducedMotion: boolean | null;
+}
+
+/** How long this window has been open. See {@link DiagnosticsSessionFacts}. */
+export interface DiagnosticsSessionSection {
+  startedAt: string | null;
+  uptimeMs: number | null;
+}
+
+/** What update checking has been doing. */
+export interface DiagnosticsUpdatesSection {
+  checkEnabled: boolean | null;
+  intervalHours: number | null;
+  includePrereleases: boolean | null;
+  lastCheckedAt: string | null;
+  /** Whether a check is overdue right now, by the stored interval. */
+  checkDue: boolean | null;
+  /**
+   * The last check's verdict, if one ran in this session. Not persisted
+   * anywhere, so `null` means "no check this session" and never "up to date".
+   */
+  lastStatus: string | null;
+  lastCheckAt: string | null;
+  /** The release the last check settled on, as a `YY.N` tag — never a URL. */
+  latestSeenTag: string | null;
+  latestSeenPublishedAt: string | null;
+  latestIsPrerelease: boolean | null;
 }
 
 export interface DiagnosticsSecuritySection {
@@ -318,6 +488,61 @@ export interface DiagnosticsSecuritySection {
 /** Where the MCP server is listening, without naming a host. */
 export type McpBinding = "loopback" | "all-interfaces" | "other" | null;
 
+/** One pass the notification service ran, in counters. */
+export interface DiagnosticsNotificationPass {
+  startedAt: string | null;
+  durationMs: number | null;
+  zonesChecked: number | null;
+  notificationsCreated: number | null;
+  /**
+   * Existing expiry notices whose countdown the pass brought up to date, and
+   * notices withdrawn because the date they were written for changed.
+   *
+   * `PassReport` in `bc-notify/src/lib.rs` counts both; the `PassSummary` that
+   * `notifications_status` returns does not yet carry them, so these read
+   * `null` until it does. They are declared and read here so that the moment
+   * the Rust side forwards them the report shows them, with no change needed
+   * on this side — see the note in the handover for the four-field addition.
+   */
+  notificationsRefreshed: number | null;
+  notificationsSuperseded: number | null;
+  errors: number | null;
+  /** The pass did nothing because settings disabled it. */
+  skipped: boolean | null;
+  /** The pass saw 429/5xx and asked the caller to back off. */
+  backoff: boolean | null;
+}
+
+/**
+ * The notification service, in its own section rather than under `services`.
+ *
+ * "Why did I not get a notification" is the commonest question a diagnostics
+ * report could answer, and answering it needs all of this at once: whether the
+ * service is running, whether it is paused, whether quiet hours are in force
+ * *now*, when each kind of pass last ran and next will, and what the last pass
+ * of each kind actually did.
+ */
+export interface DiagnosticsNotificationsSection {
+  running: boolean | null;
+  enabled: boolean | null;
+  paused: boolean | null;
+  /** Evaluated host-side at collection time, so it means "right now". */
+  quietHoursActive: boolean | null;
+  zonesTracked: number | null;
+  unread: number | null;
+  backoffUntil: string | null;
+  lastError: string | null;
+  /** Keyed by pass kind, so a missing kind is visibly a kind that never ran. */
+  passes: {
+    kind: string;
+    lastCheckAt: string | null;
+    nextCheckAt: string | null;
+    /** Only the most recent pass overall is retained by the service, so at
+     * most one kind carries counters. */
+    lastPass: DiagnosticsNotificationPass | null;
+  }[];
+}
+
 export interface DiagnosticsServicesSection {
   mcp: {
     running: boolean | null;
@@ -327,38 +552,69 @@ export interface DiagnosticsServicesSection {
     port: number | null;
     toolsEnabled: number | null;
     toolsAvailable: number | null;
+    promptsAvailable: number | null;
+    resourcesAvailable: number | null;
     lastError: string | null;
   };
-  notifications: {
-    running: boolean | null;
-    enabled: boolean | null;
-    paused: boolean | null;
-    quietHoursActive: boolean | null;
-    zonesTracked: number | null;
-    unread: number | null;
-    lastRecordCheckAt: string | null;
-    lastExpiryCheckAt: string | null;
-    lastAuditCheckAt: string | null;
-    nextRecordCheckAt: string | null;
-    nextExpiryCheckAt: string | null;
-    nextAuditCheckAt: string | null;
-    backoffUntil: string | null;
-    lastError: string | null;
-    lastPass: {
-      kind: string | null;
-      startedAt: string | null;
-      durationMs: number | null;
-      zonesChecked: number | null;
-      notificationsCreated: number | null;
-      errors: number | null;
-    } | null;
-  };
-  ai: {
+  assistant: {
     providersConfigured: number | null;
     /** Only values from the closed {@link PROVIDER_PROTOCOLS} set. */
     protocols: string[];
     providersWithStoredKey: number | null;
+    personasTotal: number | null;
+    personasBuiltin: number | null;
+    personasCustom: number | null;
+    /** `readOnly` / `ask` / `autonomous`, or `null` when unreadable. */
+    permissionMode: string | null;
+    /** How many tools carry an explicit override, by the value chosen. */
+    toolOverrides: { allow: number; ask: number; deny: number } | null;
+    /** From `AiToolAvailability`: what can actually be dispatched now. */
+    dispatchAvailable: boolean | null;
+    toolsGranted: number | null;
+    toolsUsable: number | null;
+    toolsRegistered: number | null;
   };
+}
+
+/** What the recycle bin is holding, and what it is spending. */
+export interface DiagnosticsRecycleBinSection {
+  entriesHeld: number | null;
+  /** Records taken out of service but not deleted. Never evicted to make room. */
+  disabled: number | null;
+  /** Records deleted at Cloudflare and restorable from here. */
+  binned: number | null;
+  /** A `reason` this build does not know — a newer build wrote it. */
+  unknownReason: number | null;
+  expiredPendingPurge: number | null;
+  bytesHeld: number | null;
+  maxBytes: number | null;
+  maxEntries: number | null;
+  /** Rounded percentage of the byte ceiling, which is what fills up first. */
+  percentOfByteCeiling: number | null;
+}
+
+/** The offline record cache, by age and count. */
+export interface DiagnosticsOfflineCacheSection {
+  cachedZones: number | null;
+  cachedZonesExpired: number | null;
+  oldestCacheAgeMs: number | null;
+  newestCacheAgeMs: number | null;
+}
+
+/** The audit trail, in numbers. Never an entry. */
+export interface DiagnosticsAuditTrailSection {
+  entries: number | null;
+  capacity: number | null;
+  oldestAt: string | null;
+  newestAt: string | null;
+  byActor: { actor: string; count: number }[];
+  byOutcome: { outcome: string; count: number }[];
+}
+
+export interface DiagnosticsStorageSection {
+  recycleBin: DiagnosticsRecycleBinSection;
+  offlineCache: DiagnosticsOfflineCacheSection;
+  auditTrail: DiagnosticsAuditTrailSection;
 }
 
 export interface DiagnosticsCountsSection {
@@ -367,10 +623,6 @@ export interface DiagnosticsCountsSection {
   recordsLoaded: number | null;
   /** `[type, count]`, commonest first. Types identify nothing. */
   recordTypes: { type: string; count: number }[];
-  cachedZones: number | null;
-  cachedZonesExpired: number | null;
-  oldestCacheAgeMs: number | null;
-  newestCacheAgeMs: number | null;
   apiCredentialsStored: number | null;
   registrarCredentialsStored: number | null;
 }
@@ -401,10 +653,19 @@ export interface DiagnosticsReport {
   includesUserData: boolean;
   /** What this payload deliberately does not contain, in plain words. */
   withheld: string[];
+  // The order below is the order the Markdown renders in, and it is ordered by
+  // how often a section is the answer. Version and platform first because they
+  // are asked of every report; notifications next because "why did I not get
+  // one" is the commonest specific question; errors last because they are the
+  // longest and a reader who needs them scrolls for them.
   build: DiagnosticsBuildSection;
+  updates: DiagnosticsUpdatesSection;
   platform: DiagnosticsPlatformSection;
+  session: DiagnosticsSessionSection;
   security: DiagnosticsSecuritySection;
+  notifications: DiagnosticsNotificationsSection;
   services: DiagnosticsServicesSection;
+  storage: DiagnosticsStorageSection;
   counts: DiagnosticsCountsSection;
   dependencies: {
     npmDirect: number;
@@ -501,6 +762,40 @@ const NOTIFICATION_PASS_KINDS = ["records", "expiry", "audit"] as const;
 
 const KEYRING_STATUSES = ["available", "unavailable", "unknown"] as const;
 
+/** `os_info::Bitness`'s whole vocabulary. */
+const OS_BITNESS = ["32-bit", "64-bit", "unknown"] as const;
+
+/** `AiPermissionMode` (`src/types/ai.ts`). */
+const AI_PERMISSION_MODES = ["readOnly", "ask", "autonomous"] as const;
+
+/** `AiToolPermission` — the value an explicit per-tool override can take. */
+const AI_TOOL_PERMISSIONS = ["allow", "ask", "deny"] as const;
+
+/** `UpdateStatus` as `bc_update` serialises it. */
+const UPDATE_STATUSES = [
+  "upToDate",
+  "updateAvailable",
+  "unknownVersion",
+  "noReleases",
+] as const;
+
+/** `AuditActor::as_str` and `AuditOutcome::as_str`, the summary's two keyings. */
+const AUDIT_ACTORS = ["user", "mcp_client", "assistant"] as const;
+const AUDIT_OUTCOMES = ["succeeded", "failed", "denied"] as const;
+
+/**
+ * `RetentionReasonKind` (`src/lib/records/retention.ts`).
+ *
+ * A type rather than a value: {@link retentionReasonKind} is what maps a raw
+ * `reason` onto it, so nothing here needs to compare against the list — it
+ * only needs a tally with one slot per kind, which the compiler then checks is
+ * exhaustive.
+ */
+type RetentionReasonTally = Record<
+  ReturnType<typeof retentionReasonKind>,
+  number
+>;
+
 /** `"windows"`, `"macos"`, … — short, lowercase, from `std::env::consts`. */
 function asPlatformToken(value: unknown): string | null {
   return typeof value === "string" && /^[a-z0-9_]{1,32}$/u.test(value)
@@ -584,10 +879,20 @@ function platformSection(
   const browser = snapshot.browser ?? null;
   const width = asCount(browser?.viewportWidth);
   const height = asCount(browser?.viewportHeight);
+  const release = asRecord(host?.osRelease);
   return {
     os: asPlatformToken(host?.os),
     arch: asPlatformToken(host?.arch),
     family: asPlatformToken(host?.family),
+    // `os_info` reads version registries and `/etc/os-release`; its strings are
+    // short tokens and short product names, so they are bounded as such rather
+    // than scrubbed as prose. A value that is not token-shaped is dropped.
+    osName: asShortText(release.osType),
+    osVersion: asVersionToken(release.version),
+    osEdition: asShortText(release.edition),
+    osCodename: asShortText(release.codename),
+    osBitness: asEnumerated(release.bitness, OS_BITNESS),
+    machineArch: asShortText(release.architecture),
     userAgent: asShortText(browser?.userAgent),
     language: asShortText(browser?.language),
     timeZone: asShortText(browser?.timeZone),
@@ -669,15 +974,73 @@ function mcpSummary(
     port: asCount(status?.port),
     toolsEnabled: status ? enabled.length : null,
     toolsAvailable: status ? tools.length : null,
+    // `toolCount`/`promptCount`/`resourceCount` are sent by `McpServerStatus`
+    // in `bc-mcp` but are not on the frontend's declared interface; they are
+    // read off the real reply, which is why every input field here is typed
+    // `unknown` rather than borrowed from `tauri-client.ts`.
+    promptsAvailable: asCount(status?.promptCount ?? status?.prompt_count),
+    resourcesAvailable: asCount(
+      status?.resourceCount ?? status?.resource_count,
+    ),
     lastError: asShortText(status?.lastError ?? status?.last_error),
   };
 }
 
-function notificationsSummary(
+/**
+ * One pass's counters.
+ *
+ * `notificationsRefreshed` and `notificationsSuperseded` are read from the
+ * reply even though the current `PassSummary` does not send them — see
+ * {@link DiagnosticsNotificationPass}. Reading a field that is not there yet
+ * costs nothing and means the Rust-side addition needs no change here.
+ */
+function notificationPass(value: unknown): DiagnosticsNotificationPass | null {
+  if (value == null) return null;
+  const pass = asRecord(value);
+  return {
+    startedAt: asTimestamp(pass.startedAt),
+    durationMs: asCount(pass.durationMs),
+    zonesChecked: asCount(pass.zonesChecked),
+    notificationsCreated: asCount(pass.notificationsCreated),
+    notificationsRefreshed: asCount(pass.notificationsRefreshed),
+    notificationsSuperseded: asCount(pass.notificationsSuperseded),
+    errors: asCount(pass.errors),
+    skipped: asBoolean(pass.skipped),
+    backoff: asBoolean(pass.backoff),
+  };
+}
+
+/**
+ * The notification service, one row per pass kind.
+ *
+ * The service retains the most recent pass overall rather than one per kind,
+ * so at most one row carries counters — which is why the counters hang off the
+ * row rather than the section. The per-kind timestamps are always all three.
+ */
+function notificationsSection(
   status: DiagnosticsNotificationStatus | null,
   asShortText: ShortText,
-): DiagnosticsServicesSection["notifications"] {
-  const pass = status?.lastPass != null ? asRecord(status.lastPass) : null;
+): DiagnosticsNotificationsSection {
+  const lastPass = notificationPass(status?.lastPass);
+  const lastPassKind =
+    status?.lastPass != null
+      ? asEnumerated(asRecord(status.lastPass).kind, NOTIFICATION_PASS_KINDS)
+      : null;
+  const perKind: Record<
+    (typeof NOTIFICATION_PASS_KINDS)[number],
+    { last: unknown; next: unknown }
+  > = {
+    records: {
+      last: status?.lastRecordCheckAt,
+      next: status?.nextRecordCheckAt,
+    },
+    expiry: {
+      last: status?.lastExpiryCheckAt,
+      next: status?.nextExpiryCheckAt,
+    },
+    audit: { last: status?.lastAuditCheckAt, next: status?.nextAuditCheckAt },
+  };
+
   return {
     running: asBoolean(status?.running),
     enabled: asBoolean(status?.enabled),
@@ -685,49 +1048,216 @@ function notificationsSummary(
     quietHoursActive: asBoolean(status?.quietHoursActive),
     zonesTracked: asCount(status?.zonesTracked),
     unread: asCount(status?.unread),
-    lastRecordCheckAt: asTimestamp(status?.lastRecordCheckAt),
-    lastExpiryCheckAt: asTimestamp(status?.lastExpiryCheckAt),
-    lastAuditCheckAt: asTimestamp(status?.lastAuditCheckAt),
-    nextRecordCheckAt: asTimestamp(status?.nextRecordCheckAt),
-    nextExpiryCheckAt: asTimestamp(status?.nextExpiryCheckAt),
-    nextAuditCheckAt: asTimestamp(status?.nextAuditCheckAt),
     backoffUntil: asTimestamp(status?.backoffUntil),
     lastError: asShortText(status?.lastError),
-    lastPass:
-      pass === null
-        ? null
-        : {
-            kind: asEnumerated(pass.kind, NOTIFICATION_PASS_KINDS),
-            startedAt: asTimestamp(pass.startedAt),
-            durationMs: asCount(pass.durationMs),
-            zonesChecked: asCount(pass.zonesChecked),
-            notificationsCreated: asCount(pass.notificationsCreated),
-            errors: asCount(pass.errors),
-          },
+    passes: NOTIFICATION_PASS_KINDS.map((kind) => ({
+      kind,
+      lastCheckAt: asTimestamp(perKind[kind].last),
+      nextCheckAt: asTimestamp(perKind[kind].next),
+      lastPass: kind === lastPassKind ? lastPass : null,
+    })),
   };
 }
 
-function aiSummary(
+/**
+ * The assistant, in counts and closed-set tokens.
+ *
+ * Nothing user-written reaches this. A provider contributes its protocol and
+ * whether a key is stored; a persona contributes one to a count; a per-tool
+ * override contributes one to a tally of its *value*, never its tool name —
+ * which tools someone granted is a shape of their workflow, and the four
+ * availability numbers already say what can be dispatched.
+ */
+function assistantSection(
   providers: readonly DiagnosticsAiProvider[] | null,
-): DiagnosticsServicesSection["ai"] {
-  if (providers === null) {
-    return {
-      providersConfigured: null,
-      protocols: [],
-      providersWithStoredKey: null,
-    };
-  }
+  personas: readonly DiagnosticsAiPersona[] | null,
+  permissions: DiagnosticsAiPermissions | null,
+): DiagnosticsServicesSection["assistant"] {
   const protocols = new Set<string>();
   let withKey = 0;
-  for (const provider of providers) {
+  for (const provider of providers ?? []) {
     const protocol = asEnumerated(provider.protocol, PROVIDER_PROTOCOLS);
     if (protocol !== null) protocols.add(protocol);
     if (provider.hasApiKey === true) withKey += 1;
   }
+
+  const builtin = (personas ?? []).filter(
+    (persona) => persona.builtin === true,
+  ).length;
+
+  let toolOverrides: { allow: number; ask: number; deny: number } | null = null;
+  if (permissions?.tools != null) {
+    const tally = { allow: 0, ask: 0, deny: 0 };
+    for (const value of Object.values(asRecord(permissions.tools))) {
+      // Narrowed against the closed set before it is used as a key, so a
+      // `tools` map carrying an unknown permission cannot widen the tally.
+      for (const permission of AI_TOOL_PERMISSIONS) {
+        if (value === permission) tally[permission] += 1;
+      }
+    }
+    toolOverrides = tally;
+  }
+
+  const availability = asRecord(permissions?.availability);
   return {
-    providersConfigured: providers.length,
+    providersConfigured: providers === null ? null : providers.length,
     protocols: [...protocols].sort(),
-    providersWithStoredKey: withKey,
+    providersWithStoredKey: providers === null ? null : withKey,
+    personasTotal: personas === null ? null : personas.length,
+    personasBuiltin: personas === null ? null : builtin,
+    personasCustom: personas === null ? null : personas.length - builtin,
+    permissionMode: asEnumerated(permissions?.mode, AI_PERMISSION_MODES),
+    toolOverrides,
+    dispatchAvailable: asBoolean(availability.dispatchAvailable),
+    toolsGranted: asCount(availability.grantedToolCount),
+    toolsUsable: asCount(availability.usableToolCount),
+    toolsRegistered: asCount(availability.registeredToolCount),
+  };
+}
+
+/**
+ * The recycle bin, in counts and bytes.
+ *
+ * `store.entries` holds a record snapshot each — name, content, comment, zone.
+ * The only field read off an entry is `reason`, and it is read through
+ * {@link retentionReasonKind}, which maps anything it does not recognise onto
+ * `"unknown"` rather than passing the raw string through. So a `reason` field
+ * carrying something other than a reason cannot become payload text.
+ */
+function recycleBinSection(
+  store: DiagnosticsRetainedStore | null,
+): DiagnosticsRecycleBinSection {
+  if (store === null) {
+    return {
+      entriesHeld: null,
+      disabled: null,
+      binned: null,
+      unknownReason: null,
+      expiredPendingPurge: null,
+      bytesHeld: null,
+      maxBytes: null,
+      maxEntries: null,
+      percentOfByteCeiling: null,
+    };
+  }
+  const tally: RetentionReasonTally = { disabled: 0, deleted: 0, unknown: 0 };
+  for (const entry of asArray(store.entries)) {
+    tally[retentionReasonKind(asRecord(entry).reason)] += 1;
+  }
+  const bytesHeld = asCount(store.bytesHeld);
+  const maxBytes = asCount(store.maxBytes);
+  return {
+    // `totalHeld` counts the expired entries too, which is the honest figure
+    // for "what is this store holding"; `expiredPendingPurge` says how many of
+    // them are already past the point of being offered back.
+    entriesHeld: asCount(store.totalHeld),
+    disabled: tally.disabled,
+    binned: tally.deleted,
+    unknownReason: tally.unknown,
+    expiredPendingPurge: asCount(store.expiredPendingPurge),
+    bytesHeld,
+    maxBytes,
+    maxEntries: asCount(store.maxEntries),
+    percentOfByteCeiling:
+      bytesHeld !== null && maxBytes !== null && maxBytes > 0
+        ? Math.round((bytesHeld / maxBytes) * 100)
+        : null,
+  };
+}
+
+/** The audit trail summary, already counted host-side. */
+function auditTrailSection(
+  summary: DiagnosticsAuditSummary | null,
+): DiagnosticsAuditTrailSection {
+  const tally = (
+    value: unknown,
+    permitted: readonly string[],
+  ): { key: string; count: number }[] => {
+    const source = asRecord(value);
+    // Driven from the closed vocabulary rather than from the reply's keys, so
+    // a key a newer build invented cannot put its own text in the payload, and
+    // a bucket with nothing in it is still visibly zero rather than absent.
+    return permitted.map((key) => ({
+      key,
+      count: asCount(source[key]) ?? 0,
+    }));
+  };
+  return {
+    entries: asCount(summary?.entries),
+    capacity: asCount(summary?.capacity),
+    oldestAt: asTimestamp(summary?.oldestAt),
+    newestAt: asTimestamp(summary?.newestAt),
+    byActor:
+      summary == null
+        ? []
+        : tally(summary.byActor, AUDIT_ACTORS).map(({ key, count }) => ({
+            actor: key,
+            count,
+          })),
+    byOutcome:
+      summary == null
+        ? []
+        : tally(summary.byOutcome, AUDIT_OUTCOMES).map(({ key, count }) => ({
+            outcome: key,
+            count,
+          })),
+  };
+}
+
+/** The offline cache, by count and age. Zone names are never read. */
+function offlineCacheSection(
+  cache: readonly DiagnosticsCacheEntry[] | null,
+): DiagnosticsOfflineCacheSection {
+  const ages =
+    cache
+      ?.map((entry) => asFiniteNumber(entry.ageMs))
+      .filter((age): age is number => age !== null) ?? [];
+  return {
+    cachedZones: cache?.length ?? null,
+    cachedZonesExpired:
+      cache?.filter((entry) => entry.expired === true).length ?? null,
+    oldestCacheAgeMs: ages.length > 0 ? Math.max(...ages) : null,
+    newestCacheAgeMs: ages.length > 0 ? Math.min(...ages) : null,
+  };
+}
+
+/** How long this window has been open. */
+function sessionSection(
+  session: DiagnosticsSessionFacts | null,
+): DiagnosticsSessionSection {
+  return {
+    startedAt: asTimestamp(session?.startedAt),
+    uptimeMs: asCount(session?.uptimeMs),
+  };
+}
+
+/**
+ * What update checking has been doing.
+ *
+ * The settings are persisted and always available; the last verdict is not
+ * persisted anywhere, so it is only here when a check ran in this session.
+ * `null` for `lastStatus` therefore means "not checked here", which is a
+ * different thing from `upToDate` and must not read as it.
+ */
+function updatesSection(
+  settings: DiagnosticsUpdateSettings | null,
+  check: DiagnosticsUpdateCheck | null,
+): DiagnosticsUpdatesSection {
+  const latest = asRecord(check?.latest);
+  return {
+    checkEnabled: asBoolean(settings?.enabled),
+    intervalHours: asCount(settings?.intervalHours),
+    includePrereleases: asBoolean(settings?.includePrereleases),
+    lastCheckedAt: asTimestamp(settings?.lastCheckedAt),
+    checkDue: asBoolean(settings?.due),
+    lastStatus: asEnumerated(check?.status, UPDATE_STATUSES),
+    lastCheckAt: asTimestamp(check?.checkedAt),
+    // A `YY.N` tag, validated as a version token — never `latest.url`, even
+    // though the host checks that it is a github.com page. A tag is what a
+    // reader needs and a URL is a thing that could later point elsewhere.
+    latestSeenTag: asVersionToken(latest.tag),
+    latestSeenPublishedAt: asTimestamp(latest.publishedAt),
+    latestIsPrerelease: asBoolean(latest.prerelease),
   };
 }
 
@@ -772,11 +1302,6 @@ function recordTypeHistogram(
 function countsSection(
   snapshot: DiagnosticsSnapshot,
 ): DiagnosticsCountsSection {
-  const cache = snapshot.cache ?? null;
-  const ages =
-    cache
-      ?.map((entry) => asFiniteNumber(entry.ageMs))
-      .filter((age): age is number => age !== null) ?? [];
   return {
     zoneTabsOpen: asCount(snapshot.counts?.zoneTabsOpen),
     zonesAvailable:
@@ -785,11 +1310,6 @@ function countsSection(
       null,
     recordsLoaded: snapshot.records?.length ?? null,
     recordTypes: recordTypeHistogram(snapshot.records ?? []),
-    cachedZones: cache?.length ?? null,
-    cachedZonesExpired:
-      cache?.filter((entry) => entry.expired === true).length ?? null,
-    oldestCacheAgeMs: ages.length > 0 ? Math.max(...ages) : null,
-    newestCacheAgeMs: ages.length > 0 ? Math.min(...ages) : null,
     apiCredentialsStored: asCount(snapshot.counts?.apiCredentialsStored),
     registrarCredentialsStored: asCount(
       snapshot.counts?.registrarCredentialsStored,
@@ -877,8 +1397,10 @@ function withheldNotes(includeUserData: boolean): string[] {
   return [
     "API keys, bearer tokens, passwords and anything held in the OS keyring",
     "the MCP server's bearer token and URL",
-    "AI provider base URLs, labels and API keys",
+    "AI provider base URLs and labels, and assistant persona text",
     "DNS record names, contents and comments",
+    "every audit trail entry — only counts and the trail's date range",
+    "every recycle bin entry — only counts and bytes held",
     "email addresses and account identifiers",
     includeUserData
       ? "zone names are included, at the user's request"
@@ -913,7 +1435,38 @@ function collectWorkspaceIdentifiers(snapshot: DiagnosticsSnapshot): string[] {
   for (const entry of snapshot.cache ?? []) {
     add(entry.zoneId);
   }
+  // The recycle bin holds zones the workspace may not have open — a record
+  // deleted from a zone since closed. Harvesting its ids too means an error
+  // message naming one is still redacted. Only the two id fields are read; the
+  // snapshot alongside them is never touched.
+  for (const entry of asArray(snapshot.retainedStore?.entries)) {
+    const held = asRecord(entry);
+    add(held.zone_id);
+    add(held.zoneId);
+    add(held.entry_id);
+    add(held.entryId);
+  }
   return [...identifiers];
+}
+
+/**
+ * Zone names the scrubber should remove from prose.
+ *
+ * The workspace's open zones, plus the zone names the recycle bin is holding.
+ * A bin entry records the zone a record came from, and an error message about
+ * a failed restore would name it.
+ */
+function collectZoneNames(snapshot: DiagnosticsSnapshot): string[] {
+  const names = new Set<string>();
+  const add = (value: unknown): void => {
+    if (typeof value === "string" && value.length > 0) names.add(value);
+  };
+  for (const zone of snapshot.zones ?? []) add(zone.name);
+  for (const entry of asArray(snapshot.retainedStore?.entries)) {
+    add(asRecord(entry).zone_name);
+    add(asRecord(entry).zoneName);
+  }
+  return [...names];
 }
 
 /**
@@ -939,9 +1492,7 @@ export function buildDiagnosticsReport(
   // credentials, paths, emails and identifiers, but not the names the section
   // exists to print.
   const scrub = createDiagnosticsScrubber({
-    zoneNames: (snapshot.zones ?? []).flatMap((zone) =>
-      typeof zone.name === "string" ? [zone.name] : [],
-    ),
+    zoneNames: collectZoneNames(snapshot),
     identifiers: workspaceIdentifiers,
   });
   const scrubPreservingNames = createDiagnosticsScrubber({
@@ -955,15 +1506,29 @@ export function buildDiagnosticsReport(
     includesUserData,
     withheld: withheldNotes(includesUserData),
     build: buildSection(snapshot, asShortText),
+    updates: updatesSection(
+      snapshot.updateSettings ?? null,
+      snapshot.updateCheck ?? null,
+    ),
     platform: platformSection(snapshot, asShortText),
+    session: sessionSection(snapshot.session ?? null),
     security: securitySection(snapshot, asShortText),
+    notifications: notificationsSection(
+      snapshot.notifications ?? null,
+      asShortText,
+    ),
     services: {
       mcp: mcpSummary(snapshot.mcp ?? null, asShortText),
-      notifications: notificationsSummary(
-        snapshot.notifications ?? null,
-        asShortText,
+      assistant: assistantSection(
+        snapshot.aiProviders ?? null,
+        snapshot.aiPersonas ?? null,
+        snapshot.aiPermissions ?? null,
       ),
-      ai: aiSummary(snapshot.aiProviders ?? null),
+    },
+    storage: {
+      recycleBin: recycleBinSection(snapshot.retainedStore ?? null),
+      offlineCache: offlineCacheSection(snapshot.cache ?? null),
+      auditTrail: auditTrailSection(snapshot.auditSummary ?? null),
     },
     counts: countsSection(snapshot),
     dependencies: {
