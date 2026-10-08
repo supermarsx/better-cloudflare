@@ -527,6 +527,21 @@ export const STABLE_MCP_TOOL_IDS: readonly string[] = MCP_TOOL_FALLBACKS.map(
 export const MAX_MCP_PERMISSION_DIAGNOSTIC_IDS = 64;
 export const MAX_MCP_PERMISSION_TOOL_ID_LENGTH = 160;
 
+/**
+ * How many named permission sets a user may keep, and how long a name may be.
+ *
+ * A set is a saved selection the user can switch to; the name is the key it is
+ * stored under, so the bound is on bytes rather than characters -- the storage
+ * layer bounds property names at 512 bytes and would throw rather than
+ * truncate, which is a worse failure than refusing the name here.
+ *
+ * Switching to a set is not a way around the permission gate: the apply path
+ * partitions the set's ids exactly as a click in the permissions screen does,
+ * so a set holding a destructive tool still arrives pending confirmation.
+ */
+export const MAX_MCP_PERMISSION_SETS = 32;
+export const MAX_MCP_PERMISSION_SET_NAME_BYTES = 128;
+
 export const DEFAULT_MCP_ENABLED_TOOL_IDS: readonly string[] =
   MCP_TOOL_FALLBACKS.filter(({ risk }) => risk === "read").map(({ id }) => id);
 
@@ -630,6 +645,52 @@ export function planMcpPermissionChange(
       );
     }),
   };
+}
+
+/**
+ * A usable permission-set name, or `null` if the string cannot be one.
+ *
+ * Refuses rather than truncates. The name is the key the set is stored under,
+ * so silently shortening it would merge two sets the user believes are
+ * distinct, and silently stripping a control character would leave a name that
+ * does not match what they typed.
+ */
+export function normalizeMcpPermissionSetName(value: unknown): string | null {
+  const name = typeof value === "string" ? value.trim() : "";
+  if (!name) return null;
+  if (/\p{Cc}/u.test(name)) return null;
+  const bytes = new TextEncoder().encode(name).length;
+  if (bytes > MAX_MCP_PERMISSION_SET_NAME_BYTES) return null;
+  return name;
+}
+
+/**
+ * Project an untrusted map of name to tool ids onto the sets this build can
+ * actually honour.
+ *
+ * Every id goes through {@link reconcileMcpEnabledToolIds}, so a set can only
+ * ever name tools in the reviewed catalogue -- an id from a newer build, or an
+ * invented one, is dropped here rather than reaching the apply path. A set
+ * left holding nothing is kept: "enable no tools" is a selection someone may
+ * well want, and dropping it would make the list disagree with what they
+ * saved.
+ */
+export function reconcileMcpPermissionSets(
+  value: unknown,
+): Record<string, string[]> {
+  const sets = Object.create(null) as Record<string, string[]>;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return sets;
+  let kept = 0;
+  for (const [rawName, rawIds] of Object.entries(value)) {
+    if (kept >= MAX_MCP_PERMISSION_SETS) break;
+    const name = normalizeMcpPermissionSetName(rawName);
+    if (name === null || name in sets) continue;
+    sets[name] = reconcileMcpEnabledToolIds(
+      Array.isArray(rawIds) ? rawIds : [],
+    );
+    kept += 1;
+  }
+  return sets;
 }
 
 export function resolveMcpTool(backend: McpToolDescriptor): ResolvedMcpTool {

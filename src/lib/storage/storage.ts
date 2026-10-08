@@ -11,12 +11,15 @@ import {
 } from "../ai/presentation";
 import {
   DEFAULT_MCP_ENABLED_TOOL_IDS,
+  MAX_MCP_PERMISSION_SETS,
   MCP_PERMISSION_POLICY_VERSION,
   capMcpPermissionDiagnosticIds,
+  normalizeMcpPermissionSetName,
   partitionMcpPermissionPolicySelection,
   planMcpPermissionChange,
   reconcileMcpEnabledToolIds,
   reconcileMcpEnabledToolIdsDetailed,
+  reconcileMcpPermissionSets,
 } from "../mcp/tool-permissions";
 import {
   type BrowserPreferenceData,
@@ -1493,6 +1496,105 @@ export class StorageManager {
       this.data.mcpPermissionPolicyVersion = previous.permissionPolicyVersion;
       throw error;
     }
+  }
+
+  /**
+   * The named tool selections the user has saved, by name.
+   *
+   * Reconciled on every read rather than on write alone, so a set saved by a
+   * build whose catalogue has since lost a tool names only tools that still
+   * exist. The caller gets a copy: handing out the stored object would let a
+   * renderer mutate saved state without going through a setter.
+   */
+  getMcpPermissionSets(): Record<string, string[]> {
+    return reconcileMcpPermissionSets(this.data.mcpPermissionSets);
+  }
+
+  /**
+   * Save a selection under a name, replacing any set already called that.
+   *
+   * Returns the name it was stored under, or `null` if the name was unusable
+   * or the library is full -- callers need to tell the user which, and an
+   * exception for "you already have thirty-two of these" would be the wrong
+   * register for a list that is simply full.
+   */
+  saveMcpPermissionSet(
+    name: string,
+    toolIds: readonly string[],
+  ): string | null {
+    const normalized = normalizeMcpPermissionSetName(name);
+    if (normalized === null) return null;
+    const sets = this.getMcpPermissionSets();
+    if (
+      !(normalized in sets) &&
+      Object.keys(sets).length >= MAX_MCP_PERMISSION_SETS
+    ) {
+      return null;
+    }
+    const previous = this.data.mcpPermissionSets;
+    sets[normalized] = reconcileMcpEnabledToolIds([...toolIds]);
+    this.data.mcpPermissionSets = sets;
+    try {
+      this.save(true);
+    } catch (error) {
+      this.data.mcpPermissionSets = previous;
+      throw error;
+    }
+    this.dispatchPreferencesChanged({ mcpPermissionSets: sets });
+    return normalized;
+  }
+
+  /** Remove a saved set. Returns whether there was one to remove. */
+  deleteMcpPermissionSet(name: string): boolean {
+    const normalized = normalizeMcpPermissionSetName(name);
+    if (normalized === null) return false;
+    const sets = this.getMcpPermissionSets();
+    if (!(normalized in sets)) return false;
+    const previous = this.data.mcpPermissionSets;
+    delete sets[normalized];
+    this.data.mcpPermissionSets = sets;
+    try {
+      this.save(true);
+    } catch (error) {
+      this.data.mcpPermissionSets = previous;
+      throw error;
+    }
+    this.dispatchPreferencesChanged({ mcpPermissionSets: sets });
+    return true;
+  }
+
+  /**
+   * Switch the enabled tools to a saved set.
+   *
+   * The set's ids go through `partitionMcpPermissionPolicySelection` and then
+   * `stageMcpEnabledTools` -- the same two steps a click in the permissions
+   * screen takes. That is the point of routing it this way rather than writing
+   * `mcpEnabledTools` directly: a set holding a destructive tool arrives
+   * *pending confirmation*, so saving a selection is not a way to grant
+   * yourself a permission the UI would have stopped to ask about. Returns what
+   * the switch did, so the caller can say which tools still need confirming.
+   */
+  applyMcpPermissionSet(name: string): {
+    enabledTools: string[];
+    pendingHighRiskToolIds: string[];
+    removedToolIds: string[];
+  } | null {
+    const normalized = normalizeMcpPermissionSetName(name);
+    if (normalized === null) return null;
+    const toolIds = this.getMcpPermissionSets()[normalized];
+    if (toolIds === undefined) return null;
+    const partition = partitionMcpPermissionPolicySelection(toolIds);
+    this.stageMcpEnabledTools(
+      partition.enabledToolIds,
+      partition.pendingHighRiskToolIds,
+      partition.removedToolIds,
+    );
+    const snapshot = this.getMcpEnabledToolsSnapshot();
+    return {
+      enabledTools: snapshot.enabledTools,
+      pendingHighRiskToolIds: snapshot.pendingHighRiskToolIds,
+      removedToolIds: snapshot.removedToolIds,
+    };
   }
 
   /**

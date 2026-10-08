@@ -131,6 +131,17 @@ export interface BrowserPreferenceData extends BrowserSessionSettingsProfile {
   mcpPendingHighRiskTools?: string[];
   mcpRemovedImportedToolIds?: string[];
   mcpPermissionPolicyVersion?: number;
+  /**
+   * Named tool selections the user can switch between, keyed by name.
+   *
+   * Deliberately here and not in {@link BrowserSessionSettingsProfile}, even
+   * though `mcpEnabledTools` is in there. A session profile is switched as a
+   * bundle, so a profile carrying the *library* of saved sets would mean
+   * picking a profile could delete sets the user built under another one. This
+   * is a catalogue, not current state: it survives a profile switch, and
+   * applying one of its entries is a separate, gated act.
+   */
+  mcpPermissionSets?: Record<string, string[]>;
   sessionSettingsProfiles?: Record<string, BrowserSessionSettingsProfile>;
   auditOverrides?: Record<string, string[]>;
   /** Propagation checker — catalogue ids (see `src/lib/dns/propagation-resolvers.ts`). */
@@ -354,6 +365,7 @@ const BROWSER_PREFERENCE_SCHEMA = {
   mcpPendingHighRiskTools: "strings",
   mcpRemovedImportedToolIds: "strings",
   mcpPermissionPolicyVersion: "number",
+  mcpPermissionSets: "string-array-map",
   sessionSettingsProfiles: "profiles",
   auditOverrides: "string-array-map",
   propagationResolvers: "strings",
