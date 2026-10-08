@@ -238,6 +238,63 @@ export function extractRegistryStrings(text) {
   return found;
 }
 
+/**
+ * The second argument of every `t("key", "default")` call whose two literals
+ * disagree, as key to default.
+ *
+ * This exists because of how i18next and `fill-base` interact, which is not
+ * obvious and cost one key before it was noticed. While a key is uncatalogued
+ * i18next renders the **default**. `fill-base` writes `base[key] = key`. So the
+ * instant a key is catalogued, the visible English jumps from the default to
+ * the key wherever the two differ — and the eleven translators are then handed
+ * the key to translate rather than the sentence users had been reading.
+ * Nothing in the coverage report compares the two, so it is silent.
+ *
+ * `"Comment input"` is the realised case: its call site asks for `"Comment"`,
+ * the catalogue holds `"Comment input"`, and the catalogue wins.
+ *
+ * Writing the default instead removes the class rather than reporting it.
+ */
+export function extractDefaults(text) {
+  const defaults = new Map();
+  const flat = stripComments(text).split(/\s+/).join(" ");
+  let cursor = 0;
+  for (;;) {
+    const at = flat.indexOf("t(", cursor);
+    if (at < 0) break;
+    cursor = at + 2;
+    const before = at > 0 ? flat[at - 1] : " ";
+    if (/[\w$.]/.test(before)) continue;
+    const skip = flat.slice(cursor).search(/\S/);
+    if (skip < 0) continue;
+    const start = cursor + skip;
+    const key = readQuoted(flat, start);
+    if (key === null || key.length < MIN_LENGTH) continue;
+    // Step past the key's closing quote to look for a second literal.
+    const after = findQuoteEnd(flat, start);
+    if (after < 0) continue;
+    const separator = /^\s*,\s*/.exec(flat.slice(after));
+    if (!separator) continue;
+    const fallback = readQuoted(flat, after + separator[0].length);
+    if (fallback === null || fallback === key) continue;
+    if (!defaults.has(key)) defaults.set(key, fallback);
+  }
+  return defaults;
+}
+
+/** Index just past the closing quote of the string starting at `start`. */
+function findQuoteEnd(source, start) {
+  if (source[start] !== '"') return -1;
+  for (let index = start + 1; index < source.length; index += 1) {
+    if (source[index] === "\\") {
+      index += 1;
+      continue;
+    }
+    if (source[index] === '"') return index + 1;
+  }
+  return -1;
+}
+
 export function extractStrings() {
   const found = new Map();
   for (const dir of SOURCE_DIRS) {
@@ -255,6 +312,19 @@ export function extractStrings() {
     }
   }
   return found;
+}
+
+/** Every call-site default across the source tree, keyed by its i18n key. */
+export function collectDefaults() {
+  const defaults = new Map();
+  for (const dir of SOURCE_DIRS) {
+    for (const path of walk(dir)) {
+      for (const [key, value] of extractDefaults(readFileSync(path, "utf8"))) {
+        if (!defaults.has(key)) defaults.set(key, value);
+      }
+    }
+  }
+  return defaults;
 }
 
 /** The `{{name}}` placeholders a string carries, as a sorted list. */
@@ -356,9 +426,24 @@ function main() {
   }
   if (command === "fill-base") {
     const { uncatalogued, base } = auditCoverage();
-    for (const value of uncatalogued) base[value] = value;
+    // The call site's default, not the key. While a key is uncatalogued
+    // i18next renders the default, so writing the key as its own value would
+    // change the visible English the instant this runs -- and hand the
+    // translators the key instead of the sentence users were reading.
+    const defaults = collectDefaults();
+    let reworded = 0;
+    for (const value of uncatalogued) {
+      const fallback = defaults.get(value);
+      base[value] = fallback ?? value;
+      if (fallback !== undefined) reworded += 1;
+    }
     writeLocale(BASE_LOCALE, base);
-    console.log(`${BASE_LOCALE}: added ${uncatalogued.length} keys`);
+    console.log(
+      `${BASE_LOCALE}: added ${uncatalogued.length} keys` +
+        (reworded > 0
+          ? `, ${reworded} of them taking the call site's default rather than the key`
+          : ""),
+    );
     return;
   }
   if (command === "stubs") {

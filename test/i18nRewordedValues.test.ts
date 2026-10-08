@@ -206,9 +206,11 @@ test("a reworded value does not read identically to another key's", () => {
     for (const key of Object.keys(base)) {
       const translated = data[key];
       if (typeof translated !== "string" || translated.length === 0) continue;
+      // Annotated: an unannotated `keys: []` infers `never[]`, and the push
+      // below then fails rather than the map being built.
       const group = byTranslation.get(translated) ?? {
-        english: new Map(),
-        keys: [],
+        english: new Map<string, string>(),
+        keys: [] as string[],
       };
       group.english.set(normalizedEnglish(base[key]), base[key]);
       group.keys.push(key);
