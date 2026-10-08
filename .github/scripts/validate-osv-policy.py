@@ -169,6 +169,11 @@ MINIMUM_VERSIONS = {
     # -0080, -0081, -0098 and -0100) in the graph. 0.6 parses with its own
     # code and drops all five crates, so this floor is what keeps those
     # exceptions retired.
+    #
+    # It is reachable, not theoretical: urlpattern is pulled only by
+    # tauri-utils, which declares "0.6" at 2.10.1 but "0.3" at 2.9.3 - the
+    # version the tauri-utils floor below still permits. A downgrade to that
+    # floor would readmit all five, and this entry is what fails it.
     "urlpattern": "0.6.0",
 }
 

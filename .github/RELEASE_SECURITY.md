@@ -121,6 +121,14 @@ with its own code, so every `unic-*` crate left the lockfile and the waivers
 stopped describing anything that is in the binary. The validator's
 `urlpattern` floor exists to stop a downgrade from resurrecting them.
 
+That floor is load-bearing rather than belt-and-braces, and the reachable path
+is worth naming: `urlpattern` is pulled only by `tauri-utils`, which declares
+`"0.6"` at 2.10.1 but `"0.3"` at 2.9.3 — and 2.9.3 is exactly where the
+`tauri-utils` floor sits. So a `tauri-utils` downgrade that this table still
+permits would bring the whole rust-unic stack back, and the `urlpattern` entry
+is the only thing that then fails the gate. Do not read the floor as proof
+that a 0.3 resolve is impossible; it is the check that catches one.
+
 This is also what the stale-exception check is for. The upgrade was made
 without touching the register, and
 `.github/scripts/validate-osv-policy.py` failed the build with
