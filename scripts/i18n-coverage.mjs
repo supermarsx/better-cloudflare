@@ -50,8 +50,16 @@ const REGISTRY_FILES = [
  *
  * `id` and `keywords` are deliberately absent: an id is never shown, and
  * keywords are search aliases that exist to be matched, not read.
+ *
+ * `group` was absent too, and should not have been: `settings-search.ts:1114`
+ * renders it as `translate(entry.group, entry.group)`, so it is a key like any
+ * other. Leaving it out meant "Updates" and "Feature switches" appeared as the
+ * breadcrumb in all twelve locales in English, while the coverage report
+ * stayed green — the same silent shape as the subtab names, found by the agent
+ * wiring the export surface when it went to add a group of its own and
+ * realised a new one would never be translated.
  */
-const REGISTRY_TEXT_FIELDS = ["label", "description", "hint"];
+const REGISTRY_TEXT_FIELDS = ["label", "description", "hint", "group"];
 
 /**
  * The shortest string worth cataloguing.

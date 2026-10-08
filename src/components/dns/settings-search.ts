@@ -652,6 +652,70 @@ const ROW_ENTRIES: readonly SettingsSearchEntry[] = [
     desktopOnly: true,
     anchor: { kind: "row" },
   },
+  {
+    id: "mcp-permission-sets",
+    subtab: "mcp",
+    // No `group`: it would be the label again, and "MCP › Permission sets"
+    // followed by "Permission sets" tells a reader nothing twice.
+    label: "Permission sets",
+    keywords: [
+      "mcp",
+      "tools",
+      "saved selection",
+      "switch",
+      "preset",
+      "library",
+      "import",
+      "export",
+      "portable",
+    ],
+    desktopOnly: true,
+    anchor: { kind: "row" },
+  },
+
+  // --- Profiles › Import/Export ----------------------------------------
+  //
+  // Configuration that travels between machines, as opposed to the session
+  // profile the three entries in ANCHORLESS_ENTRIES move around inside one
+  // install. Not desktop-only: the file is written and read by the renderer,
+  // and only the persona half of it needs a host — which the import panel
+  // simply does not offer on the web.
+  {
+    id: "portable-export",
+    subtab: "profiles",
+    group: "Import/Export",
+    label: "Export",
+    keywords: [
+      "portable",
+      "config",
+      "backup",
+      "json",
+      "settings",
+      "personas",
+      "tool permissions",
+      "another machine",
+    ],
+    anchor: { kind: "row" },
+  },
+  {
+    id: "portable-import",
+    subtab: "profiles",
+    group: "Import/Export",
+    label: "Import",
+    keywords: [
+      "portable",
+      "config",
+      "restore",
+      "json",
+      "settings",
+      "personas",
+      "tool permissions",
+      "preview",
+      "diff",
+      "another machine",
+    ],
+    anchor: { kind: "row" },
+  },
 
   // --- About › Update checking -----------------------------------------
   //

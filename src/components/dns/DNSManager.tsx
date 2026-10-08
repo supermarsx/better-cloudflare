@@ -131,6 +131,31 @@ import {
   type SettingsSearchEntry,
   type SettingsSubtab,
 } from "./settings-search";
+import { PermissionSetEditor } from "@/components/portable/PermissionSetEditor";
+import {
+  describePortableWarning,
+  type PortableAnyEnvelope,
+} from "@/components/portable/portable-text";
+import { PortableExportPanel } from "@/components/portable/PortableExportPanel";
+import { PortableImportPanel } from "@/components/portable/PortableImportPanel";
+import { SettingsImportDiff } from "@/components/portable/SettingsImportDiff";
+import {
+  applyPortableToolPermissions,
+  diffPortableSettings,
+  PORTABLE_GATED_PREFERENCE_KEYS,
+  type PortableKind,
+  type PortablePersona,
+  type PortableSettingsDiff,
+  type PortableSettingsDiffRow,
+  type PortableToolPermissions,
+  type PortableToolPermissionsApplication,
+} from "@/lib/portable";
+import {
+  sanitizeBrowserPreferencesValue,
+  type BrowserPreferenceData,
+} from "@/lib/storage/storage-util";
+import { loadAboutAppInfo } from "@/lib/about/app-info";
+import type { AiPersona } from "@/types/ai";
 import {
   AiAssistantPanel,
   type AiSettingsSection,
@@ -1795,6 +1820,249 @@ function sanitizeDomainAuditCategories(
 }
 
 /**
+ * This machine's preferences, in the shape the portable exporter takes.
+ *
+ * `exportData()` is the only whole-object read the storage layer offers, and it
+ * carries `apiKeys` and the encryption configuration alongside the
+ * preferences. `sanitizeBrowserPreferencesValue` is what removes them, not a
+ * hand-written pick: its schema is declared
+ * `satisfies Record<keyof BrowserPreferenceData, PreferenceKind>`, so a key
+ * that is not a classified preference does not survive the pass. That is the
+ * same pass `exportSettings` makes, run here as well so that nothing but
+ * preferences is ever held in this component's state — a credential cannot
+ * reach the export panel even as a prop it ignores.
+ */
+function readPortablePreferences(): BrowserPreferenceData {
+  try {
+    return sanitizeBrowserPreferencesValue(
+      JSON.parse(storageManager.exportData()) as unknown,
+    );
+  } catch (error) {
+    // The ceilings the sanitizer enforces are the storage layer's own, so a
+    // preference object that fails them is a state this machine could not have
+    // saved. An empty object exports nothing, which is better than taking the
+    // settings screen down on the way in.
+    reportDnsManagerFailure(error, "Read preferences for a portable export");
+    return {};
+  }
+}
+
+/**
+ * Write one exported configuration file.
+ *
+ * The same `Blob` and `download` anchor `exportSessionSettings` uses a few
+ * hundred lines below, and for the same reason: it is the only save path this
+ * app has for a payload the renderer composed. The two host-side save
+ * commands cannot carry this file — `save_audit_entries` serializes the audit
+ * log itself and accepts no payload, and `save_topology_asset` accepts a
+ * payload but forces the extension to `png`, `svg` or `mmd`
+ * (`src-tauri/src/commands/audit.rs`), which would write
+ * `better-cloudflare-settings.mmd`. So there is nothing yet for the audit
+ * export's folder-preset plumbing to hook into, and inventing a second save
+ * mechanism to get one is a bigger change than this wiring.
+ *
+ * Throws nothing of its own; a host failure surfaces through the panel that
+ * awaited it, which pairs it with a translated heading.
+ */
+function downloadPortableConfigFile(
+  suggestedName: string,
+  contents: string,
+): void {
+  const blob = new Blob([contents], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = suggestedName;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
+/**
+ * The preferences an import can actually write on this screen, by the route it
+ * writes them through.
+ *
+ * Split in two because the routes are different, not because the keys are.
+ *
+ * {@link PORTABLE_PROFILE_PREFERENCE_KEYS} are written by handing one object
+ * to `applySessionSettingsProfile`, the function the existing "Import
+ * settings" button already drives. Every clamp those keys need is in there
+ * once; a second copy here is a second set of bounds to keep in step.
+ *
+ * {@link PORTABLE_DIRECT_PREFERENCE_KEYS} are the rest, each written through
+ * the setter it belongs to. `applySessionSettingsProfile` does not read them:
+ * three of them are update-check preferences it has never covered, and the
+ * others are not session-profile fields at all.
+ *
+ * Both are declared `satisfies` their key type, so a rename in storage breaks
+ * this list at compile time rather than quietly turning a setting into one an
+ * import silently refuses.
+ */
+const PORTABLE_PROFILE_PREFERENCE_KEYS = [
+  "autoRefreshInterval",
+  "defaultPerPage",
+  "zonePerPage",
+  "showUnsupportedRecordTypes",
+  "zoneShowUnsupportedRecordTypes",
+  "reopenLastTabs",
+  "reopenZoneTabs",
+  "confirmLogout",
+  "idleLogoutMs",
+  "confirmWindowClose",
+  "closeTabOnMiddleClick",
+  "assistantPresentation",
+  "assistantBubbleRight",
+  "assistantBubbleBottom",
+  "rewriteCopiedRecordDomains",
+  "mcpServerEnabled",
+  "mcpServerHost",
+  "mcpServerPort",
+  "loadingOverlayTimeoutMs",
+  "topologyResolutionMaxHops",
+  "topologyResolverMode",
+  "topologyDnsServer",
+  "topologyCustomDnsServer",
+  "topologyDohProvider",
+  "topologyDohCustomUrl",
+  "topologyExportFolderPreset",
+  "topologyExportCustomPath",
+  "topologyExportConfirmPath",
+  "topologyCopyActions",
+  "topologyExportActions",
+  "topologyDisableAnnotations",
+  "topologyDisableFullWindow",
+  "topologyLookupTimeoutMs",
+  "topologyDisablePtrLookups",
+  "topologyDisableGeoLookups",
+  "topologyGeoProvider",
+  "topologyScanResolutionChain",
+  "topologyDisableServiceDiscovery",
+  "topologyTcpServices",
+  "auditExportDefaultDocuments",
+  "confirmClearAuditLogs",
+  "auditExportFolderPreset",
+  "auditExportCustomPath",
+  "auditExportSkipDestinationConfirm",
+  "domainAuditCategories",
+] as const satisfies readonly (keyof SessionSettingsProfile)[];
+
+const PORTABLE_DIRECT_PREFERENCE_KEYS = [
+  "updateCheckEnabled",
+  "updateCheckIntervalHours",
+  "updateCheckIncludePrereleases",
+  "recycleBinEnabled",
+  "recycleBinRetentionDays",
+  "recycleBinMaxEntries",
+  "recycleBinAutoPurge",
+  "passkeysEnabled",
+  "registryMonitoringEnabled",
+  "cloudflareLatencyEnabled",
+  "confirmPastePreview",
+  "tableColumns",
+  "dnsTableColumns",
+  "zoneDnsTableColumns",
+  "vaultEnabled",
+  "confirmDeleteRecord",
+  "zoneConfirmDeleteRecord",
+  "propagationResolvers",
+  "propagationCustomResolvers",
+  "propagationTimeoutMs",
+  "propagationAttempts",
+  "propagationConsensusPercent",
+  "propagationWatchIntervalS",
+] as const satisfies readonly (keyof BrowserPreferenceData)[];
+
+const PORTABLE_WRITABLE_PREFERENCE_KEYS: ReadonlySet<string> = new Set<string>([
+  ...PORTABLE_PROFILE_PREFERENCE_KEYS,
+  ...PORTABLE_DIRECT_PREFERENCE_KEYS,
+]);
+
+/**
+ * The same diff, with any row this build would not write moved out of the
+ * lanes that offer to write it.
+ *
+ * `diffPortableSettings` describes the *format*: it emits a row for every
+ * preference in the schema that the file carries. This screen is narrower than
+ * the format, because six of those preferences have no whole-value setter —
+ * `recordTags`, `tagCatalog`, `tagColors` and `auditOverrides` are per-zone
+ * user data written a leaf at a time, `mcpPermissionSets` is the saved-set
+ * library the Permission sets screen owns, and `sessionSettingsProfiles` is
+ * the per-session profile store. The only paths into them add and overwrite
+ * entries without removing any, so applying one would leave a state that is
+ * not the one the preview promised.
+ *
+ * They are moved into `droppedKeys` rather than quietly skipped. That lane is
+ * for "the file asked for this and it did not survive", which is exactly what
+ * happened, and `SettingsImportDiff` already renders it — so the user sees the
+ * key named instead of pressing Apply all and finding one row did nothing.
+ *
+ * `withheld` is untouched: nothing writes it in either case.
+ */
+function withUnwritablePortableRowsDropped(
+  diff: PortableSettingsDiff,
+): PortableSettingsDiff {
+  const writable = (row: PortableSettingsDiffRow) =>
+    PORTABLE_WRITABLE_PREFERENCE_KEYS.has(row.key);
+  const dropped = [...diff.changed, ...diff.optIn]
+    .filter((row) => !writable(row))
+    .map((row) => row.key as string);
+  if (dropped.length === 0) return diff;
+  return {
+    ...diff,
+    changed: diff.changed.filter(writable),
+    optIn: diff.optIn.filter(writable),
+    droppedKeys: [...diff.droppedKeys, ...dropped],
+  };
+}
+
+/**
+ * The rows to apply, as a preference object this build can type-check.
+ *
+ * Built from the rows alone — `Object.fromEntries` over exactly what
+ * {@link SettingsImportDiff} handed back — and then put through
+ * `sanitizeBrowserPreferencesValue`, the storage layer's own schema. That buys
+ * two things a hand-written narrowing of each `row.incoming` would not: every
+ * value is checked and clamped by the same pass that guards a write from
+ * anywhere else, and what comes back is a typed `BrowserPreferenceData`, so
+ * each writer reads a field instead of casting an `unknown`.
+ *
+ * This is not the blob merge `SettingsImportDiff` warns about, and the
+ * difference is where the object starts. A merge starts from the file's whole
+ * payload, so a preference the user never saw can ride along; this starts from
+ * the rows, so a preference that was not in the preview cannot be in here. The
+ * gated keys are deleted regardless — `diffPortableSettings` never emits one,
+ * and the belt is one line.
+ *
+ * Throws what the sanitizer throws. The caller reports it: a payload past the
+ * storage ceilings is one this machine could not have stored, and applying
+ * half of it would be worse than applying none.
+ */
+function portableRowsAsPreferences(
+  rows: readonly PortableSettingsDiffRow[],
+): BrowserPreferenceData {
+  const proposed = sanitizeBrowserPreferencesValue(
+    Object.fromEntries(rows.map((row) => [row.key, row.incoming])),
+  );
+  for (const key of PORTABLE_GATED_PREFERENCE_KEYS) delete proposed[key];
+  return proposed;
+}
+
+/**
+ * Hand one imported preference to its setter, or do nothing.
+ *
+ * `undefined` here means the key was not among the rows being applied, which
+ * is a different thing from a preference being unset: the object comes from
+ * {@link portableRowsAsPreferences}, so an absent key is one the user did not
+ * agree to rather than one the file asked to clear. An import adds and
+ * overwrites; it does not unset.
+ */
+function applyPortablePreference<T>(
+  value: T | undefined,
+  setter: (next: T) => void,
+): void {
+  if (value !== undefined) setter(value);
+}
+
+/**
  * DNS Manager component responsible for listing zones and DNS records and
  * providing UI for add/import/export/update/delete operations.
  *
@@ -1806,6 +2074,19 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const { t } = useI18n();
   const initialZoneSelectionHandledRef = useRef(false);
   const settingsImportInputRef = useRef<HTMLInputElement | null>(null);
+  /**
+   * The `onPickFile` call waiting on the shared hidden file input.
+   *
+   * One slot, so a second pick started while a dialog is open answers the
+   * first as a cancel rather than leaving its promise pending for ever — and
+   * with it the panel that awaited it, disabled.
+   */
+  const portablePickRef = useRef<{
+    resolve: (text: string | null) => void;
+    reject: (error: unknown) => void;
+  } | null>(null);
+  /** Whether the host has already been asked for the build's version. */
+  const portableAppVersionAskedRef = useRef(false);
   const sessionProfileHydratedRef = useRef(false);
   const exportRequestRef = useRef<AbortController | null>(null);
   const recordRequestGenerationsRef = useRef(createRequestGenerationTracker());
@@ -2058,6 +2339,45 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     Record<string, SessionSettingsProfile>
   >(storageManager.getSessionSettingsProfiles());
   const [cloneSourceSessionId, setCloneSourceSessionId] = useState("");
+  /**
+   * Portable configuration: what the Import and export group is looking at.
+   *
+   * `portableRevision` is bumped by every write these panels make, and the
+   * effect that reads storage depends on it. The panels are handed snapshots
+   * rather than a live store — the export preview counts the payload it would
+   * write, and a diff is computed against the preferences on screen — so a
+   * write that did not re-read would leave both describing the state before
+   * it. Keeping one counter rather than re-reading per panel means the two
+   * cannot disagree about which state they are describing.
+   */
+  const [portableRevision, setPortableRevision] = useState(0);
+  const [portablePreferences, setPortablePreferences] =
+    useState<BrowserPreferenceData>({});
+  const [portablePermissionSets, setPortablePermissionSets] = useState<
+    Record<string, string[]>
+  >({});
+  const [portablePersonas, setPortablePersonas] = useState<AiPersona[]>([]);
+  /**
+   * The build stamped into a file's `appVersion`, for a support conversation.
+   *
+   * Empty until the host answers, which is not a state worth hiding: the field
+   * is a note to a human reading the file, nothing resolves against it, and an
+   * export is more useful without it than a disabled button would be.
+   */
+  const [portableAppVersion, setPortableAppVersion] = useState("");
+  /**
+   * The settings import awaiting the user's decision, or `null`.
+   *
+   * This is the whole of the "no write without the preview" rule as code: the
+   * apply callback is reachable only from {@link SettingsImportDiff}, which is
+   * rendered only when this is set, and this is set only by a parse. There is
+   * no other path from a file to a preference write.
+   */
+  const [portableSettingsDiff, setPortableSettingsDiff] =
+    useState<PortableSettingsDiff | null>(null);
+  const [portableBusy, setPortableBusy] = useState(false);
+  const [portablePickInput, setPortablePickInput] =
+    useState<HTMLInputElement | null>(null);
   const [copyBuffer, setCopyBuffer] = useState<{
     records: DNSRecord[];
     sourceZoneId: string;
@@ -7337,6 +7657,612 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       toast,
     ],
   );
+
+  // ── Portable configuration ───────────────────────────────────────────────
+  //
+  // The host access the five `src/components/portable/` panels take as props.
+  // They are deliberately hostless — each one takes `onExportFile`,
+  // `onPickFile` and the writes it needs — so everything platform-specific is
+  // here rather than in them.
+
+  /**
+   * Whether a subtab that mounts one of those panels is open.
+   *
+   * Both subtabs are gated on it rather than each panel loading its own
+   * sources, because the sources overlap: the export preview counts tool
+   * permissions and the MCP editor lists the same saved sets, and two loaders
+   * would be two chances to disagree about what is currently saved.
+   */
+  const portableSubtabOpen =
+    activeTab?.kind === "settings" &&
+    (settingsSubtab === "profiles" || settingsSubtab === "mcp");
+
+  useEffect(() => {
+    if (!prefsReady || !portableSubtabOpen) return;
+    setPortablePreferences(readPortablePreferences());
+    setPortablePermissionSets(storageManager.getMcpPermissionSets());
+  }, [portableRevision, portableSubtabOpen, prefsReady]);
+
+  useEffect(() => {
+    // `ai_list_personas` is a desktop command, and `aiListPersonas` throws
+    // rather than resolving empty on the web. A browser build exports the
+    // empty bundle it genuinely has.
+    if (!isDesktop() || !portableSubtabOpen) return;
+    let cancelled = false;
+    void TauriClient.aiListPersonas()
+      .then((personas) => {
+        if (!cancelled) setPortablePersonas(personas);
+      })
+      .catch((error) => {
+        reportDnsManagerFailure(error, "List personas for a portable export");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [portableRevision, portableSubtabOpen]);
+
+  useEffect(() => {
+    // Asked once, and only once a panel that stamps it is on screen.
+    // `loadAboutAppInfo` never rejects: on the web, and on a desktop build
+    // whose probe failed, it resolves with the version fields null and
+    // `versionLabel` saying so in words.
+    //
+    // Gated on having asked rather than on holding an answer. Keying it off
+    // the answer would make "did we ask" depend on the answer being non-empty,
+    // and an empty one would then re-ask on every render the subtab is open
+    // for — a host probe per frame to fill in a note in a file.
+    if (!portableSubtabOpen || portableAppVersionAskedRef.current) return;
+    portableAppVersionAskedRef.current = true;
+    let cancelled = false;
+    void loadAboutAppInfo().then((info) => {
+      if (!cancelled) {
+        setPortableAppVersion(info.releaseTag ?? info.versionLabel);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [portableSubtabOpen]);
+
+  useEffect(() => {
+    if (activeTab?.kind === "settings" && settingsSubtab === "profiles") return;
+    // A preview answers a file that was just read. Left on screen across a
+    // navigation it would offer to apply a diff computed against preferences
+    // that may since have moved.
+    setPortableSettingsDiff(null);
+  }, [activeTab?.kind, settingsSubtab]);
+
+  useEffect(() => {
+    if (!portablePickInput) return;
+    // `cancel` is how a dismissed file dialog reports back, and React
+    // registers a listener for it on `<dialog>` only — an `onCancel` prop on a
+    // file input is never called. Without this a cancelled pick would leave
+    // `onPickFile`'s promise pending for ever, and with it the panel that
+    // awaited it, disabled.
+    const reportCancelled = () => {
+      const pending = portablePickRef.current;
+      portablePickRef.current = null;
+      pending?.resolve(null);
+    };
+    portablePickInput.addEventListener("cancel", reportCancelled);
+    return () => {
+      portablePickInput.removeEventListener("cancel", reportCancelled);
+    };
+  }, [portablePickInput]);
+
+  /**
+   * The kinds of file this screen offers to read.
+   *
+   * Personas are omitted on the web rather than offered and then refused: an
+   * import creates them through `ai_create_persona`, which a browser build has
+   * no host to ask.
+   */
+  const portableImportKinds = useMemo<readonly PortableKind[]>(
+    () =>
+      isDesktop()
+        ? ["settings", "personas", "tool-permissions"]
+        : ["settings", "tool-permissions"],
+    [],
+  );
+
+  const exportPortableFile = useCallback(
+    (suggestedName: string, contents: string): Promise<void> => {
+      downloadPortableConfigFile(suggestedName, contents);
+      return Promise.resolve();
+    },
+    [],
+  );
+
+  const pickPortableFile = useCallback((): Promise<string | null> => {
+    const input = portablePickInput;
+    // No input means no settings panel on screen, which is not a state a panel
+    // inside that panel can reach. Reported as a cancel rather than thrown:
+    // there is nothing for the user to act on.
+    if (!input) return Promise.resolve(null);
+    portablePickRef.current?.resolve(null);
+    portablePickRef.current = null;
+    // Cleared so that picking the same file twice still fires `change`.
+    input.value = "";
+    return new Promise<string | null>((resolve, reject) => {
+      portablePickRef.current = { resolve, reject };
+      input.click();
+    });
+  }, [portablePickInput]);
+
+  const readPortablePickedFile = useCallback(
+    async (event: ChangeEvent<HTMLInputElement>) => {
+      const pending = portablePickRef.current;
+      portablePickRef.current = null;
+      const file = event.target.files?.[0];
+      try {
+        if (!file) {
+          pending?.resolve(null);
+          return;
+        }
+        // The read the existing "Import settings" button makes, a few hundred
+        // lines above: the file input's own `text()`.
+        const text = await file.text();
+        pending?.resolve(text);
+      } catch (error) {
+        // A failed read is the host failing, not the file being wrong, and the
+        // panel words the two differently.
+        pending?.reject(error);
+      } finally {
+        event.target.value = "";
+      }
+    },
+    [],
+  );
+
+  /**
+   * Bring the permission screens into line with what was just staged.
+   *
+   * The same four writes the preference-sync path makes when the host reports
+   * a different tool selection: the confirmed set, the requested set — which
+   * is the confirmed set plus whatever is pending — and, when either moved,
+   * dropping readiness so the off-view permission controller reconciles
+   * against the host instead of trusting a stale local snapshot.
+   */
+  const syncMcpPermissionSelection = useCallback(
+    (
+      enabledTools: readonly string[],
+      pendingHighRiskToolIds: readonly string[],
+    ) => {
+      const confirmedTools = normalizeMcpToolIds(enabledTools);
+      const requestedTools = normalizeMcpToolIds([
+        ...confirmedTools,
+        ...pendingHighRiskToolIds,
+      ]);
+      if (
+        !sameMcpToolIds(confirmedTools, mcpEnabledToolsRef.current) ||
+        !sameMcpToolIds(requestedTools, mcpRequestedToolsRef.current)
+      ) {
+        mcpPermissionsReadyRef.current = false;
+        setMcpPermissionsReady(false);
+      }
+      mcpEnabledToolsRef.current = confirmedTools;
+      mcpRequestedToolsRef.current = requestedTools;
+      setMcpEnabledTools(confirmedTools);
+      setMcpRequestedTools(requestedTools);
+    },
+    [],
+  );
+
+  /**
+   * Write what an imported permissions file would leave this machine as.
+   *
+   * `stageMcpEnabledTools` and nothing else. It takes these three lists in
+   * this order, and it is the step that puts every tool above read-only back
+   * to pending confirmation — so an import cannot grant what a click would
+   * have stopped to ask about. A write to `mcpEnabledTools` from here would be
+   * precisely the path around that.
+   *
+   * The saved sets are persisted one at a time because that is the only setter
+   * there is. It replaces by name and removes nothing, which is exactly what
+   * `applyPortableToolPermissions` already decided the merge should be: the
+   * file's sets win a name collision and the machine's others survive.
+   *
+   * Returns whether anything was written, so a caller that has to say what the
+   * apply left pending can tell a refusal from a success. The Permission sets
+   * editor ignores it: it renders those warnings itself.
+   */
+  const stagePortableToolPermissions = useCallback(
+    (application: PortableToolPermissionsApplication): boolean => {
+      try {
+        storageManager.stageMcpEnabledTools(
+          [...application.enabledToolIds],
+          [...application.pendingHighRiskToolIds],
+          [...application.removedToolIds],
+        );
+        for (const [name, toolIds] of Object.entries(application.sets)) {
+          storageManager.saveMcpPermissionSet(name, toolIds);
+        }
+      } catch (error) {
+        const diagnostic = reportDnsManagerFailure(
+          error,
+          "Apply imported tool permissions",
+        );
+        toast({
+          title: t("Import failed", "Import failed"),
+          description: diagnostic.message,
+          variant: "destructive",
+        });
+        return false;
+      }
+      syncMcpPermissionSelection(
+        application.enabledToolIds,
+        application.pendingHighRiskToolIds,
+      );
+      setPortableRevision((revision) => revision + 1);
+      return true;
+    },
+    [syncMcpPermissionSelection, t, toast],
+  );
+
+  const savePortablePermissionSet = useCallback(
+    (name: string, toolIds: readonly string[]) => {
+      try {
+        const stored = storageManager.saveMcpPermissionSet(name, toolIds);
+        if (stored !== null) {
+          setPortableRevision((revision) => revision + 1);
+        }
+        return stored;
+      } catch (error) {
+        reportDnsManagerFailure(error, "Save an MCP permission set");
+        return null;
+      }
+    },
+    [],
+  );
+
+  const deletePortablePermissionSet = useCallback((name: string) => {
+    try {
+      if (storageManager.deleteMcpPermissionSet(name)) {
+        setPortableRevision((revision) => revision + 1);
+      }
+    } catch (error) {
+      reportDnsManagerFailure(error, "Delete an MCP permission set");
+    }
+  }, []);
+
+  const applyPortablePermissionSet = useCallback(
+    (name: string) => {
+      try {
+        const application = storageManager.applyMcpPermissionSet(name);
+        // A re-read either way: `null` means the set went away between render
+        // and click, which is a change the list has to show.
+        setPortableRevision((revision) => revision + 1);
+        if (application === null) return null;
+        syncMcpPermissionSelection(
+          application.enabledTools,
+          application.pendingHighRiskToolIds,
+        );
+        return application;
+      } catch (error) {
+        reportDnsManagerFailure(error, "Switch to an MCP permission set");
+        return null;
+      }
+    },
+    [syncMcpPermissionSelection],
+  );
+
+  /**
+   * Apply the rows the user agreed to, and only those.
+   *
+   * Reachable from {@link SettingsImportDiff} alone, which hands back every
+   * `changed` row plus the `optIn` rows that were ticked. Nothing here reads
+   * the diff, so there is no way for an untouched opt-in row or a withheld one
+   * to arrive: this function cannot see them.
+   */
+  const applyPortableSettingsRows = useCallback(
+    (rows: readonly PortableSettingsDiffRow[]) => {
+      if (rows.length === 0) return;
+      let proposed: BrowserPreferenceData;
+      try {
+        proposed = portableRowsAsPreferences(rows);
+      } catch (error) {
+        const diagnostic = reportDnsManagerFailure(
+          error,
+          "Apply imported settings",
+        );
+        toast({
+          title: t("Import failed", "Import failed"),
+          description: diagnostic.message,
+          variant: "destructive",
+        });
+        return;
+      }
+
+      // `applySessionSettingsProfile` writes the assistant launcher's position
+      // only when both insets are present — half a point is not a point — so a
+      // file that moved one of them has the other completed from this machine.
+      // If this machine has no position either, neither is written, which is
+      // the right answer: there is nothing to complete.
+      if (
+        proposed.assistantBubbleRight !== undefined &&
+        proposed.assistantBubbleBottom === undefined
+      ) {
+        proposed.assistantBubbleBottom =
+          portablePreferences.assistantBubbleBottom;
+      }
+      if (
+        proposed.assistantBubbleBottom !== undefined &&
+        proposed.assistantBubbleRight === undefined
+      ) {
+        proposed.assistantBubbleRight =
+          portablePreferences.assistantBubbleRight;
+      }
+
+      // The session-profile preferences, through the function the existing
+      // "Import settings" button already drives. It reads only the fields it
+      // recognises and clamps each one, so a partial object applies exactly
+      // the rows in it and nothing else.
+      applySessionSettingsProfile(proposed);
+
+      for (const key of PORTABLE_DIRECT_PREFERENCE_KEYS) {
+        switch (key) {
+          case "updateCheckEnabled":
+            applyPortablePreference(
+              proposed.updateCheckEnabled,
+              setUpdateCheckEnabled,
+            );
+            break;
+          case "updateCheckIntervalHours":
+            applyPortablePreference(
+              proposed.updateCheckIntervalHours,
+              setUpdateCheckIntervalHours,
+            );
+            break;
+          case "updateCheckIncludePrereleases":
+            applyPortablePreference(
+              proposed.updateCheckIncludePrereleases,
+              setUpdateCheckIncludePrereleases,
+            );
+            break;
+          case "recycleBinEnabled":
+            applyPortablePreference(
+              proposed.recycleBinEnabled,
+              setRecycleBinEnabled,
+            );
+            break;
+          case "recycleBinRetentionDays":
+            applyPortablePreference(
+              proposed.recycleBinRetentionDays,
+              setRecycleBinRetentionDays,
+            );
+            break;
+          case "recycleBinMaxEntries":
+            applyPortablePreference(
+              proposed.recycleBinMaxEntries,
+              setRecycleBinMaxEntries,
+            );
+            break;
+          case "recycleBinAutoPurge":
+            applyPortablePreference(
+              proposed.recycleBinAutoPurge,
+              setRecycleBinAutoPurge,
+            );
+            break;
+          case "passkeysEnabled":
+            applyPortablePreference(
+              proposed.passkeysEnabled,
+              setPasskeysEnabled,
+            );
+            break;
+          case "registryMonitoringEnabled":
+            applyPortablePreference(
+              proposed.registryMonitoringEnabled,
+              setRegistryMonitoringEnabled,
+            );
+            break;
+          case "cloudflareLatencyEnabled":
+            applyPortablePreference(
+              proposed.cloudflareLatencyEnabled,
+              setCloudflareLatencyEnabled,
+            );
+            break;
+          case "confirmPastePreview":
+            applyPortablePreference(
+              proposed.confirmPastePreview,
+              setConfirmPastePreview,
+            );
+            break;
+          case "tableColumns":
+            applyPortablePreference(proposed.tableColumns, (next) =>
+              setTableColumns(normalizeTableColumnMap(next)),
+            );
+            break;
+          case "dnsTableColumns":
+            applyPortablePreference(proposed.dnsTableColumns, (next) =>
+              storageManager.setDnsTableColumns(next),
+            );
+            break;
+          case "zoneDnsTableColumns":
+            applyPortablePreference(proposed.zoneDnsTableColumns, (next) =>
+              storageManager.setZoneDnsTableColumnsMap(next),
+            );
+            break;
+          case "vaultEnabled":
+            applyPortablePreference(proposed.vaultEnabled, (next) =>
+              storageManager.setVaultEnabled(next),
+            );
+            break;
+          case "confirmDeleteRecord":
+            applyPortablePreference(proposed.confirmDeleteRecord, (next) =>
+              storageManager.setConfirmDeleteRecord(next),
+            );
+            break;
+          case "zoneConfirmDeleteRecord":
+            applyPortablePreference(proposed.zoneConfirmDeleteRecord, (next) =>
+              storageManager.setZoneConfirmDeleteRecordMap(next),
+            );
+            break;
+          case "propagationResolvers":
+            applyPortablePreference(proposed.propagationResolvers, (next) =>
+              storageManager.setPropagationResolvers(next),
+            );
+            break;
+          case "propagationCustomResolvers":
+            applyPortablePreference(
+              proposed.propagationCustomResolvers,
+              (next) => storageManager.setPropagationCustomResolvers(next),
+            );
+            break;
+          case "propagationTimeoutMs":
+            applyPortablePreference(proposed.propagationTimeoutMs, (next) =>
+              storageManager.setPropagationTimeoutMs(next),
+            );
+            break;
+          case "propagationAttempts":
+            applyPortablePreference(proposed.propagationAttempts, (next) =>
+              storageManager.setPropagationAttempts(next),
+            );
+            break;
+          case "propagationConsensusPercent":
+            applyPortablePreference(
+              proposed.propagationConsensusPercent,
+              (next) => storageManager.setPropagationConsensusPercent(next),
+            );
+            break;
+          case "propagationWatchIntervalS":
+            applyPortablePreference(
+              proposed.propagationWatchIntervalS,
+              (next) => storageManager.setPropagationWatchIntervalS(next),
+            );
+            break;
+          default: {
+            // Every key in PORTABLE_DIRECT_PREFERENCE_KEYS needs a writer
+            // above. This is what fails the build when one is added without
+            // one, rather than the row silently applying nothing.
+            const unhandled: never = key;
+            void unhandled;
+            break;
+          }
+        }
+      }
+
+      setPortableSettingsDiff(null);
+      setPortableRevision((revision) => revision + 1);
+      // Counted from the rows rather than from the file: the rows are what was
+      // written, and saying "settings imported" over a preview where the user
+      // ticked none of the opt-in rows would overstate it.
+      toast({
+        title: t("Imported", "Imported"),
+        description: t("{{preferences}} preference(s)", {
+          preferences: rows.length,
+          defaultValue: `${rows.length} preference(s)`,
+        }),
+      });
+    },
+    [applySessionSettingsProfile, portablePreferences, t, toast],
+  );
+
+  const importPortablePersonas = useCallback(
+    async (personas: readonly PortablePersona[]) => {
+      if (!isDesktop() || personas.length === 0) return;
+      setPortableBusy(true);
+      let created = 0;
+      try {
+        for (const persona of personas) {
+          // The ordinary create, one per persona: the backend issues the id
+          // and runs the same validation a typed-in persona gets, so a file
+          // cannot claim an id or pass itself off as a builtin. One the
+          // backend refuses is skipped rather than taking the bundle down.
+          try {
+            await TauriClient.aiCreatePersona(persona);
+            created += 1;
+          } catch (error) {
+            reportDnsManagerFailure(error, "Create an imported persona");
+          }
+        }
+      } finally {
+        setPortableBusy(false);
+        setPortableRevision((revision) => revision + 1);
+      }
+      toast({
+        title:
+          created > 0
+            ? t("Imported", "Imported")
+            : t("Import failed", "Import failed"),
+        description: t("{{personas}} custom persona(s)", {
+          personas: created,
+          defaultValue: `${created} custom persona(s)`,
+        }),
+        ...(created > 0 ? {} : { variant: "destructive" as const }),
+      });
+    },
+    [t, toast],
+  );
+
+  const importPortableToolPermissions = useCallback(
+    (incoming: PortableToolPermissions) => {
+      // The gate, not a second copy of it: the same function the Permission
+      // sets editor calls, against the same current state.
+      const application = applyPortableToolPermissions(
+        {
+          enabledToolIds: mcpEnabledToolsRef.current,
+          sets: portablePermissionSets,
+        },
+        incoming,
+      );
+      if (!stagePortableToolPermissions(application)) return;
+      if (application.warnings.length === 0) return;
+      // Which tools are *not* enabled after an import is the one piece of
+      // feedback this path must not drop. The import panel renders the parse's
+      // warnings, but the apply's are produced after it handed the envelope
+      // over, so a file whose destructive tools all arrived pending would
+      // otherwise read as a plain success. The Permission sets editor says the
+      // same thing on its own screen, in the same words — these come from the
+      // one function that turns a warning tag into a sentence.
+      toast({
+        title: t("Imported", "Imported"),
+        description: application.warnings
+          .map((warning) => describePortableWarning(t, warning))
+          .join(" "),
+      });
+    },
+    [portablePermissionSets, stagePortableToolPermissions, t, toast],
+  );
+
+  /**
+   * What happens to a file that parsed, by kind.
+   *
+   * Settings stop here: the diff is computed and shown, and the only way on to
+   * a preference write is a button inside it. That is the format's own rule —
+   * `src/lib/portable/types.ts` states it — and it is why this arm sets state
+   * instead of writing anything.
+   *
+   * The other two apply. Both are already gated where it matters: an imported
+   * tool above read-only arrives pending confirmation, and a persona is
+   * created through the command that validates it. A confirmation step here
+   * would also be a second behaviour for permissions, since the Permission
+   * sets editor imports the same file on its own screen without one.
+   */
+  const handlePortableParsed = useCallback(
+    (envelope: PortableAnyEnvelope) => {
+      switch (envelope.kind) {
+        case "settings":
+          setPortableSettingsDiff(
+            withUnwritablePortableRowsDropped(
+              diffPortableSettings(portablePreferences, envelope.payload),
+            ),
+          );
+          return;
+        case "personas":
+          void importPortablePersonas(envelope.payload);
+          return;
+        case "tool-permissions":
+          importPortableToolPermissions(envelope.payload);
+          return;
+      }
+    },
+    [
+      importPortablePersonas,
+      importPortableToolPermissions,
+      portablePreferences,
+    ],
+  );
+
   const handleAddRecord = async () => {
     if (!activeTab) return;
     // Normalize here rather than in the dialog: `onAdd` reads the draft back
@@ -12927,6 +13853,21 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         </button>
                       ))}
                     </div>
+                    {/* The file input `onPickFile` drives, for both subtabs
+                        that read a portable configuration file. One input
+                        rather than one per panel: only one subtab is open at a
+                        time, and a second input would be a second place for a
+                        pending pick to be waiting. It sits outside the subtab
+                        blocks so that switching subtabs mid-dialog does not
+                        unmount the element the open dialog belongs to. */}
+                    <input
+                      ref={setPortablePickInput}
+                      type="file"
+                      className="hidden"
+                      accept="application/json"
+                      data-testid="portable-pick-input"
+                      onChange={(event) => void readPortablePickedFile(event)}
+                    />
                     {settingsSubtab === "general" && (
                       <div className="divide-y divide-white/10 rounded-xl border border-border/60 bg-card/60 text-sm">
                         <div
@@ -15278,6 +16219,34 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                               </div>
                               <div ref={mcpPermissionsViewRef} />
                             </div>
+                            {/* The saved-set library, under Tool access
+                                because switching to a set is a change to the
+                                selection the row above shows. Every write it
+                                makes goes out through `storageManager`, and a
+                                switch arrives pending confirmation like any
+                                other selection — the editor says so on screen,
+                                which is the one piece of feedback it must not
+                                drop. */}
+                            <div
+                              className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-start"
+                              data-setting-id="mcp-permission-sets"
+                            >
+                              <div className="font-medium">
+                                {t("Permission sets", "Permission sets")}
+                              </div>
+                              <PermissionSetEditor
+                                selectedToolIds={mcpEnabledTools}
+                                sets={portablePermissionSets}
+                                onSave={savePortablePermissionSet}
+                                onDelete={deletePortablePermissionSet}
+                                onApply={applyPortablePermissionSet}
+                                onImport={stagePortableToolPermissions}
+                                appVersion={portableAppVersion}
+                                onExportFile={exportPortableFile}
+                                onPickFile={pickPortableFile}
+                                busy={mcpBusy || portableBusy}
+                              />
+                            </div>
                             {mcpLastError && (
                               <div className="px-4 py-3">
                                 <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-foreground/90">
@@ -15307,79 +16276,138 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                       </div>
                     )}
                     {settingsSubtab === "profiles" && (
-                      <div className="space-y-3 rounded-xl border border-border/60 bg-card/60 p-4 text-sm">
-                        <div className="text-xs text-muted-foreground">
-                          {t("Current session:", "Current session:")}{" "}
-                          <span className="font-medium text-foreground">
-                            {currentSessionId}
-                          </span>
-                        </div>
-                        <div className="flex flex-wrap gap-2">
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={exportSessionSettings}
-                          >
-                            <FileDown className="mr-2 h-4 w-4" />
-                            {t("Export settings", "Export settings")}
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={() =>
-                              settingsImportInputRef.current?.click()
-                            }
-                          >
-                            <FileUp className="mr-2 h-4 w-4" />
-                            {t("Import settings", "Import settings")}
-                          </Button>
-                          <input
-                            ref={settingsImportInputRef}
-                            type="file"
-                            className="hidden"
-                            accept="application/json"
-                            onChange={(e) => void importSessionSettings(e)}
-                          />
-                        </div>
-                        <div className="grid gap-3 md:grid-cols-[1fr_auto] md:items-end">
-                          <div className="space-y-1">
-                            <Label>
-                              {t("Clone from session", "Clone from session")}
-                            </Label>
-                            <Select
-                              value={cloneSourceSessionId}
-                              onValueChange={setCloneSourceSessionId}
-                            >
-                              <SelectTrigger>
-                                <SelectValue
-                                  placeholder={t(
-                                    "Pick saved session profile",
-                                    "Pick saved session profile",
-                                  )}
-                                />
-                              </SelectTrigger>
-                              <SelectContent>
-                                {sessionProfileIds
-                                  .filter((id) => id !== currentSessionId)
-                                  .map((id) => (
-                                    <SelectItem key={id} value={id}>
-                                      {id}
-                                    </SelectItem>
-                                  ))}
-                              </SelectContent>
-                            </Select>
+                      <div className="space-y-4">
+                        <div className="space-y-3 rounded-xl border border-border/60 bg-card/60 p-4 text-sm">
+                          <div className="text-xs text-muted-foreground">
+                            {t("Current session:", "Current session:")}{" "}
+                            <span className="font-medium text-foreground">
+                              {currentSessionId}
+                            </span>
                           </div>
-                          <Button
-                            size="sm"
-                            disabled={!cloneSourceSessionId}
-                            onClick={() =>
-                              void cloneSessionSettingsFrom(
-                                cloneSourceSessionId,
-                              )
-                            }
+                          <div className="flex flex-wrap gap-2">
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={exportSessionSettings}
+                            >
+                              <FileDown className="mr-2 h-4 w-4" />
+                              {t("Export settings", "Export settings")}
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() =>
+                                settingsImportInputRef.current?.click()
+                              }
+                            >
+                              <FileUp className="mr-2 h-4 w-4" />
+                              {t("Import settings", "Import settings")}
+                            </Button>
+                            <input
+                              ref={settingsImportInputRef}
+                              type="file"
+                              className="hidden"
+                              accept="application/json"
+                              onChange={(e) => void importSessionSettings(e)}
+                            />
+                          </div>
+                          <div className="grid gap-3 md:grid-cols-[1fr_auto] md:items-end">
+                            <div className="space-y-1">
+                              <Label>
+                                {t("Clone from session", "Clone from session")}
+                              </Label>
+                              <Select
+                                value={cloneSourceSessionId}
+                                onValueChange={setCloneSourceSessionId}
+                              >
+                                <SelectTrigger>
+                                  <SelectValue
+                                    placeholder={t(
+                                      "Pick saved session profile",
+                                      "Pick saved session profile",
+                                    )}
+                                  />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  {sessionProfileIds
+                                    .filter((id) => id !== currentSessionId)
+                                    .map((id) => (
+                                      <SelectItem key={id} value={id}>
+                                        {id}
+                                      </SelectItem>
+                                    ))}
+                                </SelectContent>
+                              </Select>
+                            </div>
+                            <Button
+                              size="sm"
+                              disabled={!cloneSourceSessionId}
+                              onClick={() =>
+                                void cloneSessionSettingsFrom(
+                                  cloneSourceSessionId,
+                                )
+                              }
+                            >
+                              {t("Clone", "Clone")}
+                            </Button>
+                          </div>
+                        </div>
+                        {/* Import and export, for configuration that travels
+                            between machines rather than between sessions. The
+                            card above moves a *session profile* around inside
+                            one install; these two rows write and read the
+                            portable files in `src/lib/portable`, which carry
+                            preferences, personas or tool permissions and no
+                            credentials at all. */}
+                        <div className="divide-y divide-white/10 rounded-xl border border-border/60 bg-card/60 text-sm">
+                          <div
+                            className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-start"
+                            data-setting-id="portable-export"
                           >
-                            {t("Clone", "Clone")}
-                          </Button>
+                            <div className="font-medium">
+                              {t("Export", "Export")}
+                            </div>
+                            <PortableExportPanel
+                              appVersion={portableAppVersion}
+                              preferences={portablePreferences}
+                              personas={portablePersonas}
+                              toolPermissions={{
+                                enabledToolIds: mcpEnabledTools,
+                                sets: portablePermissionSets,
+                              }}
+                              onExportFile={exportPortableFile}
+                              busy={portableBusy}
+                            />
+                          </div>
+                          <div
+                            className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-start"
+                            data-setting-id="portable-import"
+                          >
+                            <div className="font-medium">
+                              {t("Import", "Import")}
+                            </div>
+                            <div className="min-w-0 space-y-4">
+                              <PortableImportPanel
+                                onPickFile={pickPortableFile}
+                                onParsed={handlePortableParsed}
+                                kinds={portableImportKinds}
+                                busy={portableBusy}
+                              />
+                              {/* The preview a settings import cannot be
+                                  applied without. It is rendered from the
+                                  parse and nothing else, and `onApply` is the
+                                  only route from a file to a preference
+                                  write. */}
+                              {portableSettingsDiff ? (
+                                <SettingsImportDiff
+                                  diff={portableSettingsDiff}
+                                  onApply={applyPortableSettingsRows}
+                                  onCancel={() => setPortableSettingsDiff(null)}
+                                  busy={portableBusy}
+                                />
+                              ) : null}
+                            </div>
+                          </div>
                         </div>
                       </div>
                     )}
