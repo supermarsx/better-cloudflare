@@ -1,0 +1,59 @@
+# CodeQL configuration shared by both languages in the `codeql` matrix of
+# `.github/workflows/security.yml`.
+#
+# The query suite itself is set on the `init` step (`queries:
+# security-extended`) and is deliberately not restated here, because the action
+# *adds* a config file's `queries` to the input's rather than replacing them,
+# and two places naming the suite is one place too many.
+#
+# ── Why anything is excluded at all ─────────────────────────────────────────
+#
+# The Rust analysis had never once completed. Twenty-plus runs were cancelled
+# at a 45-minute cap, and run 37775289710 was cancelled at a raised 90-minute
+# cap as well. Both earlier diagnoses were wrong: it is not a resource problem
+# (doubling to 4 threads and 8 GB changed nothing) and it is not the breadth of
+# `security-extended` (the run never reached a security query).
+#
+# The job log gives the real shape. Of the 39 queries CodeQL runs for Rust, the
+# first thirteen are diagnostics and summaries, and they consumed essentially
+# the whole budget:
+#
+#     [ 4/39 eval 55.6s]  diagnostics/ExtractedFiles
+#     [ 7/39 eval 3m30s]  summary/LinesOfCode
+#     [10/39 eval 5m27s]  diagnostics/AstConsistencyCounts
+#     [11/39 eval 6m7s]   diagnostics/CfgConsistencyCounts
+#     [12/39 eval 6m0s]   diagnostics/SsaConsistencyCounts
+#     [13/39 eval 53m51s] diagnostics/TypeInferenceConsistencyCounts
+#
+# Extraction took 7m47s and finalizing 1m41s, so the pipeline is healthy. One
+# query took fifty-four minutes, and the twenty-six security queries were left
+# with about twenty of the ninety and never finished.
+#
+# ── Why these four and not the others ───────────────────────────────────────
+#
+# All four excluded queries are extractor self-checks that count internal
+# inconsistencies, and each one's own description ends "This query is intended
+# for internal use." They answer "is the CodeQL Rust extractor consistent with
+# itself", which is a question for the extractor's authors; CodeQL's Rust pack
+# is at 0.1.43 and that immaturity is the likeliest reason they are this
+# expensive on a 698-crate graph. They produce no security result, so excluding
+# them costs no coverage.
+#
+# The cheap extraction diagnostics are deliberately kept — `extraction-errors`,
+# `extraction-warnings`, `unextracted-elements`, `unresolved-macro-calls` and
+# `extracted-files`, 25ms to 56s each. Those answer "did the scan actually see
+# our code", without which a green Rust analysis means nothing, and the
+# workflow's "Upload Rust scan diagnostics" step exists to surface them.
+#
+# These are Rust query IDs, so this file is a no-op for the
+# javascript-typescript leg of the matrix and is shared rather than
+# conditional.
+query-filters:
+  - exclude:
+      id: rust/diagnostics/type-inference-consistency-counts
+  - exclude:
+      id: rust/diagnostics/ast-consistency-counts
+  - exclude:
+      id: rust/diagnostics/cfg-consistency-counts
+  - exclude:
+      id: rust/diagnostics/ssa-consistency-counts

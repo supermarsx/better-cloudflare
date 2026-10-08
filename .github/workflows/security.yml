@@ -74,17 +74,23 @@ jobs:
   codeql:
     name: CodeQL (${{ matrix.language }})
     runs-on: ubuntu-24.04
-    # The Rust analysis has never once completed. Every run for at least the
-    # last twenty was cancelled at the previous 45-minute cap, so this job has
-    # never produced a Rust SARIF and the repository has had no Rust CodeQL
-    # coverage at all. It went unnoticed because `fail-fast: false` keeps the
-    # matrix green-ish and the workflow was already failing on another job.
+    # The Rust analysis has never once completed: twenty-plus runs cancelled at
+    # a 45-minute cap, and run 37775289710 cancelled at this 90-minute one too.
+    # So the repository has had no Rust CodeQL coverage at all, which went
+    # unnoticed because `fail-fast: false` keeps the matrix green-ish.
     #
-    # Measured on run 37729658725: checkout, toolchain and the Linux Tauri
-    # packages take 1m, the cargo preflight 3m42s, and `Analyze` had run for
-    # 40m18s when the cap killed it. The budget is raised rather than the query
-    # suite reduced, because `security-extended` is the coverage this repository
-    # chose and a timeout is a resource problem, not a reason to scan less.
+    # Two diagnoses were wrong before the log was read properly. It is not a
+    # resource problem — doubling to 4 threads and 8 GB changed nothing — and it
+    # is not the breadth of `security-extended`, because the run never reached a
+    # security query. Extraction takes 7m47s and finalizing 1m41s; of the 39
+    # queries, the thirteen diagnostics and summaries that run first ate the
+    # budget, one of them for 53m51s on its own. The four extractor self-checks
+    # responsible for about 71 of those minutes are excluded by ID in
+    # `.github/codeql/config.yml`, which explains the choice and keeps the
+    # cheap extraction diagnostics that say whether the scan saw our code.
+    #
+    # The cap stays at 90 so the next run also measures what the analysis
+    # actually needs once it is not competing with an extractor self-check.
     timeout-minutes: 90
     env:
       TAURI_CONFIG: '{"build":{"frontendDist":"../app"}}'
@@ -137,11 +143,16 @@ jobs:
           languages: ${{ matrix.language }}
           build-mode: none
           queries: security-extended
-          # A standard ubuntu-24.04 runner is 4 vCPU and 16 GB. The previous
-          # `threads: 2` and `ram: 4096` gave query evaluation a quarter of the
-          # CPU and a quarter of the memory, which is why the Rust analysis
-          # never finished. 8 GB leaves ample headroom for the OS and the
-          # extracted database on a 16 GB box.
+          # Excludes four Rust extractor self-check queries by ID and nothing
+          # else; the file carries the measurements and the reasoning. Shared
+          # by both legs of the matrix because Rust IDs are inert for
+          # javascript-typescript.
+          config-file: ./.github/codeql/config.yml
+          # A standard ubuntu-24.04 runner is 4 vCPU and 16 GB, and the
+          # previous `threads: 2` / `ram: 4096` gave query evaluation a quarter
+          # of each. Giving it the whole machine is right on its own terms, but
+          # it is not what was wrong: the run still timed out with these values.
+          # Kept because they are correct, not because they were the fix.
           threads: 4
           ram: 8192
       - name: Check Rust workspace before analysis
