@@ -307,6 +307,7 @@ fn main() {
             commands::lookup_domain_registry,
             update_commands::update_check,
             diagnostics_commands::app_host_facts,
+            diagnostics_commands::audit_trail_summary,
             commands::retention::retain_dns_record,
             commands::retention::list_retained_records,
             commands::retention::restore_retained_record,
