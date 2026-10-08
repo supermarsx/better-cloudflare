@@ -113,9 +113,6 @@
     "defaults",
     "safari >= 16"
   ],
-  "dependencyNotes": {
-    "overrides.mermaid.katex": "Still load-bearing, and scoped under mermaid on purpose. mermaid 12.1.0 declares katex ^0.16.47, which resolves to 0.16.47 - inside GHSA-238p-pmpm-9mq7 (prototype pollution bypassing trust restrictions, affects 0.11.0 - 0.18.1, no fix in the 0.16 line). Keeping it scoped rather than flat means it cannot silently apply to some future direct dependant that does render maths. Remove it once mermaid declares katex >=0.18.2, not before. The typescript hold is recorded and enforced in test/typescriptHold.contract.test.ts instead, where it can fail when it stops being true."
-  },
   "overrides": {
     "mermaid": {
       "katex": "0.19.0"
