@@ -198,8 +198,11 @@ export interface PortableSettingsDiff {
   /** Present in both and equal. Counted rather than listed. */
   unchangedCount: number;
   /**
-   * Preferences the file carries that this build has no schema entry for.
-   * Already dropped by the parser; surfaced so a downgrade is legible.
+   * Preferences the file carries that this build did not accept -- either
+   * unknown to the schema, or carrying a value of the wrong shape for a key
+   * it does know. Already dropped by the parser; surfaced so a file written by
+   * a newer build, or a hand-edited one, is legible rather than silently
+   * thinner than it looks.
    */
   droppedKeys: string[];
 }

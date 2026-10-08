@@ -51,7 +51,17 @@ const MACHINE_LOCAL_KEYS: ReadonlySet<string> = new Set(
 
 interface PortablePreferenceProjection {
   preferences: BrowserPreferenceData;
-  /** Keys the file carried that the schema has no entry for. */
+  /**
+   * Keys the file carried that this build did not accept.
+   *
+   * Two causes, deliberately not distinguished: the schema has no entry for
+   * the key at all, or it has one and the value was the wrong shape for it.
+   * `sanitizeBrowserPreferencesValue` drops both the same way and does not say
+   * which, and inferring it here would mean re-deriving its per-kind rules --
+   * a second copy of the schema, which is the drift this module avoids
+   * everywhere else. The honest report is "the file asked for this and it did
+   * not survive", which is what the user needs to know either way.
+   */
   droppedKeys: string[];
 }
 
