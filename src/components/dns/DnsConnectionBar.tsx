@@ -24,6 +24,16 @@ interface DnsConnectionBarProps {
    */
   apiKey?: string;
   email?: string;
+  /**
+   * Whether the round-trip probe may run. Absent means yes, so a caller that
+   * has not been taught about the switch keeps today's behaviour.
+   *
+   * `false` reaches `useCloudflareLatency` as `enabled: false`, which is the
+   * difference between a switch and a label: the effect never arms a timer and
+   * never issues the authenticated read, so the chip is absent because there
+   * is nothing to report rather than because it was hidden.
+   */
+  latencyEnabled?: boolean;
 }
 
 export interface CloudflareLatencyDescription {
@@ -147,9 +157,14 @@ export function DnsConnectionBar({
   visibleCount,
   apiKey,
   email,
+  latencyEnabled = true,
 }: DnsConnectionBarProps) {
   const { t } = useI18n();
-  const latency = useCloudflareLatency({ apiKey, email });
+  const latency = useCloudflareLatency({
+    apiKey,
+    email,
+    enabled: latencyEnabled,
+  });
   const latencyDescription = describeCloudflareLatency(latency, t, {
     desktop: isDesktop(),
   });

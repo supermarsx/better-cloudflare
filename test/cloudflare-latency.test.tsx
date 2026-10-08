@@ -8,8 +8,10 @@
  */
 import assert from "node:assert/strict";
 import React from "react";
-import { afterEach, beforeEach, test } from "node:test";
+import { afterEach, beforeEach, mock, test } from "node:test";
 import { act, cleanup, render, screen } from "@testing-library/react";
+
+import { ServerClient } from "../src/lib/api/server-client";
 
 import {
   DnsConnectionBar,
@@ -50,9 +52,27 @@ beforeEach(async () => {
 
 afterEach(() => {
   cleanup();
+  mock.restoreAll();
   restoreNavigatorOnline();
   restoreDocumentVisibility();
 });
+
+/**
+ * Count the authenticated read the probe is timed on.
+ *
+ * `measureCloudflareRoundTrip` builds a `ServerClient` and calls `getZones`,
+ * so the prototype method is the one place every probe — and nothing else in
+ * this file — passes through. Counting it is what lets a test say "no request
+ * left" rather than "no number appeared".
+ */
+function countProbeRequests(): { count: () => number } {
+  let calls = 0;
+  mock.method(ServerClient.prototype, "getZones", async () => {
+    calls += 1;
+    return [];
+  });
+  return { count: () => calls };
+}
 
 /** Timer host in the shape `test/resource-disposal.test.tsx` already uses. */
 function createFakeRuntimeHost() {
@@ -600,4 +620,60 @@ test("every readout state describes itself in words, not colour", async () => {
   );
   assert.equal(unavailable?.ariaLabel, "Cloudflare API round trip: no reading");
   assert.match(unavailable?.detail ?? "", /^The last check did not finish/);
+});
+
+// ── The latency feature switch ────────────────────────────────────────────
+//
+// The pair below is the whole claim. `latencyEnabled={false}` has to stop the
+// request, not hide the chip — so the "off" test counts requests, and the
+// control proves the counter would have seen one.
+
+test("the connection bar's latency switch stops the request, not just the chip", async () => {
+  const probe = countProbeRequests();
+
+  await act(async () => {
+    render(
+      <DnsConnectionBar
+        zoneSelector={<button type="button">Choose domain</button>}
+        activeContext="example.com"
+        apiKey="cf-token"
+        latencyEnabled={false}
+      />,
+    );
+  });
+
+  assert.equal(
+    probe.count(),
+    0,
+    "a disabled probe must not make the authenticated read it is timed on",
+  );
+  // Compared as a boolean: handing a jsdom element to `assert.equal` makes a
+  // failure walk the whole DOM tree.
+  assert.ok(
+    screen.queryByTestId("cloudflare-latency") === null,
+    "and the chip must be absent, not showing a stale or empty reading",
+  );
+});
+
+test("an absent latency switch leaves the probe running, as it did before", async () => {
+  const probe = countProbeRequests();
+
+  await act(async () => {
+    render(
+      <DnsConnectionBar
+        zoneSelector={<button type="button">Choose domain</button>}
+        activeContext="example.com"
+        apiKey="cf-token"
+      />,
+    );
+  });
+
+  assert.ok(
+    probe.count() >= 1,
+    "absent means on: the probe has to run, or the test above proves nothing",
+  );
+  assert.ok(
+    screen.getByTestId("cloudflare-latency"),
+    "and the reading has to reach the bar",
+  );
 });

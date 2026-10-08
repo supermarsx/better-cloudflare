@@ -171,3 +171,78 @@ test("an unreadable last-checked stamp is refused and reads as never", async () 
   assert.equal(storageManager.getUpdateCheckLastCheckedAt(), null);
   assert.equal(storageManager.isUpdateCheckDue(new Date()), true);
 });
+
+// ── Feature switches ──────────────────────────────────────────────────────
+//
+// What is checked here is only the storage half: the behaviour each switch
+// stops is pinned in `DNSManager.featureSwitches.test.tsx`,
+// `cloudflare-latency.test.tsx`, `LoginForm.passkeySwitch.test.tsx` and the
+// Rust side's own `registry_monitoring_*` tests, because a stored boolean says
+// nothing about whether the work actually stopped.
+
+test("every feature switch is on while nothing is stored", async () => {
+  // The upgrade story: a profile written by a build that had never heard of
+  // these reads as today's behaviour, not as three disabled features.
+  storageManager.clearSettings();
+  assert.equal(storageManager.getPasskeysEnabled(), true);
+  assert.equal(storageManager.getRegistryMonitoringEnabled(), true);
+  assert.equal(storageManager.getCloudflareLatencyEnabled(), true);
+});
+
+test("a feature switch round-trips and is forgotten by a reset", async () => {
+  storageManager.setPasskeysEnabled(false);
+  storageManager.setRegistryMonitoringEnabled(false);
+  storageManager.setCloudflareLatencyEnabled(false);
+  assert.equal(storageManager.getPasskeysEnabled(), false);
+  assert.equal(storageManager.getRegistryMonitoringEnabled(), false);
+  assert.equal(storageManager.getCloudflareLatencyEnabled(), false);
+
+  storageManager.clearSettings();
+  assert.equal(storageManager.getPasskeysEnabled(), true);
+  assert.equal(storageManager.getRegistryMonitoringEnabled(), true);
+  assert.equal(storageManager.getCloudflareLatencyEnabled(), true);
+});
+
+test("only a real `false` turns a feature off, on the way out as well as in", async () => {
+  // Validated on read, like the update interval above. A hand-edited profile
+  // holding `"false"`, `0` or `null` is not evidence of a decision, and the
+  // direction of the mistake matters: reading one of those as "off" would
+  // disable passkeys — a way in — on the strength of a typo.
+  const profile = storageManager as unknown as {
+    data: {
+      passkeysEnabled?: unknown;
+      registryMonitoringEnabled?: unknown;
+      cloudflareLatencyEnabled?: unknown;
+    };
+  };
+  for (const stored of ["false", 0, null, "", "no", {}]) {
+    storageManager.clearSettings();
+    profile.data.passkeysEnabled = stored;
+    profile.data.registryMonitoringEnabled = stored;
+    profile.data.cloudflareLatencyEnabled = stored;
+    const described = JSON.stringify(stored) ?? String(stored);
+    assert.equal(
+      storageManager.getPasskeysEnabled(),
+      true,
+      `stored ${described} must not disable passkeys`,
+    );
+    assert.equal(
+      storageManager.getRegistryMonitoringEnabled(),
+      true,
+      `stored ${described} must not disable registry monitoring`,
+    );
+    assert.equal(
+      storageManager.getCloudflareLatencyEnabled(),
+      true,
+      `stored ${described} must not disable the latency probe`,
+    );
+  }
+
+  storageManager.clearSettings();
+  profile.data.passkeysEnabled = false;
+  assert.equal(
+    storageManager.getPasskeysEnabled(),
+    false,
+    "a real false is still a real decision",
+  );
+});

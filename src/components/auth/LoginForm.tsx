@@ -20,6 +20,7 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { useLoginForm } from "@/hooks/auth/use-login-form";
+import { storageManager } from "@/lib/storage/storage";
 
 /**
  * Props for the login form used on the main page to select and decrypt
@@ -100,6 +101,25 @@ export function LoginForm({ onLogin, desktop }: LoginFormProps) {
     handleBiometricEnroll,
     handleBiometricRemove,
   } = useLoginForm(onLogin, desktop);
+  /**
+   * Whether passkeys exist for this install at all.
+   *
+   * Read once, on mount, from browser preferences — the switch cannot change
+   * while this screen is up, because the only control for it is in the
+   * authenticated settings screen, which is on the other side of a login.
+   *
+   * While it is off, `LoginPasskeySection` is not rendered and `passkeyStatus`
+   * is withheld from `LoginDialogs`. That second half is what closes the other
+   * door: `EncryptionSettingsDialog` offers "Review legacy passkeys" only when
+   * it is told legacy recovery is available, and `PasskeyManagerDialog` shows
+   * nothing without a status, so with `null` there is no passkey control
+   * anywhere on this screen — not a disabled one, an absent one.
+   *
+   * The credentials themselves are untouched. Turning the switch back on
+   * restores every one of them, which is exactly why "disable" does not delete.
+   */
+  const [passkeysEnabled] = useState(() => storageManager.getPasskeysEnabled());
+  const offeredPasskeyStatus = passkeysEnabled ? passkeyStatus : null;
   const selectedKey = apiKeys.find((key) => key.id === selectedKeyId) ?? null;
   const [deleteTarget, setDeleteTarget] = useState<typeof selectedKey>(null);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
@@ -155,16 +175,18 @@ export function LoginForm({ onLogin, desktop }: LoginFormProps) {
             onAddKey={() => setShowAddKey(true)}
           />
 
-          <LoginPasskeySection
-            onRegisterPasskey={handleRegisterPasskey}
-            onUsePasskey={handleUsePasskey}
-            registerLoading={passkeyRegisterLoading}
-            authLoading={passkeyAuthLoading}
-            selectedKeyId={selectedKeyId}
-            password={password}
-            hasKeys={apiKeys.length > 0}
-            status={passkeyStatus}
-          />
+          {passkeysEnabled && (
+            <LoginPasskeySection
+              onRegisterPasskey={handleRegisterPasskey}
+              onUsePasskey={handleUsePasskey}
+              registerLoading={passkeyRegisterLoading}
+              authLoading={passkeyAuthLoading}
+              selectedKeyId={selectedKeyId}
+              password={password}
+              hasKeys={apiKeys.length > 0}
+              status={passkeyStatus}
+            />
+          )}
 
           <LoginBiometricSection
             biometricAvailable={biometricAvailable}
@@ -211,7 +233,7 @@ export function LoginForm({ onLogin, desktop }: LoginFormProps) {
             passkeyViewEmail={passkeyViewEmail}
             setPasskeyViewKey={setPasskeyViewKey}
             setPasskeyViewEmail={setPasskeyViewEmail}
-            passkeyStatus={passkeyStatus}
+            passkeyStatus={offeredPasskeyStatus}
             showEditKey={showEditKey}
             setShowEditKey={setShowEditKey}
             editLabel={editLabel}

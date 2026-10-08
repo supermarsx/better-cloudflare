@@ -281,6 +281,7 @@ fn main() {
             registrar_commands::registrar_list_all_domains,
             registrar_commands::registrar_health_check,
             registrar_commands::registrar_health_check_all,
+            registrar_commands::set_registry_monitoring_enabled,
             // MCP Server Management
             mcp_server::mcp_get_server_status,
             mcp_server::mcp_start_server,
@@ -369,6 +370,8 @@ fn main() {
             ai_commands::ai_get_conversation,
             ai_commands::ai_delete_conversation,
             ai_commands::ai_set_conversation_title,
+            ai_commands::ai_set_conversation_persona,
+            ai_commands::ai_set_conversation_provider,
             ai_commands::ai_send_message,
             ai_commands::ai_approve_tool_call,
             ai_commands::ai_cancel_generation,

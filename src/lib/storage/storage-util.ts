@@ -168,6 +168,38 @@ export interface BrowserPreferenceData extends BrowserSessionSettingsProfile {
   recycleBinMaxEntries?: number;
   /** Whether expired entries are swept without being asked. Absent means on. */
   recycleBinAutoPurge?: boolean;
+  /**
+   * Feature switches: whole features the user has turned off.
+   *
+   * Every one of them is absent by default and absent means **on**, so a
+   * profile written by an older build behaves exactly as it does today and an
+   * upgrade changes nothing.
+   *
+   * They are deliberately here rather than in
+   * {@link BrowserSessionSettingsProfile}: a session profile is a bundle of
+   * presentation choices that is switched, exported and imported, and a
+   * feature switch that travelled with one could be flipped by picking a
+   * profile — or by importing a file — which for `passkeysEnabled` means an
+   * imported file could re-open a ceremony path the user shut.
+   */
+  /**
+   * Passkeys. Off means no registration, no sign-in ceremony, and no passkey
+   * UI anywhere. Enrolled credentials are left on the device untouched: a
+   * disable that deleted them would not be reversible, and "disable" is not
+   * "destroy". See `getPasskeysEnabled`.
+   */
+  passkeysEnabled?: boolean;
+  /**
+   * Registry monitoring: RDAP and registrar lookups, the Registry view, and
+   * the background expiry pass that spends them. Off means nothing leaves for
+   * a registry or a registrar, from either the renderer or the host.
+   */
+  registryMonitoringEnabled?: boolean;
+  /**
+   * The status bar's Cloudflare round-trip probe. Off means the repeating
+   * request stops, not that the number is hidden.
+   */
+  cloudflareLatencyEnabled?: boolean;
 }
 
 /**
@@ -378,6 +410,9 @@ const BROWSER_PREFERENCE_SCHEMA = {
   recycleBinRetentionDays: "number",
   recycleBinMaxEntries: "number",
   recycleBinAutoPurge: "boolean",
+  passkeysEnabled: "boolean",
+  registryMonitoringEnabled: "boolean",
+  cloudflareLatencyEnabled: "boolean",
 } as const satisfies Record<keyof BrowserPreferenceData, PreferenceKind>;
 
 function isRecord(value: unknown): value is Record<string, unknown> {

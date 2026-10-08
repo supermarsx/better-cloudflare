@@ -39,6 +39,16 @@ interface DnsAppCommandBarProps {
   accountLabel: string;
   sessionLabel: string;
   showAudit: boolean;
+  /**
+   * Whether the Registry Monitoring action is offered. Absent means yes, so a
+   * caller that has not been taught about the registry feature switch keeps
+   * today's behaviour.
+   *
+   * `false` removes the button rather than disabling it: the Registry
+   * workspace starts asking its registrars for domains the moment it mounts,
+   * so the honest reading of the switch is that the way in is not there.
+   */
+  showRegistry?: boolean;
   /** Desktop only: the notifications bell (hidden on the web build). */
   showNotifications?: boolean;
   unreadCount?: number;
@@ -122,6 +132,7 @@ export function DnsAppCommandBar({
   accountLabel,
   sessionLabel,
   showAudit,
+  showRegistry = true,
   showNotifications = false,
   unreadCount = 0,
   onOpenNotifications,
@@ -223,11 +234,13 @@ export function DnsAppCommandBar({
             onClick={onOpenAudit}
           />
         ) : null}
-        <CommandAction
-          label={t("Registry Monitoring", "Registry Monitoring")}
-          icon={<Globe aria-hidden="true" className="h-4 w-4" />}
-          onClick={onOpenRegistry}
-        />
+        {showRegistry ? (
+          <CommandAction
+            label={t("Registry Monitoring", "Registry Monitoring")}
+            icon={<Globe aria-hidden="true" className="h-4 w-4" />}
+            onClick={onOpenRegistry}
+          />
+        ) : null}
         <CommandAction
           label={t("Settings", "Settings")}
           icon={<Settings aria-hidden="true" className="h-4 w-4" />}

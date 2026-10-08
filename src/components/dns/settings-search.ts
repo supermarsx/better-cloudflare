@@ -330,6 +330,87 @@ const ROW_ENTRIES: readonly SettingsSearchEntry[] = [
     anchor: { kind: "row" },
   },
 
+  // --- General › Feature switches --------------------------------------
+  //
+  // Three whole features rather than three knobs, which is why they are
+  // indexed under the words someone reaches for when they want something
+  // *stopped* — "disable", "off", "privacy", "offline", "no requests" — as
+  // well as the feature's own name. Somebody who has decided the app should
+  // stop talking to the registry does not search for "registry monitoring";
+  // they search for "disable".
+  {
+    id: "passkeys-enabled",
+    subtab: "general",
+    group: "Feature switches",
+    label: "Passkeys",
+    description:
+      "Off stops every passkey ceremony and removes every passkey control. Credentials already enrolled are kept on this device and work again when you turn this back on.",
+    keywords: [
+      "passkey",
+      "webauthn",
+      "disable",
+      "off",
+      "turn off",
+      "fido",
+      "security key",
+      "windows hello",
+      "touch id",
+      "biometric",
+      "sign in",
+      "login",
+    ],
+    desktopOnly: true,
+    anchor: { kind: "row" },
+  },
+  {
+    id: "registry-monitoring-enabled",
+    subtab: "general",
+    group: "Feature switches",
+    label: "Registry monitoring",
+    description:
+      "Off stops every RDAP and registrar request: the Registry view, the expiry lookup an audit spends, and the background expiry pass. Nothing leaves for a registry, and your registrar credentials are left alone.",
+    keywords: [
+      "registry",
+      "registrar",
+      "rdap",
+      "whois",
+      "expiry",
+      "expiration",
+      "renewal",
+      "domain",
+      "disable",
+      "off",
+      "turn off",
+      "privacy",
+      "offline",
+      "no requests",
+    ],
+    anchor: { kind: "row" },
+  },
+  {
+    id: "cloudflare-latency-probe",
+    subtab: "general",
+    group: "Feature switches",
+    label: "Cloudflare latency check",
+    description:
+      "Off stops the round-trip probe the status bar repeats about once a minute. The request stops; the reading is not merely hidden.",
+    keywords: [
+      "latency",
+      "ping",
+      "round trip",
+      "status bar",
+      "probe",
+      "ms",
+      "connection",
+      "disable",
+      "off",
+      "turn off",
+      "poll",
+      "no requests",
+    ],
+    anchor: { kind: "row" },
+  },
+
   // --- Topology --------------------------------------------------------
   {
     id: "topology-resolution-hops",

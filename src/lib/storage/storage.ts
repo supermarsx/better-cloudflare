@@ -2394,6 +2394,14 @@ export class StorageManager {
     delete this.data.propagationAttempts;
     delete this.data.propagationConsensusPercent;
     delete this.data.propagationWatchIntervalS;
+    // The feature switches, for the same reason `updateCheckEnabled` is here:
+    // a reset puts every setting back to its default, and all three default to
+    // on. Turning passkeys back on only restores a way in, so a reset cannot
+    // strand anyone; the other two resume work the user can stop again from
+    // the same screen.
+    delete this.data.passkeysEnabled;
+    delete this.data.registryMonitoringEnabled;
+    delete this.data.cloudflareLatencyEnabled;
     delete this.data.sessionSettingsProfiles;
     this.save();
     this.dispatchPreferencesChanged({ settingsCleared: true });
@@ -2640,6 +2648,95 @@ export class StorageManager {
       maxEntries: this.getRecycleBinMaxEntries(),
       autoPurge: this.getRecycleBinAutoPurge(),
     };
+  }
+
+  // ── Feature switches ──────────────────────────────────────────────────────
+  //
+  // Three whole features the user can turn off. Each one defaults to on by
+  // reading `!== false`, which is what makes "absent" and "on" the same answer:
+  // an install that predates the switch, and a profile written by an older
+  // build, behave exactly as they did. Nothing writes the key until the user
+  // changes it.
+  //
+  // There is no clamping to do -- a boolean has no range -- but the read is
+  // still the narrow one rather than a cast, so a hand-edited profile holding
+  // `"false"`, `0` or `null` reads as **on** rather than silently disabling a
+  // feature on evidence that is not a boolean. `sanitizeBrowserPreferencesValue`
+  // has already dropped non-booleans by the time these are read; the `!== false`
+  // is the second half of that, for the in-memory object.
+
+  /**
+   * Whether passkeys are available at all.
+   *
+   * Defaults to on: passkeys are how some people sign in, and a switch that
+   * defaulted off would take that away on upgrade.
+   *
+   * Off is a full stop, not a hidden button: no registration ceremony, no
+   * authentication ceremony, and no passkey control anywhere in the UI. What it
+   * deliberately does **not** do is delete the credentials already enrolled.
+   * They stay in the OS credential store and work again the moment this is
+   * turned back on, because a switch whose "off" destroyed data would not be a
+   * switch. The settings copy says exactly that, and the UI lists nothing while
+   * it is off, so there is no screen offering a credential that cannot be used.
+   *
+   * The lockout hazard is real and is handled where the switch is *flipped*,
+   * not here: a passkey can be the only route a user still remembers, so the
+   * settings row refuses to turn this off until the password for the signed-in
+   * key has been proven in the same dialog. See `DNSManager.tsx`.
+   */
+  setPasskeysEnabled(enabled: boolean): void {
+    this.data.passkeysEnabled = enabled;
+    this.save();
+    this.dispatchPreferencesChanged({ passkeysEnabled: enabled });
+  }
+
+  getPasskeysEnabled(): boolean {
+    return this.data.passkeysEnabled !== false;
+  }
+
+  /**
+   * Whether this app contacts domain registries and registrars.
+   *
+   * Defaults to on. Off stops all four of them: the RDAP request the Registry
+   * view makes, the registrar API calls behind the domain and health lookups,
+   * the automatic registry lookup the audit spends on an expiry date, and the
+   * background expiry pass that polls both on a schedule. The Registry view and
+   * the zone's Registry tab are not rendered at all, so there is nothing left
+   * to press.
+   *
+   * It composes with the expiry notification settings rather than overwriting
+   * them: this is the outer gate ("does this app talk to registries"), and
+   * `kinds.domainExpiry.enabled` stays the inner one ("do I want to hear about
+   * expiry"). Both must be on for the pass to run, and turning this off leaves
+   * every expiry setting exactly as the user left it, so turning it back on
+   * restores the behaviour they configured instead of a default.
+   */
+  setRegistryMonitoringEnabled(enabled: boolean): void {
+    this.data.registryMonitoringEnabled = enabled;
+    this.save();
+    this.dispatchPreferencesChanged({ registryMonitoringEnabled: enabled });
+  }
+
+  getRegistryMonitoringEnabled(): boolean {
+    return this.data.registryMonitoringEnabled !== false;
+  }
+
+  /**
+   * Whether the status bar measures the Cloudflare API round trip.
+   *
+   * Defaults to on. Off stops the probe, which is the point: it is a repeating
+   * authenticated request once a minute, so hiding the number while the request
+   * carried on would be the worst of both. With this off the hook is never
+   * armed, no timer exists, and the chip is absent rather than empty.
+   */
+  setCloudflareLatencyEnabled(enabled: boolean): void {
+    this.data.cloudflareLatencyEnabled = enabled;
+    this.save();
+    this.dispatchPreferencesChanged({ cloudflareLatencyEnabled: enabled });
+  }
+
+  getCloudflareLatencyEnabled(): boolean {
+    return this.data.cloudflareLatencyEnabled !== false;
   }
 }
 /** Shared UI storage manager; tests may create isolated instances. */

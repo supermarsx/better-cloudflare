@@ -962,13 +962,17 @@ const RECYCLE_BIN_SIZE_PRESETS = [10, 50, 100, 250, 500, 1000].filter(
 );
 
 /**
- * The retention commands, invoked the way `lib/diagnostics/host-facts.ts`
- * invokes its one command: `tauriInvoke` wrapped in `tauri-client.ts`'s own
- * exported pieces, so these six get the same deadline, the same abort handling
- * and the same error normalisation as every other command without a second
- * invoke implementation existing to drift from the first.
+ * A host command with no `tauri-client.ts` wrapper of its own, invoked the way
+ * `lib/diagnostics/host-facts.ts` invokes its one command: `tauriInvoke`
+ * wrapped in `tauri-client.ts`'s own exported pieces, so it gets the same
+ * deadline, the same abort handling and the same error normalisation as every
+ * other command without a second invoke implementation existing to drift from
+ * the first.
+ *
+ * Used by the six retention commands and by the registry-monitoring feature
+ * switch.
  */
-async function retentionInvoke<T>(
+async function hostCommand<T>(
   command: string,
   args: Record<string, unknown>,
 ): Promise<T> {
@@ -990,7 +994,17 @@ async function retentionInvoke<T>(
  * to own the argument names, and a mistyped `zoneId` there is a retained entry
  * with no zone, which is an entry that cannot be restored.
  */
-const recordRetention = createRecordRetentionClient(retentionInvoke);
+const recordRetention = createRecordRetentionClient(hostCommand);
+
+/**
+ * The one command name behind the registry monitoring switch.
+ *
+ * Declared here, next to its only caller, and asserted against `main.rs` by
+ * `registrar_commands.rs`'s own test: a command that is not registered in the
+ * invoke handler rejects at runtime, which would leave the background expiry
+ * pass polling the registry while the settings screen said it was off.
+ */
+const REGISTRY_MONITORING_COMMAND = "set_registry_monitoring_enabled";
 
 /**
  * The part of a live record that can be kept.
@@ -1933,6 +1947,33 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const [updateCheck, setUpdateCheck] = useState<UpdateCheck | null>(null);
   const [updateCheckBusy, setUpdateCheckBusy] = useState(false);
   const [updateCheckError, setUpdateCheckError] = useState<string | null>(null);
+  // ── Feature switches (General subtab) ───────────────────────────────────
+  //
+  // Three whole features the user can turn off. Each reads from browser
+  // preferences, where absent means on, so an existing install is unchanged by
+  // the switches existing.
+  const [passkeysEnabled, setPasskeysEnabled] = useState(() =>
+    storageManager.getPasskeysEnabled(),
+  );
+  const [registryMonitoringEnabled, setRegistryMonitoringEnabled] = useState(
+    () => storageManager.getRegistryMonitoringEnabled(),
+  );
+  const [cloudflareLatencyEnabled, setCloudflareLatencyEnabled] = useState(() =>
+    storageManager.getCloudflareLatencyEnabled(),
+  );
+  /**
+   * The password dialog that stands between a user and turning passkeys off.
+   *
+   * See {@link confirmDisablePasskeys} for why the proof is required. Holding
+   * the typed password in state is unavoidable for a controlled input; it is
+   * cleared the moment the dialog closes, either way, and never persisted.
+   */
+  const [passkeyDisableOpen, setPasskeyDisableOpen] = useState(false);
+  const [passkeyDisablePassword, setPasskeyDisablePassword] = useState("");
+  const [passkeyDisableBusy, setPasskeyDisableBusy] = useState(false);
+  const [passkeyDisableError, setPasskeyDisableError] = useState<string | null>(
+    null,
+  );
   // ── Recycle bin (General subtab) ────────────────────────────────────────
   const [recycleBinEnabled, setRecycleBinEnabled] = useState(() =>
     storageManager.getRecycleBinEnabled(),
@@ -3503,6 +3544,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
    */
   useEffect(() => {
     if (!isDesktop()) return;
+    // The registry switch covers this as much as it covers the Registry view:
+    // it is the same RDAP request, spent without being asked for because an
+    // audit happened to be on screen.
+    if (!registryMonitoringEnabled) return;
     if (actionTab !== "domain-audit") return;
     if (!auditZoneName) return;
     // A source the user already has beats spending a request.
@@ -3532,7 +3577,13 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     return () => {
       active = false;
     };
-  }, [actionTab, auditZoneName, registrarExpiry, rdapExpiryEvent]);
+  }, [
+    actionTab,
+    auditZoneName,
+    registrarExpiry,
+    rdapExpiryEvent,
+    registryMonitoringEnabled,
+  ]);
 
   useEffect(() => {
     if (!activeTab || activeTab.kind !== "zone") {
@@ -3800,12 +3851,32 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     return () => window.clearTimeout(timer);
   }, [revealedRecordId, actionTab]);
 
-  const focusActionTab = useCallback((index: number) => {
-    const tab = ACTION_TABS[(index + ACTION_TABS.length) % ACTION_TABS.length];
-    if (!tab) return;
-    setActionTab(tab.id);
-    actionTabRefs.current.get(tab.id)?.focus();
-  }, []);
+  /**
+   * The zone's view tabs, minus any the feature switches have removed.
+   *
+   * Filtering the list rather than hiding one button is what keeps the tablist
+   * coherent: the arrow keys, Home and End all index into this array, so a tab
+   * that is not rendered cannot be focused by walking past it either. The
+   * Registry tab is the only entry a switch removes today.
+   */
+  const visibleActionTabs = useMemo(
+    () =>
+      registryMonitoringEnabled
+        ? ACTION_TABS
+        : ACTION_TABS.filter((tab) => tab.id !== "domain-registry"),
+    [registryMonitoringEnabled],
+  );
+
+  const focusActionTab = useCallback(
+    (index: number) => {
+      const tabs = visibleActionTabs;
+      const tab = tabs[(index + tabs.length) % tabs.length];
+      if (!tab) return;
+      setActionTab(tab.id);
+      actionTabRefs.current.get(tab.id)?.focus();
+    },
+    [visibleActionTabs],
+  );
 
   const handleActionTabKeyDown = useCallback(
     (event: ReactKeyboardEvent<HTMLButtonElement>, index: number) => {
@@ -3820,11 +3891,31 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
         focusActionTab(0);
       } else if (event.key === "End") {
         event.preventDefault();
-        focusActionTab(ACTION_TABS.length - 1);
+        focusActionTab(visibleActionTabs.length - 1);
       }
     },
-    [focusActionTab],
+    [focusActionTab, visibleActionTabs],
   );
+
+  /**
+   * A view the user is sitting on can stop existing while they are on it.
+   *
+   * Turning registry monitoring off from the settings tab leaves a zone tab
+   * still pointing at `domain-registry`, so the panel would be the one thing
+   * on screen with no tab to go back to. Fall back to Records, which every
+   * zone has.
+   *
+   * `actionTab` is a dependency as well as the switch, and that is the half
+   * that matters on launch: the tab restore and the `?tab=` deep link both
+   * write `domain-registry` straight into this state *after* the first render,
+   * and without re-checking, a profile that had the Registry tab open would
+   * come back to a blank zone panel with no tab to leave by.
+   */
+  useEffect(() => {
+    if (registryMonitoringEnabled) return;
+    if (actionTab !== "domain-registry") return;
+    setActionTab("records");
+  }, [actionTab, registryMonitoringEnabled]);
 
   const openActionTab = useCallback((kind: Exclude<TabKind, "zone">) => {
     const id = `__${kind}`;
@@ -4004,6 +4095,26 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
 
     const bootstrap = async () => {
       try {
+        // Before the service, not after: starting it is what sets its catch-up
+        // pass running, and the expiry pass is the one piece of background work
+        // in this app that contacts a registry. Pushed from `storageManager`
+        // rather than from React state so this does not have to take the
+        // switch as a dependency and restart the whole service when it moves —
+        // the effect below handles a later change on its own.
+        //
+        // Awaited, but not allowed to take the bootstrap down with it: a push
+        // that fails must not cost the user their notifications. The loud
+        // signal for an unreachable command is
+        // `registrar_commands.rs`'s own registration test, not a toast here.
+        await hostCommand<void>(REGISTRY_MONITORING_COMMAND, {
+          enabled: storageManager.getRegistryMonitoringEnabled(),
+        }).catch((error) =>
+          reportDnsManagerFailure(
+            error,
+            "Apply the registry monitoring setting",
+          ),
+        );
+        if (cancelled) return;
         const status = await TauriClient.notificationsStart(apiKey, email);
         if (cancelled) return;
         setNotificationsUnread(status.unread);
@@ -4143,6 +4254,141 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     }
     setSettingsSubtab(entry.subtab);
     setRevealedSettingId(entry.id);
+  }, []);
+
+  /**
+   * Open the Settings tab on one named setting.
+   *
+   * `jumpToSetting` only moves the settings screen's own state — it is the
+   * search box's handler, and the search box is already on that screen. A
+   * notice somewhere else in the app needs the tab opened first.
+   */
+  const openSettingById = useCallback(
+    (id: string) => {
+      const entry = findSettingsEntry(id);
+      openActionTab("settings");
+      if (entry) jumpToSetting(entry);
+    },
+    [jumpToSetting, openActionTab],
+  );
+
+  /**
+   * Turning passkeys on is free; turning them off is not.
+   *
+   * ## The lockout this guards against
+   *
+   * A passkey here is not a second factor, it is a second *route*: it releases
+   * the API key from the OS vault without the key's password. Someone who
+   * enrolled one and has since relied on it may no longer remember that
+   * password — and if passkeys were simply switched off, the password would be
+   * the only route left. That is a user locked out of their own data by a
+   * settings toggle.
+   *
+   * So the switch asks for the password before it will go off: the alternative
+   * route has to be demonstrated, once, by the person turning the feature off.
+   * Nothing is stored from it and nothing is sent anywhere — the decrypt is the
+   * same local one a sign-in does, and its result is discarded. Turning passkeys
+   * back on needs no proof, because adding a route cannot strand anybody.
+   *
+   * ## What this deliberately does not do
+   *
+   * It does not delete a credential. "Disable" is not "destroy", and a switch
+   * that erased the OS credential store on its way off could not be undone.
+   * The credentials stay where they are, unusable and unlisted while the switch
+   * is off, and work again the moment it is back on.
+   *
+   * ## What it does not cover, and says so
+   *
+   * The proof is for the key this session is signed in with. Passkeys are
+   * enrolled per API key, so another stored key's passkeys stop working too,
+   * and this cannot prove that key's password. The dialog copy states it rather
+   * than leaving it to be discovered.
+   */
+  const handlePasskeysEnabledChange = useCallback(
+    (next: boolean) => {
+      if (next) {
+        setPasskeysEnabled(true);
+        notifySaved(
+          t(
+            "Passkeys are available again. Credentials already enrolled work as they did.",
+            "Passkeys are available again. Credentials already enrolled work as they did.",
+          ),
+        );
+        return;
+      }
+      setPasskeyDisablePassword("");
+      setPasskeyDisableError(null);
+      setPasskeyDisableOpen(true);
+    },
+    [notifySaved, t],
+  );
+
+  const confirmDisablePasskeys = useCallback(async () => {
+    if (!passkeyDisablePassword) {
+      setPasskeyDisableError(
+        t(
+          "Enter the password for the key you signed in with.",
+          "Enter the password for the key you signed in with.",
+        ),
+      );
+      return;
+    }
+    if (currentSessionId === "__default") {
+      setPasskeyDisableError(
+        t(
+          "This session is not linked to a stored key, so the password cannot be checked. Sign out and sign in again before changing this.",
+          "This session is not linked to a stored key, so the password cannot be checked. Sign out and sign in again before changing this.",
+        ),
+      );
+      return;
+    }
+    setPasskeyDisableBusy(true);
+    setPasskeyDisableError(null);
+    try {
+      // The decrypted key is deliberately not bound to a name: proving the
+      // password is the whole purpose, and the plaintext has no business
+      // outliving the expression that produced it.
+      if (isDesktop()) {
+        await TauriClient.decryptApiKey(
+          currentSessionId,
+          passkeyDisablePassword,
+        );
+      } else {
+        await storageManager.getDecryptedApiKey(
+          currentSessionId,
+          passkeyDisablePassword,
+        );
+      }
+      setPasskeysEnabled(false);
+      setPasskeyDisableOpen(false);
+      setPasskeyDisablePassword("");
+      notifySaved(
+        t(
+          "Passkeys are off. No ceremony will run and nothing new is enrolled; the credentials already on this device are kept.",
+          "Passkeys are off. No ceremony will run and nothing new is enrolled; the credentials already on this device are kept.",
+        ),
+      );
+    } catch {
+      // The reason is not reported: a decrypt failure here means one thing,
+      // and relaying the crypto layer's own wording would be less useful than
+      // saying what to do about it.
+      setPasskeyDisableError(
+        t(
+          "That password did not open this key, so passkeys were left on. A passkey may be the only way you can still sign in.",
+          "That password did not open this key, so passkeys were left on. A passkey may be the only way you can still sign in.",
+        ),
+      );
+    } finally {
+      setPasskeyDisableBusy(false);
+    }
+  }, [currentSessionId, notifySaved, passkeyDisablePassword, t]);
+
+  const closePasskeyDisableDialog = useCallback((open: boolean) => {
+    setPasskeyDisableOpen(open);
+    if (!open) {
+      setPasskeyDisablePassword("");
+      setPasskeyDisableError(null);
+    }
   }, []);
 
   /**
@@ -5830,13 +6076,13 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   }, [autoRefreshInterval, prefsReady]);
 
   /**
-   * Update checking and the recycle bin.
+   * Update checking, the recycle bin, and the feature switches.
    *
-   * No `persistDnsPreferenceFields` branch, unlike the effect above: these
-   * seven are browser-preference leaves with no field in the Rust
-   * `Preferences` object, so `storageManager` is the one store on either
-   * platform. Each setter clamps on the way in and again on the way out, so
-   * the state here and the stored value cannot disagree about a bound.
+   * No `persistDnsPreferenceFields` branch, unlike the effect above: these are
+   * browser-preference leaves with no field in the Rust `Preferences` object,
+   * so `storageManager` is the one store on either platform. Each setter clamps
+   * on the way in and again on the way out, so the state here and the stored
+   * value cannot disagree about a bound.
    */
   useEffect(() => {
     if (!prefsReady) return;
@@ -5849,6 +6095,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     storageManager.setRecycleBinRetentionDays(recycleBinRetentionDays);
     storageManager.setRecycleBinMaxEntries(recycleBinMaxEntries);
     storageManager.setRecycleBinAutoPurge(recycleBinAutoPurge);
+    storageManager.setPasskeysEnabled(passkeysEnabled);
+    storageManager.setRegistryMonitoringEnabled(registryMonitoringEnabled);
+    storageManager.setCloudflareLatencyEnabled(cloudflareLatencyEnabled);
   }, [
     prefsReady,
     recycleBinAutoPurge,
@@ -5858,7 +6107,33 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     updateCheckEnabled,
     updateCheckIncludePrereleases,
     updateCheckIntervalHours,
+    passkeysEnabled,
+    registryMonitoringEnabled,
+    cloudflareLatencyEnabled,
   ]);
+
+  /**
+   * Tell the host whether it may contact a registry.
+   *
+   * The renderer's preference is the single source of truth — it has to be,
+   * because the web build has no host to store anything — so this is a mirror
+   * rather than a second copy. It runs before anything else in this component
+   * starts the notification service, which is what closes the only window in
+   * which the host could have polled the registry without having been told.
+   *
+   * Nothing here is user-visible and nothing is waiting on it, so a failure is
+   * recorded rather than toasted: the renderer's own gates have already removed
+   * every entry point, and the host-side test in `registrar_commands.rs` is
+   * what fails loudly if the command is not reachable at all.
+   */
+  useEffect(() => {
+    if (!prefsReady || !isDesktop()) return;
+    void hostCommand<void>(REGISTRY_MONITORING_COMMAND, {
+      enabled: registryMonitoringEnabled,
+    }).catch((error) =>
+      reportDnsManagerFailure(error, "Apply the registry monitoring setting"),
+    );
+  }, [prefsReady, registryMonitoringEnabled]);
 
   /**
    * The automatic update check.
@@ -6385,6 +6660,19 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const runDomainRegistryChecks = useCallback(async () => {
     const domain = registryLookupDomain.trim().toLowerCase();
     if (!domain) return;
+    // Unreachable while the switch is off — the tab that holds the button is
+    // not rendered — but the first thing in this function is an unproxied
+    // `fetch` to rdap.org, so it refuses on its own account rather than
+    // trusting that no caller will ever appear.
+    if (!registryMonitoringEnabled) {
+      setRegistryChecksError(
+        t(
+          "Registry monitoring is turned off, so nothing was looked up.",
+          "Registry monitoring is turned off, so nothing was looked up.",
+        ),
+      );
+      return;
+    }
     setRegistryChecksLoading(true);
     setRegistryChecksError(null);
 
@@ -6449,7 +6737,13 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
 
     setRegistryChecksError(errors.length ? errors.join(" | ") : null);
     setRegistryChecksLoading(false);
-  }, [registrarHealthCheckAll, registrarListAllDomains, registryLookupDomain]);
+  }, [
+    registrarHealthCheckAll,
+    registrarListAllDomains,
+    registryLookupDomain,
+    registryMonitoringEnabled,
+    t,
+  ]);
 
   const filteredRecords = useMemo(() => {
     if (!activeTab || activeTab.kind !== "zone") return [];
@@ -8976,6 +9270,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
               : currentSessionId
           }
           showAudit={isDesktop()}
+          showRegistry={registryMonitoringEnabled}
           showNotifications={isDesktop()}
           unreadCount={notificationsBadge ? notificationsUnread : 0}
           onOpenNotifications={() => openActionTab("notifications")}
@@ -9012,6 +9307,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
         <DnsConnectionBar
           apiKey={apiKey}
           email={email}
+          latencyEnabled={cloudflareLatencyEnabled}
           zoneSelector={
             <>
               <Label className="sr-only" htmlFor="zone-select">
@@ -9105,7 +9401,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                   data-responsive-overflow="horizontal"
                   className="glass-surface glass-sheen glass-fade ui-segment-group scrollbar-themed fade-in"
                 >
-                  {ACTION_TABS.map((tab, index) => (
+                  {visibleActionTabs.map((tab, index) => (
                     <button
                       key={tab.id}
                       ref={(node) => {
@@ -10809,396 +11105,405 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                   </CardContent>
                 </Card>
               )}
-              {activeTab.kind === "zone" && actionTab === "domain-registry" && (
-                <Card className="border-border/60 bg-card/70">
-                  <CardHeader>
-                    <CardTitle className="text-lg">
-                      {t("Domain Registry Tools", "Domain Registry Tools")}
-                    </CardTitle>
-                  </CardHeader>
-                  <CardContent className="relative space-y-4">
-                    <div className="grid gap-3 md:grid-cols-[1fr_auto] md:items-center">
-                      <Input
-                        value={registryLookupDomain}
-                        onChange={(e) =>
-                          setRegistryLookupDomain(e.target.value)
-                        }
-                        placeholder={t("example.com", "example.com")}
-                      />
-                      <Button
-                        onClick={() => void runDomainRegistryChecks()}
-                        disabled={
-                          !registryLookupDomain.trim() || registryChecksLoading
-                        }
-                      >
-                        {registryChecksLoading
-                          ? t("Checking...", "Checking...")
-                          : t("Check Everything", "Check Everything")}
-                      </Button>
-                    </div>
-
-                    <div className="flex flex-wrap gap-2">
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() =>
-                          window.open(
-                            `https://rdap.org/domain/${encodeURIComponent(
-                              registryLookupDomain.trim(),
-                            )}`,
-                            "_blank",
-                            "noopener,noreferrer",
-                          )
-                        }
-                        disabled={!registryLookupDomain.trim()}
-                      >
-                        <ExternalLink className="h-3.5 w-3.5 mr-1" />
-                        {t("RDAP Tool", "RDAP Tool")}
-                      </Button>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() =>
-                          window.open(
-                            `https://lookup.icann.org/en/lookup?name=${encodeURIComponent(
-                              registryLookupDomain.trim(),
-                            )}`,
-                            "_blank",
-                            "noopener,noreferrer",
-                          )
-                        }
-                        disabled={!registryLookupDomain.trim()}
-                      >
-                        <ExternalLink className="h-3.5 w-3.5 mr-1" />
-                        {t("WHOIS Tool", "WHOIS Tool")}
-                      </Button>
-                    </div>
-
-                    {registryChecksError && (
-                      <div className="rounded-xl border border-destructive/40 bg-destructive/10 p-3 text-xs text-destructive-foreground">
-                        {registryChecksError}
-                      </div>
-                    )}
-                    <div className="grid gap-3 lg:grid-cols-2">
-                      <div className="rounded-xl border border-border/60 bg-card/60 p-3 space-y-2">
-                        <div className="text-sm font-medium">
-                          {t("Registrar API Match", "Registrar API Match")}
-                        </div>
-                        {registrarDomainResult ? (
-                          <div className="text-xs text-muted-foreground space-y-1">
-                            <div>
-                              {t("Domain:", "Domain:")}{" "}
-                              <span className="text-foreground">
-                                {registrarDomainResult.domain}
-                              </span>
-                            </div>
-                            <div>
-                              {t("Registrar:", "Registrar:")}{" "}
-                              <span className="text-foreground">
-                                {registrarDomainResult.registrar}
-                              </span>
-                            </div>
-                            <div>
-                              {t("Status:", "Status:")}{" "}
-                              <span className="text-foreground">
-                                {registrarDomainResult.status}
-                              </span>
-                            </div>
-                            <div>
-                              {t("Expires:", "Expires:")}{" "}
-                              <span
-                                className="text-foreground"
-                                title={
-                                  formatHumanizedDateTime(
-                                    registrarDomainResult.expires_at,
-                                  ).full
-                                }
-                              >
-                                {
-                                  formatHumanizedDateTime(
-                                    registrarDomainResult.expires_at,
-                                  ).short
-                                }
-                              </span>
-                            </div>
-                          </div>
-                        ) : (
-                          <div className="text-xs text-muted-foreground">
-                            {t(
-                              "No registrar-api match found for this domain.",
-                              "No registrar-api match found for this domain.",
-                            )}
-                          </div>
-                        )}
+              {activeTab.kind === "zone" &&
+                actionTab === "domain-registry" &&
+                registryMonitoringEnabled && (
+                  <Card className="border-border/60 bg-card/70">
+                    <CardHeader>
+                      <CardTitle className="text-lg">
+                        {t("Domain Registry Tools", "Domain Registry Tools")}
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent className="relative space-y-4">
+                      <div className="grid gap-3 md:grid-cols-[1fr_auto] md:items-center">
+                        <Input
+                          value={registryLookupDomain}
+                          onChange={(e) =>
+                            setRegistryLookupDomain(e.target.value)
+                          }
+                          placeholder={t("example.com", "example.com")}
+                        />
+                        <Button
+                          onClick={() => void runDomainRegistryChecks()}
+                          disabled={
+                            !registryLookupDomain.trim() ||
+                            registryChecksLoading
+                          }
+                        >
+                          {registryChecksLoading
+                            ? t("Checking...", "Checking...")
+                            : t("Check Everything", "Check Everything")}
+                        </Button>
                       </div>
 
-                      <div className="rounded-xl border border-border/60 bg-card/60 p-3 space-y-2">
-                        <div className="text-sm font-medium">
-                          {t("Health Checks", "Health Checks")}
+                      <div className="flex flex-wrap gap-2">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() =>
+                            window.open(
+                              `https://rdap.org/domain/${encodeURIComponent(
+                                registryLookupDomain.trim(),
+                              )}`,
+                              "_blank",
+                              "noopener,noreferrer",
+                            )
+                          }
+                          disabled={!registryLookupDomain.trim()}
+                        >
+                          <ExternalLink className="h-3.5 w-3.5 mr-1" />
+                          {t("RDAP Tool", "RDAP Tool")}
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() =>
+                            window.open(
+                              `https://lookup.icann.org/en/lookup?name=${encodeURIComponent(
+                                registryLookupDomain.trim(),
+                              )}`,
+                              "_blank",
+                              "noopener,noreferrer",
+                            )
+                          }
+                          disabled={!registryLookupDomain.trim()}
+                        >
+                          <ExternalLink className="h-3.5 w-3.5 mr-1" />
+                          {t("WHOIS Tool", "WHOIS Tool")}
+                        </Button>
+                      </div>
+
+                      {registryChecksError && (
+                        <div className="rounded-xl border border-destructive/40 bg-destructive/10 p-3 text-xs text-destructive-foreground">
+                          {registryChecksError}
                         </div>
-                        {registrarHealthResult ? (
-                          <div className="text-xs text-muted-foreground space-y-1">
-                            <div>
-                              {t("Overall:", "Overall:")}{" "}
-                              <span className="text-foreground">
-                                {registrarHealthResult.status}
-                              </span>
-                            </div>
-                            {registrarHealthResult.checks.map((check) => (
-                              <div key={check.name}>
-                                {check.name}:{" "}
+                      )}
+                      <div className="grid gap-3 lg:grid-cols-2">
+                        <div className="rounded-xl border border-border/60 bg-card/60 p-3 space-y-2">
+                          <div className="text-sm font-medium">
+                            {t("Registrar API Match", "Registrar API Match")}
+                          </div>
+                          {registrarDomainResult ? (
+                            <div className="text-xs text-muted-foreground space-y-1">
+                              <div>
+                                {t("Domain:", "Domain:")}{" "}
                                 <span className="text-foreground">
-                                  {check.message}
+                                  {registrarDomainResult.domain}
                                 </span>
                               </div>
-                            ))}
-                          </div>
-                        ) : (
-                          <div className="text-xs text-muted-foreground">
-                            {t(
-                              "No health check data for this domain yet.",
-                              "No health check data for this domain yet.",
-                            )}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-
-                    <div className="rounded-xl border border-border/60 bg-card/60 p-3 space-y-2">
-                      <div className="flex items-center justify-between gap-2">
-                        <div className="text-sm font-medium">
-                          {t("RDAP Response", "RDAP Response")}
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={() => {
-                              if (!rdapResult) return;
-                              const summary = [
-                                `Domain: ${String(rdapObject.ldhName ?? rdapObject.unicodeName ?? "—")}`,
-                                `Handle: ${String(rdapObject.handle ?? "—")}`,
-                                `Registrar API: ${registrarDomainResult?.registrar ?? "—"}`,
-                                `Registrar Entity: ${String(rdapRegistrarEntity?.handle ?? "—")}`,
-                                `Status: ${rdapStatuses.length ? rdapStatuses.join(", ") : "—"}`,
-                                `Nameservers: ${rdapNameservers.length ? rdapNameservers.join(", ") : "—"}`,
-                              ].join("\n");
-                              const payload = showRawRdap
-                                ? JSON.stringify(rdapResult, null, 2)
-                                : summary;
-                              void navigator.clipboard
-                                .writeText(payload)
-                                .then(() =>
-                                  toast({
-                                    title: t("Copied", "Copied"),
-                                    description: t(
-                                      "Registry data copied to clipboard.",
-                                      "Registry data copied to clipboard.",
-                                    ),
-                                  }),
-                                )
-                                .catch((error) =>
-                                  toast({
-                                    title: t("Copy failed", "Copy failed"),
-                                    description:
-                                      error instanceof Error
-                                        ? error.message
-                                        : String(error),
-                                    variant: "destructive",
-                                  }),
-                                );
-                            }}
-                            disabled={!rdapResult}
-                          >
-                            <Copy className="h-3.5 w-3.5 mr-1" />
-                            {t("Copy", "Copy")}
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={() => setShowRawRdap((prev) => !prev)}
-                            disabled={!rdapResult}
-                          >
-                            {showRawRdap
-                              ? t("Show Table", "Show Table")
-                              : t("Show Raw JSON", "Show Raw JSON")}
-                          </Button>
-                        </div>
-                      </div>
-                      {rdapResult ? (
-                        showRawRdap ? (
-                          <pre className="max-h-80 scrollbar-themed overflow-auto rounded-lg border border-border/60 bg-muted/20 p-3 text-[11px]">
-                            {JSON.stringify(rdapResult, null, 2)}
-                          </pre>
-                        ) : (
-                          <div className="space-y-3">
-                            <div className="scrollbar-themed overflow-auto [scrollbar-gutter:auto] rounded-lg border border-border/60 bg-muted/10">
-                              <table className="w-full text-xs">
-                                <tbody>
-                                  <tr className="border-b border-border/40">
-                                    <td className="px-3 py-2 font-medium text-muted-foreground">
-                                      {t("Domain", "Domain")}
-                                    </td>
-                                    <td className="px-3 py-2">
-                                      {String(
-                                        rdapObject.ldhName ??
-                                          rdapObject.unicodeName ??
-                                          "—",
-                                      )}
-                                    </td>
-                                  </tr>
-                                  <tr className="border-b border-border/40">
-                                    <td className="px-3 py-2 font-medium text-muted-foreground">
-                                      {t("Handle", "Handle")}
-                                    </td>
-                                    <td className="px-3 py-2">
-                                      {String(rdapObject.handle ?? "—")}
-                                    </td>
-                                  </tr>
-                                  <tr className="border-b border-border/40">
-                                    <td className="px-3 py-2 font-medium text-muted-foreground">
-                                      {t("Object Class", "Object Class")}
-                                    </td>
-                                    <td className="px-3 py-2">
-                                      {String(
-                                        rdapObject.objectClassName ?? "—",
-                                      )}
-                                    </td>
-                                  </tr>
-                                  <tr className="border-b border-border/40">
-                                    <td className="px-3 py-2 font-medium text-muted-foreground">
-                                      {t("Port 43", "Port 43")}
-                                    </td>
-                                    <td className="px-3 py-2">
-                                      {String(rdapObject.port43 ?? "—")}
-                                    </td>
-                                  </tr>
-                                  <tr className="border-b border-border/40">
-                                    <td className="px-3 py-2 font-medium text-muted-foreground">
-                                      {t("Registrar (API)", "Registrar (API)")}
-                                    </td>
-                                    <td className="px-3 py-2">
-                                      {registrarDomainResult?.registrar ?? "—"}
-                                    </td>
-                                  </tr>
-                                  <tr>
-                                    <td className="px-3 py-2 font-medium text-muted-foreground">
-                                      {t("Status", "Status")}
-                                    </td>
-                                    <td className="px-3 py-2">
-                                      {rdapStatuses.length
-                                        ? rdapStatuses.join(", ")
-                                        : "—"}
-                                    </td>
-                                  </tr>
-                                </tbody>
-                              </table>
+                              <div>
+                                {t("Registrar:", "Registrar:")}{" "}
+                                <span className="text-foreground">
+                                  {registrarDomainResult.registrar}
+                                </span>
+                              </div>
+                              <div>
+                                {t("Status:", "Status:")}{" "}
+                                <span className="text-foreground">
+                                  {registrarDomainResult.status}
+                                </span>
+                              </div>
+                              <div>
+                                {t("Expires:", "Expires:")}{" "}
+                                <span
+                                  className="text-foreground"
+                                  title={
+                                    formatHumanizedDateTime(
+                                      registrarDomainResult.expires_at,
+                                    ).full
+                                  }
+                                >
+                                  {
+                                    formatHumanizedDateTime(
+                                      registrarDomainResult.expires_at,
+                                    ).short
+                                  }
+                                </span>
+                              </div>
                             </div>
+                          ) : (
+                            <div className="text-xs text-muted-foreground">
+                              {t(
+                                "No registrar-api match found for this domain.",
+                                "No registrar-api match found for this domain.",
+                              )}
+                            </div>
+                          )}
+                        </div>
 
-                            <div className="scrollbar-themed overflow-auto [scrollbar-gutter:auto] rounded-lg border border-border/60 bg-muted/10">
-                              <table className="w-full text-xs">
-                                <thead>
-                                  <tr className="border-b border-border/40 text-muted-foreground">
-                                    <th className="px-3 py-2 text-left font-medium">
-                                      {t("Event", "Event")}
-                                    </th>
-                                    <th className="px-3 py-2 text-left font-medium">
-                                      {t("Date", "Date")}
-                                    </th>
-                                  </tr>
-                                </thead>
-                                <tbody>
-                                  {rdapEvents.length ? (
-                                    rdapEvents.map((event, idx) => (
-                                      <tr
-                                        key={`${event.action}-${idx}`}
-                                        className="border-b border-border/30 last:border-b-0"
-                                      >
-                                        <td className="px-3 py-2">
-                                          {event.action}
-                                        </td>
-                                        <td
-                                          className="px-3 py-2"
-                                          title={
-                                            formatHumanizedDateTime(event.date)
-                                              .full
-                                          }
-                                        >
-                                          {
-                                            formatHumanizedDateTime(event.date)
-                                              .short
-                                          }
-                                        </td>
-                                      </tr>
-                                    ))
-                                  ) : (
-                                    <tr>
-                                      <td
-                                        className="px-3 py-2 text-muted-foreground"
-                                        colSpan={2}
-                                      >
-                                        {t(
-                                          "No events returned.",
-                                          "No events returned.",
+                        <div className="rounded-xl border border-border/60 bg-card/60 p-3 space-y-2">
+                          <div className="text-sm font-medium">
+                            {t("Health Checks", "Health Checks")}
+                          </div>
+                          {registrarHealthResult ? (
+                            <div className="text-xs text-muted-foreground space-y-1">
+                              <div>
+                                {t("Overall:", "Overall:")}{" "}
+                                <span className="text-foreground">
+                                  {registrarHealthResult.status}
+                                </span>
+                              </div>
+                              {registrarHealthResult.checks.map((check) => (
+                                <div key={check.name}>
+                                  {check.name}:{" "}
+                                  <span className="text-foreground">
+                                    {check.message}
+                                  </span>
+                                </div>
+                              ))}
+                            </div>
+                          ) : (
+                            <div className="text-xs text-muted-foreground">
+                              {t(
+                                "No health check data for this domain yet.",
+                                "No health check data for this domain yet.",
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="rounded-xl border border-border/60 bg-card/60 p-3 space-y-2">
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="text-sm font-medium">
+                            {t("RDAP Response", "RDAP Response")}
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => {
+                                if (!rdapResult) return;
+                                const summary = [
+                                  `Domain: ${String(rdapObject.ldhName ?? rdapObject.unicodeName ?? "—")}`,
+                                  `Handle: ${String(rdapObject.handle ?? "—")}`,
+                                  `Registrar API: ${registrarDomainResult?.registrar ?? "—"}`,
+                                  `Registrar Entity: ${String(rdapRegistrarEntity?.handle ?? "—")}`,
+                                  `Status: ${rdapStatuses.length ? rdapStatuses.join(", ") : "—"}`,
+                                  `Nameservers: ${rdapNameservers.length ? rdapNameservers.join(", ") : "—"}`,
+                                ].join("\n");
+                                const payload = showRawRdap
+                                  ? JSON.stringify(rdapResult, null, 2)
+                                  : summary;
+                                void navigator.clipboard
+                                  .writeText(payload)
+                                  .then(() =>
+                                    toast({
+                                      title: t("Copied", "Copied"),
+                                      description: t(
+                                        "Registry data copied to clipboard.",
+                                        "Registry data copied to clipboard.",
+                                      ),
+                                    }),
+                                  )
+                                  .catch((error) =>
+                                    toast({
+                                      title: t("Copy failed", "Copy failed"),
+                                      description:
+                                        error instanceof Error
+                                          ? error.message
+                                          : String(error),
+                                      variant: "destructive",
+                                    }),
+                                  );
+                              }}
+                              disabled={!rdapResult}
+                            >
+                              <Copy className="h-3.5 w-3.5 mr-1" />
+                              {t("Copy", "Copy")}
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => setShowRawRdap((prev) => !prev)}
+                              disabled={!rdapResult}
+                            >
+                              {showRawRdap
+                                ? t("Show Table", "Show Table")
+                                : t("Show Raw JSON", "Show Raw JSON")}
+                            </Button>
+                          </div>
+                        </div>
+                        {rdapResult ? (
+                          showRawRdap ? (
+                            <pre className="max-h-80 scrollbar-themed overflow-auto rounded-lg border border-border/60 bg-muted/20 p-3 text-[11px]">
+                              {JSON.stringify(rdapResult, null, 2)}
+                            </pre>
+                          ) : (
+                            <div className="space-y-3">
+                              <div className="scrollbar-themed overflow-auto [scrollbar-gutter:auto] rounded-lg border border-border/60 bg-muted/10">
+                                <table className="w-full text-xs">
+                                  <tbody>
+                                    <tr className="border-b border-border/40">
+                                      <td className="px-3 py-2 font-medium text-muted-foreground">
+                                        {t("Domain", "Domain")}
+                                      </td>
+                                      <td className="px-3 py-2">
+                                        {String(
+                                          rdapObject.ldhName ??
+                                            rdapObject.unicodeName ??
+                                            "—",
                                         )}
                                       </td>
                                     </tr>
-                                  )}
-                                </tbody>
-                              </table>
-                            </div>
+                                    <tr className="border-b border-border/40">
+                                      <td className="px-3 py-2 font-medium text-muted-foreground">
+                                        {t("Handle", "Handle")}
+                                      </td>
+                                      <td className="px-3 py-2">
+                                        {String(rdapObject.handle ?? "—")}
+                                      </td>
+                                    </tr>
+                                    <tr className="border-b border-border/40">
+                                      <td className="px-3 py-2 font-medium text-muted-foreground">
+                                        {t("Object Class", "Object Class")}
+                                      </td>
+                                      <td className="px-3 py-2">
+                                        {String(
+                                          rdapObject.objectClassName ?? "—",
+                                        )}
+                                      </td>
+                                    </tr>
+                                    <tr className="border-b border-border/40">
+                                      <td className="px-3 py-2 font-medium text-muted-foreground">
+                                        {t("Port 43", "Port 43")}
+                                      </td>
+                                      <td className="px-3 py-2">
+                                        {String(rdapObject.port43 ?? "—")}
+                                      </td>
+                                    </tr>
+                                    <tr className="border-b border-border/40">
+                                      <td className="px-3 py-2 font-medium text-muted-foreground">
+                                        {t(
+                                          "Registrar (API)",
+                                          "Registrar (API)",
+                                        )}
+                                      </td>
+                                      <td className="px-3 py-2">
+                                        {registrarDomainResult?.registrar ??
+                                          "—"}
+                                      </td>
+                                    </tr>
+                                    <tr>
+                                      <td className="px-3 py-2 font-medium text-muted-foreground">
+                                        {t("Status", "Status")}
+                                      </td>
+                                      <td className="px-3 py-2">
+                                        {rdapStatuses.length
+                                          ? rdapStatuses.join(", ")
+                                          : "—"}
+                                      </td>
+                                    </tr>
+                                  </tbody>
+                                </table>
+                              </div>
 
-                            <div className="scrollbar-themed overflow-auto [scrollbar-gutter:auto] rounded-lg border border-border/60 bg-muted/10">
-                              <table className="w-full text-xs">
-                                <tbody>
-                                  <tr className="border-b border-border/40">
-                                    <td className="px-3 py-2 font-medium text-muted-foreground">
-                                      {t(
-                                        "Registrar Entity",
-                                        "Registrar Entity",
-                                      )}
-                                    </td>
-                                    <td className="px-3 py-2">
-                                      {String(
-                                        rdapRegistrarEntity?.handle ?? "—",
-                                      )}
-                                    </td>
-                                  </tr>
-                                  <tr>
-                                    <td className="px-3 py-2 font-medium text-muted-foreground">
-                                      {t("Nameservers", "Nameservers")}
-                                    </td>
-                                    <td className="px-3 py-2">
-                                      {rdapNameservers.length
-                                        ? rdapNameservers.join(", ")
-                                        : "—"}
-                                    </td>
-                                  </tr>
-                                </tbody>
-                              </table>
+                              <div className="scrollbar-themed overflow-auto [scrollbar-gutter:auto] rounded-lg border border-border/60 bg-muted/10">
+                                <table className="w-full text-xs">
+                                  <thead>
+                                    <tr className="border-b border-border/40 text-muted-foreground">
+                                      <th className="px-3 py-2 text-left font-medium">
+                                        {t("Event", "Event")}
+                                      </th>
+                                      <th className="px-3 py-2 text-left font-medium">
+                                        {t("Date", "Date")}
+                                      </th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {rdapEvents.length ? (
+                                      rdapEvents.map((event, idx) => (
+                                        <tr
+                                          key={`${event.action}-${idx}`}
+                                          className="border-b border-border/30 last:border-b-0"
+                                        >
+                                          <td className="px-3 py-2">
+                                            {event.action}
+                                          </td>
+                                          <td
+                                            className="px-3 py-2"
+                                            title={
+                                              formatHumanizedDateTime(
+                                                event.date,
+                                              ).full
+                                            }
+                                          >
+                                            {
+                                              formatHumanizedDateTime(
+                                                event.date,
+                                              ).short
+                                            }
+                                          </td>
+                                        </tr>
+                                      ))
+                                    ) : (
+                                      <tr>
+                                        <td
+                                          className="px-3 py-2 text-muted-foreground"
+                                          colSpan={2}
+                                        >
+                                          {t(
+                                            "No events returned.",
+                                            "No events returned.",
+                                          )}
+                                        </td>
+                                      </tr>
+                                    )}
+                                  </tbody>
+                                </table>
+                              </div>
+
+                              <div className="scrollbar-themed overflow-auto [scrollbar-gutter:auto] rounded-lg border border-border/60 bg-muted/10">
+                                <table className="w-full text-xs">
+                                  <tbody>
+                                    <tr className="border-b border-border/40">
+                                      <td className="px-3 py-2 font-medium text-muted-foreground">
+                                        {t(
+                                          "Registrar Entity",
+                                          "Registrar Entity",
+                                        )}
+                                      </td>
+                                      <td className="px-3 py-2">
+                                        {String(
+                                          rdapRegistrarEntity?.handle ?? "—",
+                                        )}
+                                      </td>
+                                    </tr>
+                                    <tr>
+                                      <td className="px-3 py-2 font-medium text-muted-foreground">
+                                        {t("Nameservers", "Nameservers")}
+                                      </td>
+                                      <td className="px-3 py-2">
+                                        {rdapNameservers.length
+                                          ? rdapNameservers.join(", ")
+                                          : "—"}
+                                      </td>
+                                    </tr>
+                                  </tbody>
+                                </table>
+                              </div>
                             </div>
+                          )
+                        ) : (
+                          <div className="text-xs text-muted-foreground">
+                            {t(
+                              "Run checks to load RDAP response.",
+                              "Run checks to load RDAP response.",
+                            )}
                           </div>
-                        )
-                      ) : (
-                        <div className="text-xs text-muted-foreground">
-                          {t(
-                            "Run checks to load RDAP response.",
-                            "Run checks to load RDAP response.",
-                          )}
-                        </div>
-                      )}
-                    </div>
-                    {registryOverlay.visible && (
-                      <SectionLoadingOverlay
-                        label={t(
-                          "Loading registry data...",
-                          "Loading registry data...",
                         )}
-                      />
-                    )}
-                  </CardContent>
-                </Card>
-              )}
+                      </div>
+                      {registryOverlay.visible && (
+                        <SectionLoadingOverlay
+                          label={t(
+                            "Loading registry data...",
+                            "Loading registry data...",
+                          )}
+                        />
+                      )}
+                    </CardContent>
+                  </Card>
+                )}
               {activeTab.kind === "zone" && actionTab === "topology" && (
                 <>
                   {currentTopologyRecordState.status === "ready" ? (
@@ -12495,13 +12800,53 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                   </CardContent>
                 </Card>
               )}
-              {activeTab.kind === "registry" && (
-                <RegistryMonitor
-                  monitor={registrarMonitor}
-                  focusDomain={registryFocusDomain}
-                  onFocusHandled={clearRegistryFocus}
-                />
-              )}
+              {activeTab.kind === "registry" &&
+                (registryMonitoringEnabled ? (
+                  <RegistryMonitor
+                    monitor={registrarMonitor}
+                    focusDomain={registryFocusDomain}
+                    onFocusHandled={clearRegistryFocus}
+                  />
+                ) : (
+                  // `RegistryMonitor` starts asking its registrars for domains
+                  // the moment it mounts, so the switch has to keep it
+                  // unmounted rather than hand it a disabled prop. This says so
+                  // plainly instead of showing an empty monitor that looks like
+                  // "you have no domains".
+                  <Card
+                    className="border-border/60 bg-card/70"
+                    data-testid="registry-monitoring-off"
+                  >
+                    <CardHeader>
+                      <CardTitle className="text-lg">
+                        {t(
+                          "Registry monitoring is turned off",
+                          "Registry monitoring is turned off",
+                        )}
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent className="space-y-3 text-sm text-muted-foreground">
+                      <p>
+                        {t(
+                          "Nothing is being asked of any registry or registrar: no RDAP lookups, no registrar API calls, and no background expiry checks. Your registrar credentials are untouched.",
+                          "Nothing is being asked of any registry or registrar: no RDAP lookups, no registrar API calls, and no background expiry checks. Your registrar credentials are untouched.",
+                        )}
+                      </p>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() =>
+                          openSettingById("registry-monitoring-enabled")
+                        }
+                      >
+                        {t(
+                          "Open the registry monitoring setting",
+                          "Open the registry monitoring setting",
+                        )}
+                      </Button>
+                    </CardContent>
+                  </Card>
+                ))}
               {activeTab.kind === "notifications" && (
                 <NotificationsPanel
                   onOpenZone={openZoneTab}
@@ -13367,6 +13712,119 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                             </div>
                           </>
                         )}
+                        {/* Feature switches: three whole features that can be
+                            turned off, rather than configured. Each one's hint
+                            says what stops, because "no request leaves for
+                            this" is the thing a user wants to know and
+                            "enable feature" is not. Absent means on, so an
+                            existing install reads every one of these as on.
+
+                            Desktop only, for the passkey switch alone: the
+                            login form withholds passkeys entirely on the web
+                            build (`passkeyStatus` is null there), so on the
+                            web this would switch off something already off.
+                            The other two have renderer-side work on both
+                            platforms. */}
+                        {isDesktop() && (
+                          <div
+                            className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center"
+                            data-setting-id="passkeys-enabled"
+                          >
+                            <div className="font-medium">
+                              {t("Passkeys", "Passkeys")}
+                            </div>
+                            <div className="flex flex-wrap items-center gap-3">
+                              <Switch
+                                checked={passkeysEnabled}
+                                onCheckedChange={handlePasskeysEnabledChange}
+                                aria-label={t("Passkeys", "Passkeys")}
+                              />
+                              <div className="text-xs text-muted-foreground">
+                                {t(
+                                  "Off stops every passkey ceremony and removes every passkey control. Credentials already enrolled are kept on this device and work again when you turn this back on.",
+                                  "Off stops every passkey ceremony and removes every passkey control. Credentials already enrolled are kept on this device and work again when you turn this back on.",
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        )}
+                        <div
+                          className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center"
+                          data-setting-id="registry-monitoring-enabled"
+                        >
+                          <div className="font-medium">
+                            {t("Registry monitoring", "Registry monitoring")}
+                          </div>
+                          <div className="flex flex-wrap items-center gap-3">
+                            <Switch
+                              checked={registryMonitoringEnabled}
+                              onCheckedChange={(checked: boolean) => {
+                                setRegistryMonitoringEnabled(checked);
+                                notifySaved(
+                                  checked
+                                    ? t(
+                                        "Registry monitoring is on again.",
+                                        "Registry monitoring is on again.",
+                                      )
+                                    : t(
+                                        "Registry monitoring is off. No RDAP or registrar request will be made, and the background expiry pass has stopped.",
+                                        "Registry monitoring is off. No RDAP or registrar request will be made, and the background expiry pass has stopped.",
+                                      ),
+                                );
+                              }}
+                              aria-label={t(
+                                "Registry monitoring",
+                                "Registry monitoring",
+                              )}
+                            />
+                            <div className="text-xs text-muted-foreground">
+                              {t(
+                                "Off stops every RDAP and registrar request: the Registry view, the expiry lookup an audit spends, and the background expiry pass. Nothing leaves for a registry, and your registrar credentials are left alone.",
+                                "Off stops every RDAP and registrar request: the Registry view, the expiry lookup an audit spends, and the background expiry pass. Nothing leaves for a registry, and your registrar credentials are left alone.",
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                        <div
+                          className="grid gap-3 px-4 py-3 md:grid-cols-[180px_1fr] md:items-center"
+                          data-setting-id="cloudflare-latency-probe"
+                        >
+                          <div className="font-medium">
+                            {t(
+                              "Cloudflare latency check",
+                              "Cloudflare latency check",
+                            )}
+                          </div>
+                          <div className="flex flex-wrap items-center gap-3">
+                            <Switch
+                              checked={cloudflareLatencyEnabled}
+                              onCheckedChange={(checked: boolean) => {
+                                setCloudflareLatencyEnabled(checked);
+                                notifySaved(
+                                  checked
+                                    ? t(
+                                        "The status bar is measuring the Cloudflare round trip again.",
+                                        "The status bar is measuring the Cloudflare round trip again.",
+                                      )
+                                    : t(
+                                        "The latency probe has stopped. No request is made for it.",
+                                        "The latency probe has stopped. No request is made for it.",
+                                      ),
+                                );
+                              }}
+                              aria-label={t(
+                                "Cloudflare latency check",
+                                "Cloudflare latency check",
+                              )}
+                            />
+                            <div className="text-xs text-muted-foreground">
+                              {t(
+                                "Off stops the round-trip probe the status bar repeats about once a minute. The request stops; the reading is not merely hidden.",
+                                "Off stops the round-trip probe the status bar repeats about once a minute. The request stops; the reading is not merely hidden.",
+                              )}
+                            </div>
+                          </div>
+                        </div>
                       </div>
                     )}
                     {settingsSubtab === "columns" && (
@@ -15820,6 +16278,75 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
           </DialogContent>
         </Dialog>
       )}
+      {/* ── Turning passkeys off ─────────────────────────────────────────── */}
+      {/* The password is asked for because a passkey can be the only route a
+          user still remembers — see `handlePasskeysEnabledChange`. The switch
+          stays on until the decrypt succeeds, so an abandoned dialog changes
+          nothing. */}
+      <Dialog
+        open={passkeyDisableOpen}
+        onOpenChange={closePasskeyDisableDialog}
+      >
+        <DialogContent data-testid="passkey-disable-confirm">
+          <DialogHeader>
+            <DialogTitle>
+              {t("Turn passkeys off", "Turn passkeys off")}
+            </DialogTitle>
+            <DialogDescription>
+              {t(
+                "A passkey signs you in without this key's password, so it may be the only way you can still get in. Enter the password to show you have another way, and passkeys will be turned off.",
+                "A passkey signs you in without this key's password, so it may be the only way you can still get in. Enter the password to show you have another way, and passkeys will be turned off.",
+              )}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="rounded-md border border-border/60 bg-card/70 px-3 py-2 text-xs text-muted-foreground">
+              {t(
+                "Nothing is deleted. The passkeys on this device are kept and work again if you turn this back on. This covers every stored key, not only the one you are signed in with — and the password check can only be made against this one.",
+                "Nothing is deleted. The passkeys on this device are kept and work again if you turn this back on. This covers every stored key, not only the one you are signed in with — and the password check can only be made against this one.",
+              )}
+            </div>
+            <Input
+              type="password"
+              autoComplete="current-password"
+              value={passkeyDisablePassword}
+              onChange={(event) =>
+                setPasskeyDisablePassword(event.target.value)
+              }
+              placeholder={t("Key password", "Key password")}
+              aria-label={t("Key password", "Key password")}
+              data-testid="passkey-disable-password"
+            />
+            {passkeyDisableError && (
+              <div
+                role="alert"
+                className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive-foreground"
+              >
+                {passkeyDisableError}
+              </div>
+            )}
+            <div className="flex gap-2">
+              <Button
+                variant="outline"
+                className="flex-1"
+                onClick={() => closePasskeyDisableDialog(false)}
+              >
+                {t("Keep passkeys on", "Keep passkeys on")}
+              </Button>
+              <Button
+                className="flex-1"
+                disabled={passkeyDisableBusy || !passkeyDisablePassword}
+                onClick={() => void confirmDisablePasskeys()}
+                data-testid="passkey-disable-submit"
+              >
+                {passkeyDisableBusy
+                  ? t("Checking…", "Checking…")
+                  : t("Turn passkeys off", "Turn passkeys off")}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
       {/* ── The bin itself ───────────────────────────────────────────────── */}
       <Dialog
         open={recycleBinOpen}

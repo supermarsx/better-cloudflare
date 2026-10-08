@@ -1920,11 +1920,54 @@ pub fn run_domain_audit(
 /// contribute. The record it returns is a deliberate projection that omits
 /// registrant, admin and technical contact vCards, so a lookup cannot pull
 /// personal data into the app.
+/// The registry monitoring switch is enforced here, first, before anything
+/// else in the body: this is a registry request, and the renderer declining to
+/// call it is a promise the renderer makes rather than one the host keeps.
+/// The audit reaches RDAP from the host, so the host is where "nothing leaves
+/// for a registry" has to be true.
 #[tauri::command]
 pub async fn lookup_domain_registry(domain: String) -> Result<bc_notify::RdapRegistration, String> {
+    crate::registrar_commands::ensure_registry_monitoring()?;
     bc_notify::fetch_rdap_registration(bc_notify::rdap::shared_client(), &domain)
         .await
         .map_err(|error| error.to_string())
+}
+
+#[cfg(test)]
+mod registry_lookup_gate_tests {
+    use super::*;
+    use crate::registrar_commands::{registry_monitoring_for_test, REGISTRY_MONITORING_DISABLED};
+
+    /// A hostname `bc_notify::rdap` rejects locally, so neither half of the
+    /// test below can reach the network whichever way the switch is set.
+    const UNRESOLVABLE: &str = "not a hostname";
+
+    /// The gate runs before the lookup, not instead of its error.
+    ///
+    /// Both halves are needed, and the second is the one that makes this a
+    /// measurement rather than a message comparison: with the switch on, the
+    /// very same call gets *past* the gate and fails on the domain instead. So
+    /// the refusal in the first half can only have come from the gate, which
+    /// stands before the only statement in this function that opens a socket.
+    #[tokio::test]
+    async fn a_disabled_feature_refuses_before_the_registry_is_contacted() {
+        let refused = {
+            let _guard = registry_monitoring_for_test(false);
+            lookup_domain_registry(UNRESOLVABLE.to_string())
+                .await
+                .expect_err("a disabled feature must not look anything up")
+        };
+        assert_eq!(refused, REGISTRY_MONITORING_DISABLED);
+
+        let _guard = registry_monitoring_for_test(true);
+        let reached_the_lookup = lookup_domain_registry(UNRESOLVABLE.to_string())
+            .await
+            .expect_err("there is no such domain");
+        assert_ne!(
+            reached_the_lookup, REGISTRY_MONITORING_DISABLED,
+            "with the switch on the call has to get past the gate and fail on the domain"
+        );
+    }
 }
 
 // ─── DNS Propagation ────────────────────────────────────────────────────────

@@ -8,6 +8,7 @@ mod resource_limits;
 mod transport;
 
 pub mod audit;
+pub mod features;
 pub mod permissions;
 pub mod prompts;
 pub mod protocol;
@@ -35,6 +36,7 @@ const DEFAULT_MCP_HOST: &str = "127.0.0.1";
 const DEFAULT_MCP_PORT: u16 = 8787;
 const MAX_BIND_HOST_BYTES: usize = 255;
 
+pub use features::{registry_lookups_enabled, set_registry_lookups_enabled};
 pub use permissions::{PermissionGrantHandle as McpGrantHandle, PermissionGrantSet as McpGrantSet};
 pub use prompts::{McpPrompt, PromptArgument, PromptMessage};
 pub use resources::{McpResource, McpResourceTemplate};

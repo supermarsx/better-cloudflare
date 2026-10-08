@@ -909,7 +909,14 @@ impl NotificationManager {
             last_expiry_check_at: last_expiry,
             last_audit_check_at: last_audit,
             next_record_check_at: next_record.clone(),
-            next_expiry_check_at: if active {
+            // `active` is not the only reason there may be no next expiry
+            // check: with registry monitoring off the loop does not arm that
+            // timer at all, and a status line promising a registry check that
+            // will never come is the kind of disagreement between a switch and
+            // a screen this whole feature exists to avoid.
+            next_expiry_check_at: if active
+                && crate::registrar_commands::registry_monitoring_enabled()
+            {
                 instant_to_ts(next_expiry)
             } else {
                 None
@@ -1137,7 +1144,33 @@ struct PassContext<'a> {
 }
 
 impl PassContext<'_> {
+    /// Run one pass, or `None` when nothing ran.
+    ///
+    /// ## The registry monitoring switch
+    ///
+    /// The expiry pass is the only background work in this app that contacts a
+    /// domain registry or a registrar, so the app-wide registry switch is
+    /// enforced here, at the one point both callers — the loop and
+    /// `check_now` — go through. Returning before the gate means no RDAP
+    /// request, no `registrar_domains()` call (which builds a client per stored
+    /// credential and lists their domains), and no store write.
+    ///
+    /// It is checked here as well as in [`run_loop`], which decides whether the
+    /// timer is even armed, because `check_now` does not consult the timer: a
+    /// user pressing "Check now" with registry monitoring off must get nothing,
+    /// not one pass that slipped past the schedule.
+    ///
+    /// **How this composes with the expiry settings it overlaps.** It does not
+    /// replace them and never writes them. This is the outer gate — *may* this
+    /// app talk to a registry — and `kinds.domainExpiry.enabled`,
+    /// `expiry.source`, `expiry.recheckDate` and the rest stay the inner ones —
+    /// *what* to ask and *when*. Both have to be on for a lookup to happen, and
+    /// because this one is stored somewhere else entirely, turning it off and
+    /// on again leaves the user's expiry configuration exactly as they left it.
     async fn run(&self, kind: PassKind, settings: &NotificationSettings) -> Option<PassReport> {
+        if kind == PassKind::Expiry && !crate::registrar_commands::registry_monitoring_enabled() {
+            return None;
+        }
         let _gate = self.shared.pass_gate.lock().await;
         let now = Utc::now();
         let registrar = if kind == PassKind::Expiry
@@ -1263,12 +1296,21 @@ async fn run_loop(ctx: LoopContext) {
             let backing_off = schedule.backoff_until.is_some_and(|until| until > now);
             let due =
                 |next: Option<Instant>| active && !backing_off && next.is_some_and(|n| n <= now);
+            // With registry monitoring off the expiry timer is treated as
+            // disarmed, not merely overdue. `PassContext::run` would refuse the
+            // pass anyway, but a timer left in the past would also stay in the
+            // sleep candidates below and hold the loop at `MIN_SLEEP`, which is
+            // a one-second wake-up forever in exchange for nothing. Dropping it
+            // here is what makes "no scheduled pass" true of the schedule as
+            // well as of the work.
+            let registry = crate::registrar_commands::registry_monitoring_enabled();
+            let next_expiry = if registry { schedule.next_expiry } else { None };
             (
                 due(schedule.next_record),
-                due(schedule.next_expiry),
+                due(next_expiry),
                 due(schedule.next_audit),
                 schedule.next_record,
-                schedule.next_expiry,
+                next_expiry,
                 schedule.next_audit,
             )
         };
@@ -1308,7 +1350,14 @@ async fn run_loop(ctx: LoopContext) {
                 .unwrap_or_else(|e| e.into_inner());
             let candidates = [
                 schedule.next_record.or(next_record),
-                schedule.next_expiry.or(next_expiry),
+                // Re-read under the lock, so the switch is re-checked too: an
+                // expiry timer this tick decided not to arm must not come back
+                // as a wake-up reason straight from the schedule.
+                if crate::registrar_commands::registry_monitoring_enabled() {
+                    schedule.next_expiry.or(next_expiry)
+                } else {
+                    None
+                },
                 schedule.next_audit.or(next_audit),
                 schedule.backoff_until,
             ];
@@ -1517,6 +1566,14 @@ mod tests {
         config: AppConfigStore,
         storage: Storage,
         events: StdMutex<Vec<(String, Value)>>,
+        /// Times the service asked for registrar domains.
+        ///
+        /// In production that call builds a client per stored credential and
+        /// lists their domains over the registrar's API, so it is the outbound
+        /// request the registry switch has to stop. Counting it is how a test
+        /// can tell "the pass was skipped" from "the pass ran and found
+        /// nothing".
+        registrar_calls: AtomicUsize,
     }
 
     impl TestHost {
@@ -1525,6 +1582,7 @@ mod tests {
                 config: AppConfigStore::new(dir.0.join("config")),
                 storage: Storage::new(false),
                 events: StdMutex::new(Vec::new()),
+                registrar_calls: AtomicUsize::new(0),
             }
         }
 
@@ -1586,7 +1644,10 @@ mod tests {
         }
 
         fn registrar_domains(&self) -> BoxFuture<'_, Vec<DomainInfo>> {
-            Box::pin(async { Vec::new() })
+            Box::pin(async {
+                self.registrar_calls.fetch_add(1, Ordering::SeqCst);
+                Vec::new()
+            })
         }
 
         fn emit(&self, event: &str, payload: Value) {
@@ -1602,6 +1663,8 @@ mod tests {
     struct FakeSource {
         record_calls: AtomicUsize,
         records: StdMutex<Vec<DNSRecord>>,
+        /// Times the scheduler dispatched an expiry pass.
+        expiry_passes: AtomicUsize,
         /// Times the scheduler dispatched an audit pass.
         audit_passes: AtomicUsize,
         /// Zones an audit pass actually read: still 0 when the kind is off.
@@ -1657,6 +1720,7 @@ mod tests {
         ) -> BoxFuture<'a, PassReport> {
             // No RDAP in tests: only evaluate cached milestones + retention.
             Box::pin(async move {
+                self.expiry_passes.fetch_add(1, Ordering::SeqCst);
                 let mut report = PassReport::new(PassKind::Expiry, now);
                 report.notifications_created +=
                     bc_notify::evaluate_expiry_milestones(store, settings, now, &mut report);
@@ -1694,6 +1758,15 @@ mod tests {
         manager: NotificationManager,
         host: Arc<TestHost>,
         source: Arc<FakeSource>,
+        /// The registry monitoring switch, held for the whole test.
+        ///
+        /// Every test here holds one even when it never moves it, because the
+        /// switch is process-global and `cargo test` runs this crate's tests in
+        /// threads of one process: a harness that only locked when it wanted
+        /// the switch off would let one test's "off" be read by another test's
+        /// expiry pass. Use `switch.set(..)` to move it — acquiring a second
+        /// guard inside a test would deadlock on the same mutex.
+        switch: crate::registrar_commands::RegistryMonitoringGuard,
     }
 
     /// Adapter so the manager can hold `Arc<dyn NotificationHost>` while the
@@ -1725,6 +1798,10 @@ mod tests {
     }
 
     async fn harness_with(settings: Option<NotificationSettings>) -> Harness {
+        // Taken first and held for the test: on, which is the switch's own
+        // default, so every existing test sees exactly what it saw before the
+        // switch existed.
+        let switch = crate::registrar_commands::registry_monitoring_for_test(true);
         let dir = TestDir::new();
         let host = Arc::new(TestHost::new(&dir));
         if let Some(settings) = settings {
@@ -1737,6 +1814,7 @@ mod tests {
             manager,
             host,
             source: Arc::new(FakeSource::default()),
+            switch,
         }
     }
 
@@ -2828,5 +2906,136 @@ mod tests {
             ..OsRecordingHost::default()
         };
         assert_eq!(send_os_notifications(&failing, &created, &defaults, now), 0);
+    }
+    // ── The registry monitoring feature switch ──────────────────────────────
+    //
+    // What these pin is the difference between a switch and a label: with
+    // registry monitoring off, the expiry pass must not run, must not ask for
+    // registrar domains (which in production builds a client per credential and
+    // lists their domains over the registrar API), and must not leave a timer
+    // armed for later. Counting the calls is deliberate -- asserting the stored
+    // boolean would pass just as happily if the pass carried on underneath.
+
+    /// Absent means on, so the pass behaves exactly as it did before the switch
+    /// existed. This is the control: it has to come back green for the two
+    /// tests below to mean anything.
+    #[tokio::test(start_paused = true)]
+    async fn registry_monitoring_is_on_by_default_and_the_expiry_pass_runs() {
+        let mut settings = fast_settings();
+        // `source = registrar` is what makes `registrar_domains()` the first
+        // thing the pass spends, which is the outbound call being counted.
+        settings.expiry.source = ExpirySource::Registrar;
+        let h = harness_with(Some(settings)).await;
+        h.manager
+            .start_with(h.source.clone(), "token".into())
+            .await
+            .expect("start");
+        settle().await;
+
+        h.manager
+            .check_now(CheckKind::Expiry)
+            .await
+            .expect("check now");
+        assert!(
+            h.source.expiry_passes.load(Ordering::SeqCst) >= 1,
+            "the expiry pass must run while the switch is on"
+        );
+        assert!(
+            h.host.registrar_calls.load(Ordering::SeqCst) >= 1,
+            "and it must be the pass that asks the registrar, or the counter below proves nothing"
+        );
+        let status = h.manager.status().await.unwrap();
+        assert!(
+            status.next_expiry_check_at.is_some(),
+            "and its timer stays armed"
+        );
+        h.manager.shutdown();
+    }
+
+    /// Off means nothing leaves. Not "the number is hidden", not "it runs and
+    /// finds nothing": the pass is never dispatched, so no registrar client is
+    /// built and no RDAP request is made -- from the timer or from a hand-made
+    /// "check now", which does not consult the timer at all.
+    #[tokio::test(start_paused = true)]
+    async fn registry_monitoring_off_stops_the_expiry_pass_and_its_requests() {
+        let mut settings = fast_settings();
+        settings.expiry.source = ExpirySource::Registrar;
+        // The expiry kind itself is left exactly as the user had it -- on -- so
+        // that what is measured is the master switch and not a second copy of
+        // `kinds.domainExpiry.enabled`.
+        assert!(settings.kinds.domain_expiry.enabled, "fixture precondition");
+        let h = harness_with(Some(settings)).await;
+        h.switch.set(false);
+        h.manager
+            .start_with(h.source.clone(), "token".into())
+            .await
+            .expect("start");
+        settle().await;
+        // Far past the 60-minute expiry floor, so a timer that was still armed
+        // would have come round several times by now.
+        advance_minutes(400).await;
+        h.manager
+            .check_now(CheckKind::Expiry)
+            .await
+            .expect("check now");
+
+        assert_eq!(
+            h.source.expiry_passes.load(Ordering::SeqCst),
+            0,
+            "no expiry pass may run while registry monitoring is off"
+        );
+        assert_eq!(
+            h.host.registrar_calls.load(Ordering::SeqCst),
+            0,
+            "and nothing may go out to a registrar for it"
+        );
+        let status = h.manager.status().await.unwrap();
+        assert!(
+            status.next_expiry_check_at.is_none(),
+            "a disarmed pass must not advertise a next run either"
+        );
+        h.manager.shutdown();
+    }
+
+    /// The composition the switch promises: it gates, it does not rewrite.
+    ///
+    /// Turning the master switch off and on again must leave every expiry
+    /// setting exactly as the user left it, because the two live in different
+    /// stores and neither writes the other. A design that expressed "off" by
+    /// setting `kinds.domainExpiry.enabled = false` would fail here -- and
+    /// would have no way to know what to restore.
+    #[tokio::test(start_paused = true)]
+    async fn the_master_switch_never_rewrites_the_expiry_settings_it_gates() {
+        let mut settings = fast_settings();
+        settings.expiry.source = ExpirySource::Registrar;
+        settings.expiry.recheck_date = false;
+        settings.expiry.milestones = vec![45, 5];
+        let seeded = settings.clone().normalize();
+        let h = harness_with(Some(settings)).await;
+        h.manager
+            .start_with(h.source.clone(), "token".into())
+            .await
+            .expect("start");
+        settle().await;
+
+        h.switch.set(false);
+        h.manager
+            .check_now(CheckKind::Expiry)
+            .await
+            .expect("check now");
+        let after_off = h.host.load_settings().await;
+        assert_eq!(
+            after_off, seeded,
+            "turning the feature off must not touch the expiry settings"
+        );
+
+        h.switch.set(true);
+        let restored = h.host.load_settings().await;
+        assert_eq!(restored, seeded);
+        assert!(
+            restored.kinds.domain_expiry.enabled,
+            "the inner gate is still the user's own choice"
+        );
+        h.manager.shutdown();
     }
 }

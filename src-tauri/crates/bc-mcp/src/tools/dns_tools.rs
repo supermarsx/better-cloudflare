@@ -23,6 +23,36 @@ fn rdap_client() -> &'static bc_notify::RdapClient {
     CLIENT.get_or_init(bc_notify::RdapClient::default)
 }
 
+/// One registry lookup, gated, as JSON.
+///
+/// Every RDAP request this crate makes goes through here, and the gate is the
+/// first thing in it, so a tool added later cannot reach the registry without
+/// passing the feature switch. `crate::features` says why a model asking is
+/// not an exemption.
+async fn lookup_registration(domain: &str) -> Result<Value, String> {
+    lookup_registration_with(rdap_client(), domain).await
+}
+
+/// The body of [`lookup_registration`], with the client to use handed in.
+///
+/// Split the way `bc_notify::run_expiry_pass` / `run_expiry_pass_with` are, and
+/// for the same reason: the production path chooses the process-wide client,
+/// and a test can hand in one pointed at a socket it owns — which is what lets
+/// a test assert that *no connection was made* rather than that an error string
+/// came back. The gate, the error mapping and the JSON conversion are shared by
+/// both, so the test exercises the real path minus the choice of client.
+async fn lookup_registration_with(
+    client: &bc_notify::RdapClient,
+    domain: &str,
+) -> Result<Value, String> {
+    crate::features::ensure_registry_lookups()?;
+    let registration = client
+        .lookup_registration(domain)
+        .await
+        .map_err(describe_rdap_error)?;
+    serde_json::to_value(registration).map_err(|e| e.to_string())
+}
+
 /// Turn an RDAP failure into something a model can act on rather than retry.
 fn describe_rdap_error(error: bc_notify::RdapError) -> String {
     match error {
@@ -74,11 +104,7 @@ pub(super) async fn execute(name: &str, args: &Value) -> Result<Value, String> {
             // `bc_notify::rdap`, which is the only thing that builds the
             // request. Nothing here reassembles a URL of its own.
             let domain = get_required_string(args, "domain")?;
-            let registration = rdap_client()
-                .lookup_registration(&domain)
-                .await
-                .map_err(describe_rdap_error)?;
-            serde_json::to_value(registration).map_err(|e| e.to_string())
+            lookup_registration(&domain).await
         }
 
         "dns_resolve_topology" => {
@@ -233,5 +259,131 @@ pub(super) async fn execute(name: &str, args: &Value) -> Result<Value, String> {
         }
 
         _ => Err(format!("Unknown DNS tool '{}'", name)),
+    }
+}
+
+#[cfg(test)]
+mod registry_gate_tests {
+    use super::*;
+    use crate::features::{registry_lookups_for_test, REGISTRY_LOOKUPS_DISABLED};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tokio::net::TcpListener;
+
+    /// A socket that counts the connections made to it.
+    ///
+    /// This is what makes the test below a measurement of "no request was
+    /// made" rather than of "an error string came back": with the switch off
+    /// nothing connects, and with it on something does, so the counter — not
+    /// the message — is the evidence.
+    struct CountingRegistry {
+        base_url: String,
+        connections: Arc<AtomicUsize>,
+        task: tokio::task::JoinHandle<()>,
+    }
+
+    impl CountingRegistry {
+        async fn start() -> Self {
+            let listener = TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("bind a loopback port");
+            let address = listener.local_addr().expect("local address");
+            let connections = Arc::new(AtomicUsize::new(0));
+            let counter = Arc::clone(&connections);
+            // Accept and drop. The lookup only has to *reach* the socket for
+            // this test; what it would have read back is `bc_notify`'s business
+            // and is covered by that crate's own tests.
+            let task = tokio::spawn(async move {
+                loop {
+                    match listener.accept().await {
+                        Ok(_) => {
+                            counter.fetch_add(1, Ordering::SeqCst);
+                        }
+                        Err(_) => break,
+                    }
+                }
+            });
+            Self {
+                base_url: format!("http://{address}/domain/"),
+                connections,
+                task,
+            }
+        }
+
+        fn client(&self) -> bc_notify::RdapClient {
+            bc_notify::RdapClient {
+                base_url: self.base_url.clone(),
+                // No inter-request delay: this test makes one request and is
+                // not measuring the rate limit.
+                min_interval: Duration::ZERO,
+                ..bc_notify::RdapClient::default()
+            }
+        }
+
+        fn connections(&self) -> usize {
+            self.connections.load(Ordering::SeqCst)
+        }
+    }
+
+    impl Drop for CountingRegistry {
+        fn drop(&mut self) {
+            self.task.abort();
+        }
+    }
+
+    /// The control, and the half that gives the counter meaning: with registry
+    /// lookups permitted, the tool really does go out to the registry.
+    #[tokio::test]
+    async fn a_permitted_registration_lookup_reaches_the_registry() {
+        let _guard = registry_lookups_for_test(true);
+        let registry = CountingRegistry::start().await;
+
+        // The answer is a dropped connection, so the lookup fails -- that is
+        // fine and beside the point. What is being measured is that it tried.
+        let _ = lookup_registration_with(&registry.client(), "example.com").await;
+
+        assert_eq!(
+            registry.connections(),
+            1,
+            "a permitted lookup has to contact the registry, or the test below proves nothing"
+        );
+    }
+
+    /// Off means nothing leaves — including when it is a model asking.
+    #[tokio::test]
+    async fn a_disabled_registry_lookup_makes_no_connection_at_all() {
+        let _guard = registry_lookups_for_test(false);
+        let registry = CountingRegistry::start().await;
+
+        let refused = lookup_registration_with(&registry.client(), "example.com")
+            .await
+            .expect_err("a disabled feature must not look anything up");
+
+        assert_eq!(
+            registry.connections(),
+            0,
+            "nothing may be sent to a registry while registry monitoring is off"
+        );
+        assert_eq!(refused, REGISTRY_LOOKUPS_DISABLED);
+    }
+
+    /// The same, through the tool the assistant actually calls.
+    ///
+    /// Only the off case is driven here: the on case would use the process-wide
+    /// client and go out to the real internet, which no test may do. The two
+    /// above cover the on case against a socket this test owns.
+    #[tokio::test]
+    async fn the_registration_tool_refuses_while_the_switch_is_off() {
+        let _guard = registry_lookups_for_test(false);
+
+        let refused = execute(
+            "dns_check_registration",
+            &json!({ "domain": "example.com" }),
+        )
+        .await
+        .expect_err("the tool must refuse, not answer");
+
+        assert_eq!(refused, REGISTRY_LOOKUPS_DISABLED);
     }
 }
