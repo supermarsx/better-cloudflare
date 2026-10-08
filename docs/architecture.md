@@ -93,7 +93,7 @@ Three pieces of DNS logic carry most of the app's value and are worth knowing by
 | `bc-registrar`                                               | Cloudflare, Porkbun, Namecheap, GoDaddy, Google Cloud Domains, Name.com                                                                  |
 | `bc-notify`                                                  | Notification monitor: expiry milestones, snapshot diff, inbox store                                                                      |
 | `bc-mcp`                                                     | Local MCP server, protocol `2024-11-05`, per-tool permissions                                                                            |
-| `bc-ai-provider`, `bc-ai-chat`, `bc-ai-tools`, `bc-ai-agent` | Backend groundwork, **not exposed in the UI**                                                                                            |
+| `bc-ai-provider`, `bc-ai-chat`, `bc-ai-tools`, `bc-ai-agent` | Assistant backend: providers, chat turns, tool dispatch, agent runs                                                                      |
 
 ### The local MCP server
 
@@ -105,7 +105,9 @@ The permission model is the architecturally interesting part: authorisation is *
 
 ### The AI crates
 
-Four crates, their Tauri commands in `src-tauri/src/ai_commands.rs`, and a `useAiChat` hook in `src/hooks/ai/use-ai-chat.ts` all exist. **Nothing imports the hook.** There is no AI assistant in the interface and no way for a user to reach this code. It is unshipped groundwork, documented here so nobody mistakes the crate list for a feature list.
+Four crates, their Tauri commands in `src-tauri/src/ai_commands.rs`, and three hooks under `src/hooks/ai/` — `use-ai-chat`, `use-ai-plan` and `use-ai-settings`. The interface reaches them through sixteen components in `src/components/ai/`, which `DNSManager` mounts as both `AiAssistantSurface` (the dock, side panel or floating bubble) and `AiAssistantPanel` (the full tab).
+
+This is the newest area of the application and the least settled — the readme and the [home page](index.md) both call it experimental, and that is where the caveat belongs rather than here. Two architectural properties are worth stating, though, because both are enforced rather than intended. Every model request is made by the backend, so a provider key never reaches the renderer — not even a default base URL lives there, which `test/aiProviderProxyBoundary.contract.test.ts` fails the build over. And the assistant acts only through tools granted one at a time: `bc-ai-tools` takes `permission_for_invocation` and `PermissionGrantSet` from `bc_mcp::permissions` rather than implementing its own check, so the per-tool classification described above governs the assistant too and an unrecognised tool is denied rather than defaulted.
 
 ### Secure storage internals
 
