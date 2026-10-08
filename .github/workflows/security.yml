@@ -110,6 +110,14 @@ jobs:
           rustup default 1.97.1
       - name: Install Linux Tauri dependencies
         if: matrix.language == 'rust'
+        # The package set is ~170 debs and normally lands in under a minute.
+        # On run 37781459520 the Azure Ubuntu mirror crawled instead, and this
+        # step spent the job's entire 30-minute budget still downloading — so
+        # the failure was reported as "Rust workspace reliability cancelled",
+        # with the Rust steps never reached. A step cap keeps a slow mirror
+        # legible as a slow mirror. 12 minutes is roughly twenty times the
+        # healthy duration, so it cannot fire on a merely sluggish run.
+        timeout-minutes: 12
         run: |
           set -euo pipefail
           sudo apt-get update
