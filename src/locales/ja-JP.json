@@ -1047,7 +1047,7 @@
   "No record type matches that search.": "その検索に一致するレコードタイプはありません。",
   "No records": "レコードなし",
   "No records are queued for pasting.": "貼り付け待ちのレコードはありません。",
-  "No records found": "レコードが見つかりません",
+  "No records found": "該当するレコードはありません",
   "No records found for this zone.": "このゾーンのレコードが見つかりません。",
   "No records were imported. Skipped {{count}} item(s).": "レコードはインポートされませんでした。{{count}} 件をスキップしました。",
   "No registrar-api match found for this domain.": "このドメインに一致するレジストラ API が見つかりません。",
