@@ -295,13 +295,12 @@ mod registry_gate_tests {
             // this test; what it would have read back is `bc_notify`'s business
             // and is covered by that crate's own tests.
             let task = tokio::spawn(async move {
-                loop {
-                    match listener.accept().await {
-                        Ok(_) => {
-                            counter.fetch_add(1, Ordering::SeqCst);
-                        }
-                        Err(_) => break,
-                    }
+                // `while … .is_ok()` rather than `loop`/`match`: the two arms
+                // were "count it" and "stop", which is all this form says, and
+                // clippy::while_let_loop flags the longer spelling. The accepted
+                // stream is dropped either way — see the note above.
+                while listener.accept().await.is_ok() {
+                    counter.fetch_add(1, Ordering::SeqCst);
                 }
             });
             Self {
