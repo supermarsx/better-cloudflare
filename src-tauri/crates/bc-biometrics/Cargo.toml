@@ -27,7 +27,7 @@ core-foundation-sys = "0.8"
 # over the interface it returns, so the name has to be reachable to call it.
 # `windows` 0.61.3 already depends on exactly this version.
 [target.'cfg(target_os = "windows")'.dependencies]
-windows = { version = "0.61", features = [
+windows = { version = "0.62", features = [
     # UserConsentVerifier: the availability probe and the result enums.
     "Security_Credentials_UI",
     # HWND, ERROR_NOT_FOUND, RPC_E_CHANGED_MODE.
@@ -44,7 +44,7 @@ windows = { version = "0.61", features = [
     # GetActiveWindow lives here, not next to GetForegroundWindow.
     "Win32_UI_Input_KeyboardAndMouse",
 ] }
-windows-future = "0.2"
+windows-future = "0.3"
 # Credential Manager hands back a heap block holding the plaintext; it is
 # scrubbed before `CredFree` rather than left in a freed page.
 zeroize = "1"
