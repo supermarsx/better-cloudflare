@@ -606,9 +606,13 @@ test("every dropdown in these settings is raised above the floating bubble", asy
   );
 
   fireEvent.click(segment("Tools & permissions"));
-  await screen.findByTestId("ai-permissions");
+  // Wait for a tool row, not for `ai-permissions`: that testid is on the
+  // "Reading the assistant's tool permissions…" placeholder too (the test
+  // above renders exactly that state), so awaiting it is no barrier at all -
+  // it resolves before `aiGetPermissions` has answered, and the row lookup
+  // then races the commit that fills the section in.
   await assertRaised(
-    within(screen.getByTestId("ai-tool-row")).getByRole("combobox"),
+    within(await screen.findByTestId("ai-tool-row")).getByRole("combobox"),
     "the per-tool permission popover",
   );
 });
