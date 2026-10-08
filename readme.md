@@ -6,7 +6,7 @@
 [![Docs](https://img.shields.io/badge/docs-read%20the%20guides-8A63D2?logo=markdown&logoColor=white)](https://supermarsx.github.io/better-cloudflare/)
 
 [![Tauri v2](https://img.shields.io/badge/Tauri-v2-24C8DB?logo=tauri&logoColor=white)](https://tauri.app/)
-[![Rust](https://img.shields.io/badge/Rust-17%20crates-000000?logo=rust&logoColor=white)](https://www.rust-lang.org/)
+[![Rust](https://img.shields.io/badge/Rust-19%20crates-000000?logo=rust&logoColor=white)](https://www.rust-lang.org/)
 [![Next.js 16](https://img.shields.io/badge/Next.js-16-000000?logo=nextdotjs&logoColor=white)](https://nextjs.org/)
 [![React 19](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=000000)](https://react.dev/)
 

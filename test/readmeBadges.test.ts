@@ -23,7 +23,11 @@ function read(relative: string): string {
   );
 }
 
-const readme = read("../README.md");
+// Lowercase, like `license.md` beside it. Windows resolves either case, so a
+// path written `../README.md` reads fine here and throws ENOENT on the Linux
+// runner that CI actually uses -- a test that passes on the author's machine
+// and cannot pass anywhere else.
+const readme = read("../readme.md");
 
 /** The major version of a dependency range like `^19.2.8` or `16.3.6`. */
 function majorOf(range: string): string {
