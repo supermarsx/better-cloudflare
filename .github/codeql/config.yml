@@ -12,11 +12,13 @@
 # at a 45-minute cap, and run 37775289710 was cancelled at a raised 90-minute
 # cap as well. Both earlier diagnoses were wrong: it is not a resource problem
 # (doubling to 4 threads and 8 GB changed nothing) and it is not the breadth of
-# `security-extended` (the run never reached a security query).
+# `security-extended` (not one security query completed before the cap).
 #
-# The job log gives the real shape. Of the 39 queries CodeQL runs for Rust, the
-# first thirteen are diagnostics and summaries, and they consumed essentially
-# the whole budget:
+# The job log gives the real shape. CodeQL runs 39 queries for Rust in one
+# `run-queries` invocation across 4 threads, and the `[n/39 eval]` index is
+# *completion* order, not start order — the security queries load first. In 75
+# minutes of query time, thirteen queries finished, and every one of them was a
+# diagnostic or a summary:
 #
 #     [ 4/39 eval 55.6s]  diagnostics/ExtractedFiles
 #     [ 7/39 eval 3m30s]  summary/LinesOfCode

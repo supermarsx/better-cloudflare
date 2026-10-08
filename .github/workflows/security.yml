@@ -82,12 +82,13 @@ jobs:
     # Two diagnoses were wrong before the log was read properly. It is not a
     # resource problem — doubling to 4 threads and 8 GB changed nothing — and it
     # is not the breadth of `security-extended`, because the run never reached a
-    # security query. Extraction takes 7m47s and finalizing 1m41s; of the 39
-    # queries, the thirteen diagnostics and summaries that run first ate the
-    # budget, one of them for 53m51s on its own. The four extractor self-checks
-    # responsible for about 71 of those minutes are excluded by ID in
-    # `.github/codeql/config.yml`, which explains the choice and keeps the
-    # cheap extraction diagnostics that say whether the scan saw our code.
+    # security query to completion. Extraction takes 7m47s and finalizing
+    # 1m41s; of the 39 queries, only thirteen finished in 75 minutes and all
+    # thirteen were diagnostics or summaries, one of them taking 53m51s alone.
+    # The four extractor self-checks responsible for about 71 of those minutes
+    # are excluded by ID in `.github/codeql/config.yml`, which explains the
+    # choice and keeps the cheap extraction diagnostics that say whether the
+    # scan saw our code.
     #
     # The cap stays at 90 so the next run also measures what the analysis
     # actually needs once it is not competing with an extractor self-check.
