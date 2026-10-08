@@ -71,6 +71,15 @@ const INTENTIONAL_REWORDS: readonly string[] = [
   // Accessibility labels. The key describes the control; the value is what a
   // screen reader announces, and it omits the role because the reader
   // announces that itself -- "TTL, combo box", not "TTL select, combo box".
+  //
+  // `Comment input` was the odd one out and is the reason `fill-base` was
+  // changed: it held the *key* as its own value, because the naive fill wrote
+  // `base[key] = key` while its call site asks for "Comment". So English
+  // announced the role, and ten locales translated that role word -- ko-KR
+  // ended up using two different words for "comment" across the pair. All
+  // twelve now carry whatever that locale uses for `Comment`, exactly as
+  // `Content input` mirrors `Content`.
+  "Comment input",
   "Content input",
   "Default content input",
   "Name input",

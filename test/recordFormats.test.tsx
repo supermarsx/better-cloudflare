@@ -125,7 +125,11 @@ test("the dialog shows the format and example for a type with no guided builder"
     );
   });
 
-  const content = screen.getByRole("textbox", { name: "Content" });
+  // "Default content", not "Content": this is the fallback input used when no
+  // guided builder matches the record type, and it announced "Content" --
+  // identical to the visible label on a different control in the same dialog.
+  // A screen-reader user had no way to tell the two apart.
+  const content = screen.getByRole("textbox", { name: "Default content" });
   const describedBy = content.getAttribute("aria-describedby");
   assert.ok(describedBy, "the free-text content field must reference the hint");
 
