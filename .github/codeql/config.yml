@@ -8,28 +8,28 @@
 #
 # ── Why anything is excluded at all ─────────────────────────────────────────
 #
-# The Rust analysis had never once completed. Twenty-plus runs were cancelled
-# at a 45-minute cap, and run 37775289710 was cancelled at a raised 90-minute
-# cap as well. Both earlier diagnoses were wrong: it is not a resource problem
-# (doubling to 4 threads and 8 GB changed nothing) and it is not the breadth of
-# `security-extended` (not one security query completed before the cap).
+# These exclusions are worth having and are *not* what made the Rust analysis
+# finishable — that was moving it off the per-push path, for the reason set out
+# in the workflow. Keep them anyway: they return about 71 minutes of a long
+# scheduled run for no loss of coverage, and run 37787606553 proved the filter
+# reaches diagnostic queries, taking the count from 39 to 35.
 #
-# The job log gives the real shape. CodeQL runs 39 queries for Rust in one
-# `run-queries` invocation across 4 threads, and the `[n/39 eval]` index is
-# *completion* order, not start order — the security queries load first. In 75
-# minutes of query time, thirteen queries finished, and every one of them was a
-# diagnostic or a summary:
+# The timeout itself had a different cause. Of those 35 queries, nine completed
+# inside 3m45s and all nine were purely syntactic; the other twenty-six all
+# started and none finished in the following 71m52s. Those twenty-six share one
+# global type-inference and dataflow computation, which does not converge on a
+# 698-crate graph under rust-queries 0.1.43 — and since every security query is
+# one of them, no exclusion can keep the coverage and skip the cost.
 #
-#     [ 4/39 eval 55.6s]  diagnostics/ExtractedFiles
-#     [ 7/39 eval 3m30s]  summary/LinesOfCode
+# What the four cost, measured on run 37775289710 before they were excluded.
+# Note the `[n/39 eval]` index counts *completions*, not starts — the security
+# queries load first — so this is the order they finished in, not the order
+# CodeQL began them:
+#
 #     [10/39 eval 5m27s]  diagnostics/AstConsistencyCounts
 #     [11/39 eval 6m7s]   diagnostics/CfgConsistencyCounts
 #     [12/39 eval 6m0s]   diagnostics/SsaConsistencyCounts
 #     [13/39 eval 53m51s] diagnostics/TypeInferenceConsistencyCounts
-#
-# Extraction took 7m47s and finalizing 1m41s, so the pipeline is healthy. One
-# query took fifty-four minutes, and the twenty-six security queries were left
-# with about twenty of the ninety and never finished.
 #
 # ── Why these four and not the others ───────────────────────────────────────
 #

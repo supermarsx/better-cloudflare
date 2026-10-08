@@ -74,25 +74,50 @@ jobs:
   codeql:
     name: CodeQL (${{ matrix.language }})
     runs-on: ubuntu-24.04
-    # The Rust analysis has never once completed: twenty-plus runs cancelled at
-    # a 45-minute cap, and run 37775289710 cancelled at this 90-minute one too.
-    # So the repository has had no Rust CodeQL coverage at all, which went
-    # unnoticed because `fail-fast: false` keeps the matrix green-ish.
+    # The Rust leg runs on the schedule and on manual dispatch, not on every
+    # push, and it is given most of a GitHub job's six-hour ceiling. That is a
+    # retreat, so here is what it is a retreat from.
     #
-    # Two diagnoses were wrong before the log was read properly. It is not a
-    # resource problem — doubling to 4 threads and 8 GB changed nothing — and it
-    # is not the breadth of `security-extended`, because the run never reached a
-    # security query to completion. Extraction takes 7m47s and finalizing
-    # 1m41s; of the 39 queries, only thirteen finished in 75 minutes and all
-    # thirteen were diagnostics or summaries, one of them taking 53m51s alone.
-    # The four extractor self-checks responsible for about 71 of those minutes
-    # are excluded by ID in `.github/codeql/config.yml`, which explains the
-    # choice and keeps the cheap extraction diagnostics that say whether the
-    # scan saw our code.
+    # Twenty-two consecutive Rust analyses were cancelled at their cap: at 45
+    # minutes, then at a raised 90 (runs 37775289710 and 37787606553). The
+    # repository has therefore never had a Rust SARIF, which went unnoticed
+    # because `fail-fast: false` keeps the matrix green-ish.
     #
-    # The cap stays at 90 so the next run also measures what the analysis
-    # actually needs once it is not competing with an extractor self-check.
-    timeout-minutes: 90
+    # Three diagnoses were wrong before the log was read properly, and each is
+    # worth recording so it is not tried again:
+    #
+    #   * Not resources. Doubling to 4 threads and 8 GB changed nothing.
+    #   * Not the breadth of `security-extended`. No security query ever
+    #     completed, so running fewer of them was never going to help.
+    #   * Not one pathological query. `TypeInferenceConsistencyCounts` really
+    #     did evaluate for 53m51s and is now excluded, and the exclusion
+    #     demonstrably took effect — the query count fell from 39 to 35 — but
+    #     the run timed out anyway.
+    #
+    # Run 37787606553 shows the actual shape. Extraction 7m58s, finalizing
+    # 1m40s, then of 35 queries exactly nine completed, all within 3m45s, and
+    # all nine purely syntactic: extraction counts and lines of code. The other
+    # twenty-six all started and not one finished in the 71m52s before the cap
+    # — every security query, plus `DataFlowConsistencyCounts`, the summary
+    # statistics and the telemetry queries.
+    #
+    # What those twenty-six share is global dataflow. They consume one shared
+    # type-inference and dataflow computation, so none of them can report until
+    # it converges, and on a 698-crate graph under rust-queries 0.1.43 it does
+    # not converge inside ninety minutes. That stage is not overhead around the
+    # security queries; it is what they are. So there is no exclusion that
+    # keeps Rust security coverage and avoids the cost, and raising a per-push
+    # cap to fit an unbounded computation would just buy a slower identical
+    # failure on every commit.
+    #
+    # Hence: weekly instead of per-push, with room to actually finish. Weekly
+    # Rust coverage that produces a SARIF is strictly more than the per-push
+    # coverage this job has delivered to date, which is none. The concurrency
+    # group above already protects a long scheduled run from being cancelled by
+    # a push. If a scheduled run still cannot finish in 330 minutes, the
+    # conclusion is about rust-queries 0.1.43 rather than about this workflow,
+    # and the next lever is upstream.
+    timeout-minutes: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 330 || 30 }}
     env:
       TAURI_CONFIG: '{"build":{"frontendDist":"../app"}}'
     permissions:
@@ -102,9 +127,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        language:
-          - javascript-typescript
-          - rust
+        # The Rust leg is added only for the events that can afford it. A
+        # static matrix plus a step-level condition was the alternative and is
+        # worse: the job would still start, skip every step, and report success
+        # for an analysis it never ran.
+        language: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && fromJSON('["javascript-typescript", "rust"]') || fromJSON('["javascript-typescript"]') }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
