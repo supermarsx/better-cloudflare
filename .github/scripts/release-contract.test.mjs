@@ -1859,8 +1859,28 @@ test("Rust CodeQL analysis is preflight-gated with retained diagnostics", () => 
   );
   const rustAlways = /if: \$\{\{ matrix\.language == 'rust' && always\(\) \}\}/;
 
-  assert.equal(SECURITY_WORKFLOW.match(/^\s+threads: 2$/gm)?.length, 2);
-  assert.equal(SECURITY_WORKFLOW.match(/^\s+ram: 4096$/gm)?.length, 2);
+  // Both `init` and `analyze` must set these, and set them to the *same*
+  // values: the analyse step re-reads them and a mismatched pair silently
+  // applies the smaller one. The pairing is the invariant, so it is asserted
+  // directly rather than by pinning a number — the previous form hard-coded
+  // `threads: 2` and `ram: 4096`, which meant the figures could not be raised
+  // without editing this test, and they badly needed raising. Those values
+  // gave query evaluation a quarter of a 4-vCPU, 16 GB runner, and the Rust
+  // analysis had never once completed within its timeout as a result.
+  const threads = SECURITY_WORKFLOW.match(/^\s+threads: (\d+)$/gm) ?? [];
+  const ram = SECURITY_WORKFLOW.match(/^\s+ram: (\d+)$/gm) ?? [];
+  assert.equal(threads.length, 2, "init and analyze must both set threads");
+  assert.equal(ram.length, 2, "init and analyze must both set ram");
+  assert.equal(
+    threads[0].trim(),
+    threads[1].trim(),
+    "init and analyze must request the same thread count",
+  );
+  assert.equal(
+    ram[0].trim(),
+    ram[1].trim(),
+    "init and analyze must request the same ram",
+  );
   assert.match(
     SECURITY_WORKFLOW,
     /TAURI_CONFIG: '\{"build":\{"frontendDist":"\.\.\/app"\}\}'/,

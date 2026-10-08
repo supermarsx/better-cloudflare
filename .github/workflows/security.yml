@@ -74,7 +74,18 @@ jobs:
   codeql:
     name: CodeQL (${{ matrix.language }})
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    # The Rust analysis has never once completed. Every run for at least the
+    # last twenty was cancelled at the previous 45-minute cap, so this job has
+    # never produced a Rust SARIF and the repository has had no Rust CodeQL
+    # coverage at all. It went unnoticed because `fail-fast: false` keeps the
+    # matrix green-ish and the workflow was already failing on another job.
+    #
+    # Measured on run 37729658725: checkout, toolchain and the Linux Tauri
+    # packages take 1m, the cargo preflight 3m42s, and `Analyze` had run for
+    # 40m18s when the cap killed it. The budget is raised rather than the query
+    # suite reduced, because `security-extended` is the coverage this repository
+    # chose and a timeout is a resource problem, not a reason to scan less.
+    timeout-minutes: 90
     env:
       TAURI_CONFIG: '{"build":{"frontendDist":"../app"}}'
     permissions:
@@ -118,8 +129,13 @@ jobs:
           languages: ${{ matrix.language }}
           build-mode: none
           queries: security-extended
-          threads: 2
-          ram: 4096
+          # A standard ubuntu-24.04 runner is 4 vCPU and 16 GB. The previous
+          # `threads: 2` and `ram: 4096` gave query evaluation a quarter of the
+          # CPU and a quarter of the memory, which is why the Rust analysis
+          # never finished. 8 GB leaves ample headroom for the OS and the
+          # extracted database on a 16 GB box.
+          threads: 4
+          ram: 8192
       - name: Check Rust workspace before analysis
         if: matrix.language == 'rust'
         id: rust_preflight
@@ -141,8 +157,10 @@ jobs:
         with:
           category: /language:${{ matrix.language }}
           output: ${{ runner.temp }}/codeql-results
-          threads: 2
-          ram: 4096
+          # Must match the values given to `init`: the analyse step re-reads
+          # them, and a mismatch silently applies the smaller pair.
+          threads: 4
+          ram: 8192
       - name: Upload Rust scan diagnostics
         if: ${{ matrix.language == 'rust' && always() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
