@@ -16,18 +16,29 @@ core-foundation-sys = "0.8"
 
 # ── Windows Hello ────────────────────────────────────────────────────────────
 #
-# 0.61 is the line already in this workspace's graph (`src-tauri` reaches
-# `ICoreWebView2` through it, and tauri/wry pull the same one). Adding a second
-# major here would mean two copies of `windows-core` and two incompatible
-# `HWND` types in one binary, so this pin deliberately follows that one.
+# 0.62 is the line already in this workspace's graph (`src-tauri` reaches
+# `ICoreWebView2` through it, and tauri/wry pull the same one — `tauri` 2.12
+# requires `windows ^0.62` and `webview2-com ^0.39`). Adding a second major
+# here would mean two copies of `windows-core` and two incompatible `HWND`
+# types in one binary, so this pin deliberately follows that one.
 #
 # `windows-future` is where `IAsyncOperation` lives since 0.61 split it out of
 # the `windows` crate. It is not re-exported from `windows`, and
 # `IUserConsentVerifierInterop::RequestVerificationForWindowAsync` is generic
 # over the interface it returns, so the name has to be reachable to call it.
-# `windows` 0.61.3 already depends on exactly this version.
+# `windows` 0.62.2 already depends on exactly this version.
+#
+# DO NOT "UPGRADE" `windows-future` TO 0.100. That is not a later release of
+# the 0.3 line: windows-rs has begun republishing its component crates on a
+# unified 0.100.x scheme ahead of the umbrella `windows` crate, and
+# `windows-future` 0.100.0 requires `windows-core ^0.100`. The newest
+# `windows` is 0.62.2 and it requires `windows-core ^0.62.2`, so taking 0.100
+# here would put two incompatible `windows-core` crates in one binary, and
+# `IAsyncOperation<UserConsentVerificationResult>` would stop typechecking —
+# the operation would be generic over 0.100's `RuntimeType` while the result
+# type comes from 0.62. The version to track is whatever `windows` depends on.
 [target.'cfg(target_os = "windows")'.dependencies]
-windows = { version = "0.61", features = [
+windows = { version = "0.62", features = [
     # UserConsentVerifier: the availability probe and the result enums.
     "Security_Credentials_UI",
     # HWND, ERROR_NOT_FOUND, RPC_E_CHANGED_MODE.
@@ -44,7 +55,7 @@ windows = { version = "0.61", features = [
     # GetActiveWindow lives here, not next to GetForegroundWindow.
     "Win32_UI_Input_KeyboardAndMouse",
 ] }
-windows-future = "0.2"
+windows-future = "0.3"
 # Credential Manager hands back a heap block holding the plaintext; it is
 # scrubbed before `CredFree` rather than left in a freed page.
 zeroize = "1"

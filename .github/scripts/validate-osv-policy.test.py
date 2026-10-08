@@ -30,6 +30,13 @@ RETIRED_EXCEPTIONS = {
     # backend, removing the archived kuchikiki -> selectors -> phf_generator stack.
     "RUSTSEC-2025-0057": ("fxhash", "0.2.1"),
     "RUSTSEC-2026-0097": ("rand", "0.7.3"),
+    # urlpattern 0.6 parses patterns with its own code instead of the
+    # archived rust-unic stack, removing all five unic-* crates.
+    "RUSTSEC-2025-0075": ("unic-char-range", "0.9.0"),
+    "RUSTSEC-2025-0080": ("unic-common", "0.9.0"),
+    "RUSTSEC-2025-0081": ("unic-char-property", "0.9.0"),
+    "RUSTSEC-2025-0098": ("unic-ucd-version", "0.9.0"),
+    "RUSTSEC-2025-0100": ("unic-ucd-ident", "0.9.0"),
 }
 
 
@@ -42,14 +49,28 @@ def _synthetic_lock(
     directory: Path,
     *,
     drop: set[tuple[str, str]] | None = None,
+    drop_names: set[str] | None = None,
     downgrade: tuple[str, str] | None = None,
 ) -> Path:
-    """Write a name/version-only Cargo.lock so resolution can be mutated safely."""
+    """Write a name/version-only Cargo.lock so resolution can be mutated safely.
+
+    `drop` is version-exact, for the stale-exception check, which is itself
+    version-exact. `drop_names` removes a package at whatever version the
+    lockfile currently resolves: a floor's *presence* requirement is about the
+    name, and pinning a version here would quietly stop removing anything the
+    next time the dependency moves.
+    """
     lock = tomllib.loads((ROOT / "Cargo.lock").read_text(encoding="utf-8"))
+    if drop_names:
+        resolved = {name for name, _ in _resolved_packages()}
+        missing = sorted(drop_names - resolved)
+        assert not missing, f"drop_names must name resolved packages: {missing}"
     lines = ["version = 4", ""]
     for entry in lock["package"]:
         name, version = entry["name"], entry["version"]
         if drop and (name, version) in drop:
+            continue
+        if drop_names and name in drop_names:
             continue
         if downgrade and name == downgrade[0]:
             version = downgrade[1]
@@ -184,9 +205,23 @@ class OsvPolicyContractTests(unittest.TestCase):
                     ROOT / "osv-scanner.toml", lockfile, today=dt.date(2026, 7, 30)
                 )
 
+    def test_urlpattern_floor_regression_fails(self) -> None:
+        """Downgrading urlpattern would resurrect the five unic advisories."""
+        with tempfile.TemporaryDirectory() as directory:
+            lockfile = _synthetic_lock(
+                Path(directory), downgrade=("urlpattern", "0.3.0")
+            )
+            with self.assertRaisesRegex(
+                POLICY.PolicyError,
+                r"urlpattern resolved below security floor 0\.6\.0",
+            ):
+                POLICY.validate_config(
+                    ROOT / "osv-scanner.toml", lockfile, today=dt.date(2026, 7, 30)
+                )
+
     def test_required_package_absence_fails(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            lockfile = _synthetic_lock(Path(directory), drop={("tauri-plugin", "2.6.3")})
+            lockfile = _synthetic_lock(Path(directory), drop_names={"tauri-plugin"})
             with self.assertRaisesRegex(
                 POLICY.PolicyError, r"required package is absent: tauri-plugin"
             ):
@@ -269,7 +304,7 @@ class OsvPolicyContractTests(unittest.TestCase):
                 "rationale=generic placeholder rationale",
             ),
             "reachability": (
-                "reachability=transitive through Tauri 2.11.1 GTK3 runtime",
+                "reachability=transitive through Tauri 2.12.1 GTK3 runtime",
                 "reachability=transitive through imaginary package",
             ),
         }

@@ -52,20 +52,11 @@ APPROVED_EXCEPTIONS = {
     "RUSTSEC-2024-0419": ("gtk3-macros", "0.18.2", "unmaintained"),
     "RUSTSEC-2024-0420": ("gtk-sys", "0.18.2", "unmaintained"),
     "RUSTSEC-2024-0429": ("glib", "0.18.5", "unsound"),
-    "RUSTSEC-2025-0075": ("unic-char-range", "0.9.0", "unmaintained"),
-    "RUSTSEC-2025-0080": ("unic-common", "0.9.0", "unmaintained"),
-    "RUSTSEC-2025-0081": ("unic-char-property", "0.9.0", "unmaintained"),
-    "RUSTSEC-2025-0098": ("unic-ucd-version", "0.9.0", "unmaintained"),
-    "RUSTSEC-2025-0100": ("unic-ucd-ident", "0.9.0", "unmaintained"),
 }
 
 GTK_BINDING_RATIONALE = (
     "GTK3 bindings are archived and have no patched GTK3 release, while GTK4 "
     "requires an upstream Tauri runtime migration"
-)
-UNIC_RATIONALE = (
-    "the advisory is maintenance-only and urlpattern 0.3 has no compatible "
-    "release that removes the archived rust-unic stack"
 )
 RSA_MARVIN_REACHABILITY = (
     "transitive through webauthn-rs 0.6.1-dev and crypto-glue 0.1.15, where the "
@@ -88,71 +79,51 @@ APPROVED_JUSTIFICATIONS = {
         "no compatible release that removes proc-macro-error",
     ),
     "RUSTSEC-2024-0411": (
-        "transitive through Tauri 2.11.1 GTK3 runtime",
+        "transitive through Tauri 2.12.1 GTK3 runtime",
         GTK_BINDING_RATIONALE,
     ),
     "RUSTSEC-2024-0412": (
-        "transitive through Tauri 2.11.1 GTK3 runtime",
+        "transitive through Tauri 2.12.1 GTK3 runtime",
         GTK_BINDING_RATIONALE,
     ),
     "RUSTSEC-2024-0413": (
-        "transitive through Tauri 2.11.1 GTK3 runtime",
+        "transitive through Tauri 2.12.1 GTK3 runtime",
         GTK_BINDING_RATIONALE,
     ),
     "RUSTSEC-2024-0414": (
-        "transitive through Tauri 2.11.1 GTK3 runtime",
+        "transitive through Tauri 2.12.1 GTK3 runtime",
         GTK_BINDING_RATIONALE,
     ),
     "RUSTSEC-2024-0415": (
-        "transitive through Tauri 2.11.1 Linux runtime",
+        "transitive through Tauri 2.12.1 Linux runtime",
         GTK_BINDING_RATIONALE,
     ),
     "RUSTSEC-2024-0416": (
-        "transitive through Tauri 2.11.1 GTK3 runtime",
+        "transitive through Tauri 2.12.1 GTK3 runtime",
         GTK_BINDING_RATIONALE,
     ),
     "RUSTSEC-2024-0417": (
-        "transitive through Tauri 2.11.1 GTK3 runtime",
+        "transitive through Tauri 2.12.1 GTK3 runtime",
         GTK_BINDING_RATIONALE,
     ),
     "RUSTSEC-2024-0418": (
-        "transitive through Tauri 2.11.1 GTK3 runtime",
+        "transitive through Tauri 2.12.1 GTK3 runtime",
         GTK_BINDING_RATIONALE,
     ),
     "RUSTSEC-2024-0419": (
-        "transitive build dependency through Tauri 2.11.1 GTK3 runtime",
+        "transitive build dependency through Tauri 2.12.1 GTK3 runtime",
         GTK_BINDING_RATIONALE,
     ),
     "RUSTSEC-2024-0420": (
-        "transitive through Tauri 2.11.1 Linux runtime",
+        "transitive through Tauri 2.12.1 Linux runtime",
         GTK_BINDING_RATIONALE,
     ),
     "RUSTSEC-2024-0429": (
-        "transitive through Tauri 2.11.1 GTK3 runtime with no direct application "
+        "transitive through Tauri 2.12.1 GTK3 runtime with no direct application "
         "glib use",
         "the fix starts at glib 0.20 but gtk 0.18 requires glib 0.18, so no "
         "patched version is solver-reachable without replacing the upstream GTK3 "
         "runtime",
-    ),
-    "RUSTSEC-2025-0075": (
-        "transitive through Tauri utils and urlpattern",
-        UNIC_RATIONALE,
-    ),
-    "RUSTSEC-2025-0080": (
-        "transitive through Tauri utils and urlpattern",
-        UNIC_RATIONALE,
-    ),
-    "RUSTSEC-2025-0081": (
-        "transitive through Tauri utils and urlpattern",
-        UNIC_RATIONALE,
-    ),
-    "RUSTSEC-2025-0098": (
-        "transitive through Tauri utils and urlpattern",
-        UNIC_RATIONALE,
-    ),
-    "RUSTSEC-2025-0100": (
-        "transitive through Tauri utils and urlpattern",
-        UNIC_RATIONALE,
     ),
 }
 
@@ -193,6 +164,12 @@ MINIMUM_VERSIONS = {
     "tauri-runtime": "2.11.3",
     "tauri-runtime-wry": "2.11.4",
     "tauri-utils": "2.9.3",
+    # urlpattern 0.3 reached the archived rust-unic stack, which is what
+    # kept the five unic-* unmaintained advisories (RUSTSEC-2025-0075,
+    # -0080, -0081, -0098 and -0100) in the graph. 0.6 parses with its own
+    # code and drops all five crates, so this floor is what keeps those
+    # exceptions retired.
+    "urlpattern": "0.6.0",
 }
 
 

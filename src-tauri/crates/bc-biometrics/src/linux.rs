@@ -458,6 +458,11 @@ fn from_ss(err: secret_service::Error) -> BiometricError {
         secret_service::Error::Locked => BiometricError::StoreError(
             "The keyring collection is locked and could not be unlocked".to_string(),
         ),
+        // `PromptDisconnected`, added in secret-service 5.2, lands here on
+        // purpose. It means the connection closed before the prompt finished
+        // and the outcome is unknown, which is not the same fact as the arm
+        // above: reporting it as `UserCancelled` would tell the caller the user
+        // declined when the secret may well have been stored.
         other => BiometricError::StoreError(format!("Secret Service call failed: {other}")),
     }
 }

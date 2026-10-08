@@ -21,4 +21,8 @@ reqwest = { version = "0.13", default-features = false, features = [
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
+# A floor, not a pin — see the longer note in `bc-spf/Cargo.toml`. `"0.26.1"` is
+# a caret requirement that already floats to the newest 0.26.x, and the patch
+# digit is the patched floor for RUSTSEC-2026-0119 and RUSTSEC-2026-0120. Do not
+# widen it to `"0.26"`.
 hickory-resolver = "0.26.1"

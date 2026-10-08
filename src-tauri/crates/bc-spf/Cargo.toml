@@ -7,4 +7,13 @@ description = "SPF record parser, simulator, and include/redirect graph builder"
 [dependencies]
 ipnet = "2"
 serde = { version = "1", features = ["derive"] }
+# A floor, not a pin. `"0.26.1"` is a caret requirement — `>=0.26.1, <0.27.0` —
+# so it already floats to the newest 0.26.x (`Cargo.lock` holds 0.26.3) and a
+# future patch arrives with a plain `cargo update`. It holds nothing back.
+#
+# The patch digit is load-bearing and must NOT be "tidied" to `"0.26"`:
+# 0.26.1 is the patched floor for RUSTSEC-2026-0119 (hickory-proto, O(n²) name
+# compression on encode, reachable with no DNSSEC feature) and RUSTSEC-2026-0120
+# (hickory-net, unbounded NSEC3 encloser loop). Both say `patched = [">= 0.26.1"]`,
+# so a bare `"0.26"` would let a resolve pick 0.26.0 and readmit them.
 hickory-resolver = "0.26.1"

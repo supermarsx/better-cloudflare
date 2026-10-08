@@ -34,7 +34,7 @@
 //!
 //! Every WinRT call below runs on a private thread this module spawns and joins,
 //! initialised into the multithreaded apartment. That is not defensive
-//! boilerplate. `IAsyncOperation::get()` blocks on an event without pumping
+//! boilerplate. `IAsyncOperation::join()` blocks on an event without pumping
 //! messages, and `biometric_status` is a *synchronous* Tauri command, so it
 //! arrives on the window's own thread — an STA with a live message loop.
 //! Blocking there would deadlock the wait against the pump it depends on. Owning
@@ -74,7 +74,7 @@ pub fn status() -> BiometricStatus {
         let operation = UserConsentVerifier::CheckAvailabilityAsync()
             .map_err(|err| winrt_error("UserConsentVerifier.CheckAvailabilityAsync", &err))?;
         let availability = operation
-            .get()
+            .join()
             .map_err(|err| winrt_error("UserConsentVerifier.CheckAvailabilityAsync", &err))?;
         Ok(availability.0)
     });
@@ -123,7 +123,7 @@ pub fn authenticate(reason: &str) -> Result<(), BiometricError> {
         // contract the macOS backend already has, and the reason the Tauri
         // command wrapping this runs on a blocking worker.
         let result = operation
-            .get()
+            .join()
             .map_err(|err| winrt_error("RequestVerificationForWindowAsync", &err))?;
 
         mapping::windows_consent(result.0)
