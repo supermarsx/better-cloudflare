@@ -1997,20 +1997,29 @@ const PORTABLE_WRITABLE_PREFERENCE_KEYS: ReadonlySet<string> = new Set<string>([
  *
  * `withheld` is untouched: nothing writes it in either case.
  */
-function withUnwritablePortableRowsDropped(
-  diff: PortableSettingsDiff,
-): PortableSettingsDiff {
+function withUnwritablePortableRowsDropped(diff: PortableSettingsDiff): {
+  diff: PortableSettingsDiff;
+  unwritableKeys: string[];
+} {
   const writable = (row: PortableSettingsDiffRow) =>
     PORTABLE_WRITABLE_PREFERENCE_KEYS.has(row.key);
-  const dropped = [...diff.changed, ...diff.optIn]
+  const unwritableKeys = [...diff.changed, ...diff.optIn]
     .filter((row) => !writable(row))
     .map((row) => row.key as string);
-  if (dropped.length === 0) return diff;
+  if (unwritableKeys.length === 0) return { diff, unwritableKeys };
+  // Reported apart from `droppedKeys` rather than merged into it. Both end up
+  // unapplied, but they are unapplied for different reasons and the user can
+  // act on the difference: an unknown key means this build is older than the
+  // file, while an unwritable one means the preference exists and keeps
+  // whatever it already held. Saying "this version has no entry for these"
+  // about the second would simply be untrue.
   return {
-    ...diff,
-    changed: diff.changed.filter(writable),
-    optIn: diff.optIn.filter(writable),
-    droppedKeys: [...diff.droppedKeys, ...dropped],
+    diff: {
+      ...diff,
+      changed: diff.changed.filter(writable),
+      optIn: diff.optIn.filter(writable),
+    },
+    unwritableKeys,
   };
 }
 
@@ -2373,8 +2382,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
    * rendered only when this is set, and this is set only by a parse. There is
    * no other path from a file to a preference write.
    */
-  const [portableSettingsDiff, setPortableSettingsDiff] =
-    useState<PortableSettingsDiff | null>(null);
+  const [portableSettingsDiff, setPortableSettingsDiff] = useState<{
+    diff: PortableSettingsDiff;
+    unwritableKeys: string[];
+  } | null>(null);
   const [portableBusy, setPortableBusy] = useState(false);
   const [portablePickInput, setPortablePickInput] =
     useState<HTMLInputElement | null>(null);
@@ -16400,7 +16411,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                                   write. */}
                               {portableSettingsDiff ? (
                                 <SettingsImportDiff
-                                  diff={portableSettingsDiff}
+                                  diff={portableSettingsDiff.diff}
+                                  unwritableKeys={
+                                    portableSettingsDiff.unwritableKeys
+                                  }
                                   onApply={applyPortableSettingsRows}
                                   onCancel={() => setPortableSettingsDiff(null)}
                                   busy={portableBusy}

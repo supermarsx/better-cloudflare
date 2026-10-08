@@ -65,6 +65,15 @@ export interface SettingsImportDiffProps {
    * merge is how a gated key gets written by accident.
    */
   onApply(rows: readonly PortableSettingsDiffRow[]): void | Promise<void>;
+  /**
+   * Preferences this build knows but cannot write from a file.
+   *
+   * Supplied by the owner rather than derived here, because whether a
+   * preference has a whole-value setter is a fact about the storage layer the
+   * owner writes through, not about the diff. Reported with its own sentence:
+   * these were left alone, not dropped for being unrecognised.
+   */
+  unwritableKeys?: readonly string[];
   /** Offered only when given, so a screen with nowhere to go shows no exit. */
   onCancel?(): void;
   /** A write is in flight, so apply must not be re-entered. */
@@ -163,6 +172,7 @@ function DiffRowValues({
 
 export function SettingsImportDiff({
   diff,
+  unwritableKeys = [],
   onApply,
   onCancel,
   busy = false,
@@ -188,11 +198,25 @@ export function SettingsImportDiff({
    * reads identically whether the user sees it on the import panel or here.
    */
   const droppedWarnings = useMemo<PortableParseWarning[]>(
-    () =>
-      diff.droppedKeys.length > 0
-        ? [{ reason: "unknown-preference", subjects: diff.droppedKeys }]
-        : [],
-    [diff.droppedKeys],
+    () => [
+      ...(diff.droppedKeys.length > 0
+        ? [
+            {
+              reason: "unknown-preference" as const,
+              subjects: diff.droppedKeys,
+            },
+          ]
+        : []),
+      ...(unwritableKeys.length > 0
+        ? [
+            {
+              reason: "unwritable-preference" as const,
+              subjects: [...unwritableKeys],
+            },
+          ]
+        : []),
+    ],
+    [diff.droppedKeys, unwritableKeys],
   );
 
   const pending = rowsToApply(diff, ticked);

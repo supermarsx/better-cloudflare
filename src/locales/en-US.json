@@ -1681,6 +1681,7 @@
   "This session is not linked to a stored key, so the password cannot be checked. Sign out and sign in again before changing this.": "This session is not linked to a stored key, so the password cannot be checked. Sign out and sign in again before changing this.",
   "This tool": "This tool",
   "This tool is set to ask first, so it will not run until you approve it. Approving runs the step straight away.": "This tool is set to ask first, so it will not run until you approve it. Approving runs the step straight away.",
+  "This version cannot change these from a file, so they were left alone: {{subjects}}": "This version cannot change these from a file, so they were left alone: {{subjects}}",
   "This version has no entry for these, so they were dropped: {{subjects}}": "This version has no entry for these, so they were dropped: {{subjects}}",
   "This zone has at least {{source}} source records. The UI retains the first {{retained}} records and renders {{rendered}} matching rows at once. Refine the filters to narrow the view. Exports refetch the complete authoritative zone and never use this bounded UI subset.": "This zone has at least {{source}} source records. The UI retains the first {{retained}} records and renders {{rendered}} matching rows at once. Refine the filters to narrow the view. Exports refetch the complete authoritative zone and never use this bounded UI subset.",
   "This zone has no DNS records.": "This zone has no DNS records.",

@@ -172,6 +172,21 @@ export interface PortableParseWarning {
     | "too-many-personas"
     | "too-many-sets"
     | "unknown-preference"
+    /**
+     * A preference this build knows but cannot write from a file.
+     *
+     * Distinct from `unknown-preference`, and the distinction is the whole
+     * point: six preferences have no whole-value setter -- `recordTags`,
+     * `tagColors`, `tagCatalog`, `auditOverrides`, `mcpPermissionSets` and
+     * `sessionSettingsProfiles` are each written one leaf at a time by paths
+     * that add and overwrite but never remove. Applying one would end at a
+     * state the preview did not promise: "in this file: {a, b}" against a
+     * machine holding its own `c` would finish at `{a, b, c}`. That is worse
+     * than not applying it, because the preview is the thing the user is being
+     * asked to trust. Saying "this version has no entry for these" would be
+     * untrue -- it has an entry, it has no setter.
+     */
+    | "unwritable-preference"
     | "policy-version-differs";
   /** Catalogue ids, persona names, or preference keys, bounded by the parser. */
   subjects: string[];

@@ -236,6 +236,18 @@ export function describePortableWarning(
           defaultValue: `This version has no entry for these, so they were dropped: ${subjects}`,
         },
       );
+    // Not folded into the sentence above, because it would make that sentence
+    // false: this build does have an entry for these, it has no setter that
+    // can write one from a file. "Left alone" rather than "dropped" for the
+    // same reason -- the preference keeps whatever it already held.
+    case "unwritable-preference":
+      return t(
+        "This version cannot change these from a file, so they were left alone: {{subjects}}",
+        {
+          subjects,
+          defaultValue: `This version cannot change these from a file, so they were left alone: ${subjects}`,
+        },
+      );
     case "high-risk-pending":
       return t(
         "These tools still need confirming, so they are not enabled yet: {{subjects}}",
