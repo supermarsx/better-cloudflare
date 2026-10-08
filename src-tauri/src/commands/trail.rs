@@ -422,11 +422,19 @@ fn changed_fields(before: &RecordFacts, after: &RecordFacts) -> Vec<(&'static st
 /// whose third change the trail could not afford.
 ///
 /// `fields` is spent in order, so a caller puts what matters first.
-pub fn attach_fields(
+///
+/// A field name is only ever used as a key *inside* the one detail value this
+/// writes, never as a detail key, so it does not have to be `&'static str` —
+/// hence the generic. A settings change set is keyed by preference name, which
+/// is read out of the stored object at runtime and so cannot be static; before
+/// this was generic the only way to record one was a hand-maintained table of
+/// every preference name, which would have silently dropped the next
+/// preference someone added from the trail.
+pub fn attach_fields<K: Into<String>>(
     entry: AuditEntry,
     key: &'static str,
     omitted_key: &'static str,
-    fields: Vec<(&'static str, Value)>,
+    fields: Vec<(K, Value)>,
 ) -> AuditEntry {
     // `omitted_key` is only spent when something was dropped, but the budget
     // reserves it either way: a value sized to the last byte and then found to
@@ -439,9 +447,10 @@ pub fn attach_fields(
     let mut kept = Map::new();
     let mut omitted = 0_u64;
     for (field, value) in fields {
-        kept.insert(field.to_string(), value);
+        let field = field.into();
+        kept.insert(field.clone(), value);
         if serialised_len(&kept) > budget {
-            kept.remove(field);
+            kept.remove(&field);
             omitted += 1;
         }
     }

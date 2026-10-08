@@ -45,6 +45,23 @@ impl std::fmt::Display for AppConfigError {
     }
 }
 
+/// One preference whose **stored** value an update actually altered.
+///
+/// Stored, not requested: the merge round-trips the whole object through
+/// `Preferences`, so a nested object the UI sent half-filled arrives here
+/// normalised the way it was written to disk. That is what makes "did this
+/// write change anything" answerable at all. The renderer re-persists whole
+/// groups of preferences on every save — one topology save sends a dozen keys
+/// it did not touch — so comparing what it *sent* against what was stored
+/// would call almost every one of those a change, and the audit trail would
+/// fill with saves that changed nothing.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PreferenceChange {
+    pub key: String,
+    pub before: Value,
+    pub after: Value,
+}
+
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Envelope {
@@ -112,6 +129,14 @@ impl AppConfigStore {
         Ok(preferences)
     }
 
+    /// Persist `fields`, discarding the report of what changed.
+    ///
+    /// The entry point for a writer that is **not** the person at the keyboard:
+    /// the background notification service persists its own normalised settings
+    /// through here on its own schedule. Those writes are deliberately not
+    /// audited — the trail's only actor for a preference write is `user`, and
+    /// labelling the service's housekeeping as something the user did would be
+    /// a false entry, printed at the service's polling rate.
     pub async fn update_preferences<L, LFut, D, DFut>(
         &self,
         fields: Map<String, Value>,
@@ -124,8 +149,37 @@ impl AppConfigStore {
         D: FnOnce() -> DFut,
         DFut: Future<Output = Result<(), StorageError>>,
     {
+        self.update_preferences_reporting_changes(fields, load_legacy, delete_legacy)
+            .await
+            .map(|_| ())
+    }
+
+    /// Persist `fields`, and report every preference whose stored value that
+    /// actually altered.
+    ///
+    /// The comparison happens here rather than in the caller because it has to
+    /// happen under the same lock as the read and the write. `AppConfigStore`
+    /// serialises concurrent updates, and two of them do interleave in practice
+    /// (see `concurrent_updates_merge_atomically`); a before-state read outside
+    /// the lock would be the state before *someone else's* write, and the
+    /// change set would name keys this call did not touch.
+    ///
+    /// An empty report means the write landed and changed nothing. That is a
+    /// success, not an error: the file was rewritten with identical contents.
+    pub async fn update_preferences_reporting_changes<L, LFut, D, DFut>(
+        &self,
+        fields: Map<String, Value>,
+        load_legacy: L,
+        delete_legacy: D,
+    ) -> Result<Vec<PreferenceChange>, AppConfigError>
+    where
+        L: FnOnce() -> LFut,
+        LFut: Future<Output = Result<Option<Preferences>, StorageError>>,
+        D: FnOnce() -> DFut,
+        DFut: Future<Output = Result<(), StorageError>>,
+    {
         self.validate_fields(&fields)?;
-        let migrated = {
+        let (changes, migrated) = {
             let _guard = self.lock.lock().await;
             let (current, migrated) = match self.read()? {
                 Some(envelope) => (envelope.preferences, false),
@@ -139,14 +193,18 @@ impl AppConfigStore {
                     Err(error) => return Err(AppConfigError::LegacyUnavailable(error.to_string())),
                 },
             };
-            let preferences = self.merge(current, fields)?;
+            let before = preference_object(&current)?;
+            let preferences = self.merge(before.clone(), fields)?;
+            let after = preference_object(&preferences)?;
             self.write_verified(&Envelope::new(preferences))?;
-            migrated
+            // Only after the write landed. A change set describing a write that
+            // then failed would claim a setting holds a value it does not.
+            (changed_preferences(&before, &after), migrated)
         };
         if migrated {
             let _ = delete_legacy().await;
         }
-        Ok(())
+        Ok(changes)
     }
 
     fn validate_fields(&self, fields: &Map<String, Value>) -> Result<(), AppConfigError> {
@@ -161,25 +219,25 @@ impl AppConfigStore {
         Ok(())
     }
 
+    /// Lay `fields` over the current preferences, as an object.
+    ///
+    /// Takes the serialised form rather than the struct because the caller
+    /// needs that same object as the before-state of the change report, and
+    /// serialising twice would be two chances for the two copies to disagree.
     fn merge(
         &self,
-        current: Preferences,
+        mut current: Map<String, Value>,
         fields: Map<String, Value>,
     ) -> Result<Preferences, AppConfigError> {
-        let mut value = serde_json::to_value(current)
-            .map_err(|error| AppConfigError::InvalidUpdate(error.to_string()))?;
-        let object = value
-            .as_object_mut()
-            .ok_or_else(|| AppConfigError::Corrupt("preferences are not an object".into()))?;
         for (key, value) in fields {
-            if !object.contains_key(&key) {
+            if !current.contains_key(&key) {
                 return Err(AppConfigError::InvalidUpdate(format!(
                     "unknown field {key}"
                 )));
             }
-            object.insert(key, value);
+            current.insert(key, value);
         }
-        serde_json::from_value(value)
+        serde_json::from_value(Value::Object(current))
             .map_err(|error| AppConfigError::InvalidUpdate(error.to_string()))
     }
 
@@ -274,6 +332,64 @@ impl AppConfigStore {
     fn io(&self, operation: &'static str, path: &Path, source: std::io::Error) -> AppConfigError {
         AppConfigError::Io(format!("{operation} {}: {source}", path.display()))
     }
+}
+
+/// Preferences as a flat object, which is the form both the merge and the
+/// change report work in.
+///
+/// Every field of `Preferences` is an `Option` with no `skip_serializing_if`,
+/// so the object always carries every key — an unset preference is a present
+/// `null`. Two such objects therefore have identical key sets, which is what
+/// lets [`changed_preferences`] compare them key by key without having to
+/// decide what an absent key would have meant.
+fn preference_object(preferences: &Preferences) -> Result<Map<String, Value>, AppConfigError> {
+    match serde_json::to_value(preferences) {
+        Ok(Value::Object(object)) => Ok(object),
+        Ok(_) => Err(AppConfigError::Corrupt(
+            "preferences are not an object".into(),
+        )),
+        Err(error) => Err(AppConfigError::InvalidUpdate(error.to_string())),
+    }
+}
+
+/// Every preference whose value differs between two stored states.
+///
+/// Compared on the whole object rather than only on the keys the caller asked
+/// to write, because the merge round-trips through `Preferences` and that
+/// normalises more than it was handed: a nested settings object is clamped and
+/// deduped on the way in (`bc_notify::NotificationSettings::normalize` and the
+/// lenient field decoders), so a write to one key can legitimately change the
+/// stored value of another. A diff restricted to the requested keys would miss
+/// exactly those, which are the ones a reader would least expect and most want
+/// to see.
+///
+/// The returned order is the object's own key order — alphabetical, since
+/// `serde_json::Map` is a `BTreeMap` in this build — so an entry built from
+/// this names the same keys in the same order every time, and a test can pin
+/// which ones survive a budget overrun.
+fn changed_preferences(
+    before: &Map<String, Value>,
+    after: &Map<String, Value>,
+) -> Vec<PreferenceChange> {
+    after
+        .iter()
+        .filter_map(|(key, after_value)| {
+            // `Null` for a key missing from the before-state, which the shared
+            // key set above means cannot happen. Defaulting rather than
+            // skipping keeps a key that somehow appeared *in* the report: a new
+            // preference the trail cannot explain is worth an entry, and
+            // silently dropping it would be the one outcome with no evidence.
+            let before_value = before.get(key).unwrap_or(&Value::Null);
+            if before_value == after_value {
+                return None;
+            }
+            Some(PreferenceChange {
+                key: key.clone(),
+                before: before_value.clone(),
+                after: after_value.clone(),
+            })
+        })
+        .collect()
 }
 
 fn validate_metadata(metadata: &Metadata, directory: bool) -> Result<(), AppConfigError> {
