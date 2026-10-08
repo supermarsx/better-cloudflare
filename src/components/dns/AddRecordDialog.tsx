@@ -1267,7 +1267,7 @@ export function AddRecordDialog({
                   default:
                     return (
                       <Input
-                        aria-label={t("Default content input", "Content")}
+                        aria-label={t("Default content input", "Default content")}
                         aria-describedby={contentFormatId}
                         value={record.content}
                         onChange={(e: ChangeEvent<HTMLInputElement>) =>

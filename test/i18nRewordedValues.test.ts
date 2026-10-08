@@ -164,6 +164,77 @@ test("no reworded value is carried by some locales and not others", () => {
   );
 });
 
+/**
+ * Two keys whose English *differs* must not share one translated value.
+ *
+ * This is the check that actually catches a stale translation, and it exists
+ * because the token probe below does not. The agent translating pt-PT proved
+ * that: it reverted pt-PT's `"Default content input"` to the old
+ * `"Conteúdo"` -- the exact state the probe is named for -- and the probe
+ * still passed. For that key every word of the reworded value already appears
+ * in the key, which is the normal shape of an aria-label key, so the probe
+ * finds no added token and skips the key before reading a single locale. It
+ * can see 2 of the 24 reworded keys, and one of those is the case it was
+ * built from.
+ *
+ * This check is language-agnostic, which is the other half of the point. The
+ * probe needs a Latin token to look for, so it cannot reach ar-SA, hi-IN,
+ * ja-JP, ko-KR, ru-RU or zh-CN at all unless the added word happens to be an
+ * acronym. A collision is visible in any script.
+ *
+ * Scoped to groups that touch a reworded key. Across all keys there are ~161
+ * collision groups and most are legitimate -- "Cancel" and "Revoke" share a
+ * word in several languages, so do "Clear" and "Delete". Narrowing to the
+ * keys where an English value was reworded is what makes it zero-noise.
+ */
+function normalizedEnglish(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+test("a reworded value does not read identically to another key's", () => {
+  const reworded = new Set(rewordedKeys());
+  const collisions: string[] = [];
+
+  for (const { name, data } of translations) {
+    const byTranslation = new Map<
+      string,
+      { english: Map<string, string>; keys: string[] }
+    >();
+    for (const key of Object.keys(base)) {
+      const translated = data[key];
+      if (typeof translated !== "string" || translated.length === 0) continue;
+      const group = byTranslation.get(translated) ?? {
+        english: new Map(),
+        keys: [],
+      };
+      group.english.set(normalizedEnglish(base[key]), base[key]);
+      group.keys.push(key);
+      byTranslation.set(translated, group);
+    }
+
+    for (const [translated, group] of byTranslation) {
+      // Same English rendered the same way is correct, not a collision.
+      if (group.english.size < 2) continue;
+      if (!group.keys.some((key) => reworded.has(key))) continue;
+      collisions.push(
+        `${name}: ${JSON.stringify(translated)} is used for ` +
+          [...group.english.values()]
+            .map((english) => JSON.stringify(english))
+            .join(" and "),
+      );
+    }
+  }
+
+  assert.deepEqual(
+    collisions,
+    [],
+    `these locales render two different English strings identically, around a key whose English was reworded -- the sign a translation was not updated with it:\n  ${collisions.join("\n  ")}`,
+  );
+});
+
 test("the candidate scan would notice a rewording", () => {
   // The two tests above are only as good as `rewordedKeys`, and a scan that
   // silently matched nothing would report "no problems" just as loudly as a
