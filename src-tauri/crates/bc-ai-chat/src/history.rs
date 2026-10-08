@@ -73,6 +73,7 @@ impl ConversationStore for InMemoryStore {
             provider: conversation.provider.clone(),
             model: conversation.model.clone(),
             system_prompt: conversation.system_prompt.clone(),
+            persona_id: conversation.persona_id.clone(),
             messages: Vec::new(),
             created_at: conversation.created_at,
             updated_at: conversation.updated_at,

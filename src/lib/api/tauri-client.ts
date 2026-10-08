@@ -1816,8 +1816,10 @@ export class TauriClient {
   // ─── AI assistant ────────────────────────────────────────────────────────
   // The chat/provider commands registered in `src-tauri/src/main.rs` and
   // implemented in `src-tauri/src/ai_commands.rs`: the original seventeen,
-  // plus `ai_delete_provider` (user-defined providers) and
-  // `ai_protocol_capabilities` (advanced generation parameters). Wire
+  // plus `ai_delete_provider` (user-defined providers),
+  // `ai_protocol_capabilities` (advanced generation parameters) and
+  // `ai_set_conversation_persona` / `ai_set_conversation_provider`
+  // (per-conversation switching). Wire
   // shapes are the serde camelCase forms of the `bc-ai-*` crates (see
   // `src/types/ai.ts`); every one rejects with an `AiCommandError`, not a
   // string. There is no HTTP fallback in `server-client.ts`, so each method
@@ -1943,6 +1945,56 @@ export class TauriClient {
   ): Promise<boolean> {
     TauriClient.requireAiDesktop();
     return invoke("ai_set_conversation_title", { id, title });
+  }
+
+  /**
+   * Point a conversation at a persona, from the next turn onwards.
+   *
+   * `personaId` is `null` for "use the configured persona", which is the state
+   * a conversation that has never chosen one is already in — so clearing the
+   * choice restores the previous behaviour rather than sending no system
+   * prompt at all.
+   *
+   * **Forward only.** The stored messages keep the attribution they were
+   * recorded with; what changes is the system prompt sent on the next turn.
+   *
+   * Rejects with `AI_TURN_IN_PROGRESS` while the conversation is generating or
+   * waiting on a tool approval — that turn has already resolved what it runs
+   * under — and with `AI_PERSONA_NOT_FOUND` for an id that names no persona.
+   * Resolves with the **stored** metadata.
+   */
+  static async aiSetConversationPersona(
+    id: string,
+    personaId: string | null,
+  ): Promise<ConversationMeta> {
+    TauriClient.requireAiDesktop();
+    return invoke("ai_set_conversation_persona", {
+      id,
+      personaId: personaId ?? null,
+    });
+  }
+
+  /**
+   * Point a conversation at a provider profile and a model, from the next turn
+   * onwards.
+   *
+   * Both at once, because a model name only means anything to the endpoint
+   * that serves it: setting the provider alone would leave the conversation
+   * asking a new connection for a model chosen for the old one.
+   *
+   * Unlike a stored transcript — which may legitimately name a profile that
+   * has since been deleted — this is a choice about the next turn, so an
+   * unconfigured `provider` rejects with `AI_NOT_CONFIGURED` here rather than
+   * being accepted and reported at send time. Rejects with
+   * `AI_TURN_IN_PROGRESS` while a turn is running.
+   */
+  static async aiSetConversationProvider(
+    id: string,
+    provider: string,
+    model: string,
+  ): Promise<ConversationMeta> {
+    TauriClient.requireAiDesktop();
+    return invoke("ai_set_conversation_provider", { id, provider, model });
   }
 
   /**

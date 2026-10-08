@@ -38,6 +38,7 @@ import type {
   AgentConfig,
   AgentEvent,
   AiPermissionsSnapshot,
+  AiPersona,
   AiPlan,
   AiProviderProfile,
   AiProviderProfileInput,
@@ -46,6 +47,7 @@ import type {
   ChatMessage,
   Conversation,
   ConversationMeta,
+  MessageOrigin,
 } from "../src/types/ai";
 
 import { useEnglishLocale } from "./i18n-ready";
@@ -60,6 +62,7 @@ function textMessage(
   id: string,
   role: "user" | "assistant",
   text: string,
+  origin?: MessageOrigin,
 ): ChatMessage {
   return {
     id,
@@ -67,6 +70,19 @@ function textMessage(
     status: "complete",
     createdAt: CREATED,
     pendingToolCalls: [],
+    ...(origin ? { origin } : {}),
+  };
+}
+
+/** A persona as `ai_list_personas` reports one. */
+function persona(overrides: Partial<AiPersona> = {}): AiPersona {
+  return {
+    id: "dns-expert",
+    name: "DNS expert",
+    description: "DNS record management specialist",
+    systemPrompt: "You are a DNS expert.",
+    builtin: true,
+    ...overrides,
   };
 }
 
@@ -118,6 +134,8 @@ interface BackendOptions {
   runSummary?: AiRunSummary | null;
   /** The permission mode the snapshot reports. */
   mode?: AiPermissionsSnapshot["mode"];
+  /** What `ai_list_personas` answers. Defaults to the two builtins used here. */
+  personas?: AiPersona[];
 }
 
 /** A provider profile as `ai_list_providers` reports one — never with a key. */
@@ -158,6 +176,14 @@ function installBackend(options: BackendOptions = {}): Backend {
         : options.conversation,
   };
   const providers: AiProviderProfile[] = [...(options.providers ?? [])];
+  const personas: AiPersona[] = options.personas ?? [
+    persona(),
+    persona({
+      id: "security-auditor",
+      name: "Security auditor",
+      description: "Security-focused DNS auditor",
+    }),
+  ];
   let handler: ((event: AgentEvent) => void) | null = null;
 
   const config: AgentConfig = {
@@ -272,6 +298,38 @@ function installBackend(options: BackendOptions = {}): Backend {
     TauriClient,
     "aiDeleteConversation",
     record("aiDeleteConversation", () => true),
+  );
+  mock.method(
+    TauriClient,
+    "aiListPersonas",
+    record("aiListPersonas", () => personas.map((entry) => ({ ...entry }))),
+  );
+  // Both switches mutate the store the conversation is read back from, so a
+  // test can assert the *effect* rather than only that a command was called.
+  mock.method(
+    TauriClient,
+    "aiSetConversationPersona",
+    record("aiSetConversationPersona", (args) => {
+      const next = args[1] as string | null;
+      if (state.conversation) {
+        state.conversation = next
+          ? { ...state.conversation, personaId: next }
+          : (({ personaId: _dropped, ...rest }) => rest)(state.conversation);
+      }
+      return conversationMeta({ personaId: next ?? undefined });
+    }),
+  );
+  mock.method(
+    TauriClient,
+    "aiSetConversationProvider",
+    record("aiSetConversationProvider", (args) => {
+      const provider = args[1] as string;
+      const model = args[2] as string;
+      if (state.conversation) {
+        state.conversation = { ...state.conversation, provider, model };
+      }
+      return conversationMeta({ provider, model });
+    }),
   );
   mock.method(
     TauriClient,
@@ -1800,4 +1858,640 @@ test("the provider and model are behind the toggle, stacked on a framed surface"
   );
   const tabbed = await screen.findByLabelText("Model");
   assert.match(tabbed.className, /(?:^|\s)w-48(?:$|\s)/);
+});
+
+/**
+ * Open the turn-setup editor and wait for it.
+ *
+ * The toggle flips the *effective* open state, and that state depends on
+ * whether the conversation has a transcript yet — so a bare click is a race
+ * against the conversation read and can just as easily close the editor. Going
+ * through `aria-expanded` and then waiting for the editor is what makes the
+ * queries that follow mean something, instead of failing later with a
+ * confusing "unable to find a label".
+ */
+async function openTurnSetup(): Promise<HTMLElement> {
+  const toggle = await screen.findByTestId("ai-turn-setup-toggle");
+  if (toggle.getAttribute("aria-expanded") !== "true") {
+    fireEvent.click(toggle);
+  }
+  return screen.findByTestId("ai-turn-setup-editor");
+}
+
+// ── Persona, provider and model, per conversation ──────────────────────────
+//
+// Three capabilities and one layout constraint. The persona and the
+// provider/model become per-conversation and changeable mid-thread, the choice
+// has to be reachable at the first message without opening settings, and the
+// composer dock must not go back to being eight lines of standing text above
+// the input. So the control spends one summary line, opens itself only while
+// the conversation is empty, and is pinned here in all three states.
+
+test("the setup opens itself on an empty conversation and closes once there is a transcript", async () => {
+  const backend = installBackend({
+    providers: [providerProfile()],
+    conversations: [conversationMeta({ messageCount: 0 })],
+    conversation: conversation({ messages: [] }),
+  });
+  render(<AiAssistantPanel />);
+
+  // The first message is the moment the choice is being made, and an empty
+  // transcript is the moment there is nothing to crowd.
+  const setup = await screen.findByTestId("ai-turn-setup");
+  await waitFor(() => assert.equal(setup.getAttribute("data-open"), "true"));
+  assert.ok(screen.getByTestId("ai-turn-setup-editor"));
+  assert.equal(
+    screen.getByTestId("ai-turn-setup-toggle").getAttribute("aria-expanded"),
+    "true",
+  );
+  cleanup();
+
+  // With a transcript it is one line, because that is permanent height.
+  installBackend({
+    providers: [providerProfile()],
+    conversations: [conversationMeta()],
+  });
+  render(<AiAssistantPanel />);
+  const collapsed = await screen.findByTestId("ai-turn-setup");
+  await waitFor(() =>
+    assert.equal(collapsed.getAttribute("data-open"), "false"),
+  );
+  assertAbsent(
+    screen.queryByTestId("ai-turn-setup-editor"),
+    "a standing editor row above the composer",
+  );
+  // And nothing was written to global configuration by opening the panel.
+  assert.equal(named(backend, "aiSetConfig").length, 0);
+});
+
+test("the summary names the configured persona a conversation inherits", async () => {
+  installBackend({
+    config: { personaId: "security-auditor" },
+    providers: [providerProfile()],
+    conversations: [conversationMeta({ provider: "openai-main" })],
+    conversation: conversation({ provider: "openai-main" }),
+  });
+  render(<AiAssistantPanel />);
+
+  // Absent means "use the configured persona", which is what every
+  // conversation did before this control existed — so the inherited choice is
+  // named rather than left implied.
+  const toggle = await screen.findByTestId("ai-turn-setup-toggle");
+  await waitFor(() =>
+    assert.match(toggle.textContent ?? "", /Security auditor \(configured\)/),
+  );
+  assert.match(toggle.textContent ?? "", /OpenAI/);
+  assert.match(toggle.textContent ?? "", /gpt-4o-mini/);
+});
+
+test("choosing a persona stores it against the conversation and re-reads it", async () => {
+  const backend = installBackend({
+    providers: [providerProfile()],
+    conversations: [conversationMeta()],
+  });
+  render(<AiAssistantPanel />);
+
+  await openTurnSetup();
+  await chooseThemedSelectValue(
+    screen.getByLabelText("How the assistant speaks"),
+    "security-auditor",
+  );
+  await waitFor(() =>
+    assert.deepEqual(named(backend, "aiSetConversationPersona")[0]?.args, [
+      "conv-1",
+      "security-auditor",
+    ]),
+  );
+  // The persona lives on the conversation, so the open transcript is re-read
+  // and not only the listing.
+  await waitFor(() =>
+    assert.ok(named(backend, "aiListConversations").length >= 2),
+  );
+  await waitFor(() =>
+    assert.ok(named(backend, "aiGetConversation").length >= 2),
+  );
+  await waitFor(() =>
+    assert.match(
+      screen.getByTestId("ai-turn-setup-toggle").textContent ?? "",
+      /Security auditor/,
+    ),
+  );
+
+  // And back to the configured persona, sent as an explicit null rather than
+  // as an empty string — clearing restores the previous behaviour, it does not
+  // mean "no system prompt".
+  await chooseThemedSelectValue(
+    screen.getByLabelText("How the assistant speaks"),
+    "~configured",
+  );
+  await waitFor(() =>
+    assert.deepEqual(named(backend, "aiSetConversationPersona")[1]?.args, [
+      "conv-1",
+      null,
+    ]),
+  );
+});
+
+test("choosing a provider sends that profile's own model in the same call", async () => {
+  const backend = installBackend({
+    providers: [
+      providerProfile(),
+      providerProfile({
+        id: "anthropic-main",
+        label: "Anthropic",
+        protocol: "anthropic",
+        model: "claude-sonnet-4-20250514",
+      }),
+    ],
+    conversations: [conversationMeta()],
+  });
+  render(<AiAssistantPanel />);
+
+  await openTurnSetup();
+  await chooseThemedSelectValue(
+    screen.getByLabelText("Provider for this conversation"),
+    "anthropic-main",
+  );
+  // Carrying `gpt-4o-mini` across to an Anthropic endpoint would hand the new
+  // connection a name chosen for the old one, and the failure would arrive on
+  // the next send rather than here.
+  await waitFor(() =>
+    assert.deepEqual(named(backend, "aiSetConversationProvider")[0]?.args, [
+      "conv-1",
+      "anthropic-main",
+      "claude-sonnet-4-20250514",
+    ]),
+  );
+});
+
+test("the model commits on Enter, and an unchanged value sends nothing", async () => {
+  const backend = installBackend({
+    providers: [providerProfile()],
+    conversations: [conversationMeta({ provider: "openai-main" })],
+    conversation: conversation({ provider: "openai-main" }),
+  });
+  render(<AiAssistantPanel />);
+
+  await openTurnSetup();
+  const model = screen.getByLabelText(
+    "Model for this conversation",
+  ) as HTMLInputElement;
+  assert.equal(model.value, "gpt-4o-mini", "seeded from the stored model");
+
+  // Re-committing the stored value is not a change, so it costs no round trip.
+  fireEvent.keyDown(model, { key: "Enter" });
+  assert.equal(named(backend, "aiSetConversationProvider").length, 0);
+
+  fireEvent.change(model, { target: { value: "  gpt-4o  " } });
+  fireEvent.keyDown(model, { key: "Enter" });
+  await waitFor(() =>
+    assert.deepEqual(named(backend, "aiSetConversationProvider")[0]?.args, [
+      "conv-1",
+      "openai-main",
+      "gpt-4o",
+    ]),
+  );
+
+  // Blank is a mistake, not a choice: it reverts rather than asking the
+  // backend to store an empty model.
+  fireEvent.change(model, { target: { value: "" } });
+  fireEvent.keyDown(model, { key: "Enter" });
+  assert.equal(named(backend, "aiSetConversationProvider").length, 1);
+});
+
+test("switching is disabled while a reply is streaming, not queued", async () => {
+  const backend = installBackend({
+    providers: [providerProfile()],
+    conversations: [conversationMeta({ provider: "openai-main" })],
+    conversation: conversation({ provider: "openai-main" }),
+  });
+  render(<AiAssistantPanel />);
+
+  await openTurnSetup();
+  const composer = screen.getByLabelText("Message") as HTMLTextAreaElement;
+  await waitFor(() => assert.equal(composer.disabled, false));
+  fireEvent.change(composer, { target: { value: "Hello" } });
+  fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+
+  // The backend refuses a mid-turn switch outright — the running turn has
+  // already resolved what it runs under — so a control that still accepted one
+  // would be showing a value that is not in force.
+  const persona = screen.getByLabelText("How the assistant speaks");
+  const provider = screen.getByLabelText("Provider for this conversation");
+  await waitFor(() => assert.equal(persona.getAttribute("data-disabled"), ""));
+  assert.equal(provider.getAttribute("data-disabled"), "");
+  assert.equal(
+    (screen.getByLabelText("Model for this conversation") as HTMLInputElement)
+      .disabled,
+    true,
+  );
+  assert.equal(named(backend, "aiSetConversationPersona").length, 0);
+
+  // Finishing the turn hands the controls back.
+  backend.emit({
+    type: "turnComplete",
+    conversationId: "conv-1",
+    messageId: "msg-2",
+  });
+  await waitFor(() =>
+    assert.equal(
+      (screen.getByLabelText("Model for this conversation") as HTMLInputElement)
+        .disabled,
+      false,
+    ),
+  );
+});
+
+test("a persona that no longer exists is named, and the fallback is stated", async () => {
+  installBackend({
+    config: { personaId: "dns-expert" },
+    providers: [providerProfile()],
+    conversations: [conversationMeta({ personaId: "custom-gone" })],
+    conversation: conversation({ personaId: "custom-gone" }),
+  });
+  render(<AiAssistantPanel />);
+
+  const setup = await screen.findByTestId("ai-turn-setup");
+  await waitFor(() =>
+    assert.equal(setup.getAttribute("data-persona-missing"), "true"),
+  );
+  // Told before the send, because the fix is one control away and a user who
+  // only learns it from the reply has already spent a turn.
+  const notice = screen.getByTestId("ai-turn-setup-notice");
+  assert.match(notice.textContent ?? "", /no longer exists/);
+  assert.match(notice.textContent ?? "", /configured one/);
+});
+
+test("a provider that is no longer configured is named rather than swapped", async () => {
+  installBackend({
+    providers: [providerProfile({ id: "anthropic-main", label: "Anthropic" })],
+    conversations: [conversationMeta({ provider: "deleted-profile" })],
+    conversation: conversation({ provider: "deleted-profile" }),
+  });
+  render(<AiAssistantPanel />);
+
+  const setup = await screen.findByTestId("ai-turn-setup");
+  await waitFor(() =>
+    assert.equal(setup.getAttribute("data-provider-missing"), "true"),
+  );
+  // Claiming the conversation belongs to Anthropic would be a lie about which
+  // endpoint saw the transcript.
+  const toggle = screen.getByTestId("ai-turn-setup-toggle");
+  assert.doesNotMatch(toggle.textContent ?? "", /Anthropic/);
+  assert.match(
+    screen.getByTestId("ai-turn-setup-notice").textContent ?? "",
+    /no longer configured/,
+  );
+  // The model cannot be refined until the provider is fixed: an unconfigured
+  // profile serves nothing.
+  await openTurnSetup();
+  assert.equal(
+    (screen.getByLabelText("Model for this conversation") as HTMLInputElement)
+      .disabled,
+    true,
+  );
+});
+
+test("a conversation with its own system prompt reports that personas do not apply", async () => {
+  installBackend({
+    providers: [providerProfile()],
+    conversations: [conversationMeta()],
+    conversation: conversation({ systemPrompt: "You are bespoke." }),
+  });
+  render(<AiAssistantPanel />);
+
+  // The conversation's own prompt is the literal replacement channel and
+  // outranks a persona outright, a precedence that predates this control.
+  // Offering the choice anyway would imply it decided something.
+  const notice = await screen.findByTestId("ai-turn-setup-notice");
+  assert.match(notice.textContent ?? "", /its own system prompt/);
+  await openTurnSetup();
+  assert.equal(
+    screen
+      .getByLabelText("How the assistant speaks")
+      .getAttribute("data-disabled"),
+    "",
+  );
+});
+
+test("the editor stacks on a framed surface and pairs in the workspace tab", async () => {
+  // The same reasoning as the conversation strip's pickers: three controls
+  // side by side do not fit a 22rem dock, and the surface decides, not a
+  // viewport breakpoint.
+  installBackend({
+    providers: [providerProfile()],
+    conversations: [conversationMeta({ messageCount: 0 })],
+    conversation: conversation({ messages: [] }),
+  });
+  render(<AiAssistantPanel presentation="sidebar" />);
+  const stacked = await screen.findByTestId("ai-turn-setup-editor");
+  assert.match(stacked.className, /(?:^|\s)grid-cols-1(?:$|\s)/);
+  assert.match(
+    (screen.getByLabelText("Model for this conversation") as HTMLInputElement)
+      .className,
+    /(?:^|\s)w-full(?:$|\s)/,
+  );
+  cleanup();
+
+  installBackend({
+    providers: [providerProfile()],
+    conversations: [conversationMeta({ messageCount: 0 })],
+    conversation: conversation({ messages: [] }),
+  });
+  render(<AiAssistantPanel presentation="panel" />);
+  const paired = await screen.findByTestId("ai-turn-setup-editor");
+  assert.match(paired.className, /(?:^|\s)flex-wrap(?:$|\s)/);
+});
+
+test("the permission mode stays a separate control from the persona", async () => {
+  // Three different decisions — what the assistant may do, how it speaks, and
+  // which endpoint answers — so three controls. Merging them would make every
+  // one of them harder to reason about.
+  installBackend({
+    config: { toolsEnabled: true },
+    providers: [providerProfile()],
+    conversations: [conversationMeta()],
+  });
+  render(<AiAssistantPanel />);
+
+  const dock = await screen.findByTestId("ai-composer-dock");
+  const setup = await screen.findByTestId("ai-turn-setup");
+  const mode = await screen.findByTestId("ai-mode-select");
+  assertSameNode(mode.parentElement, dock, "the mode docked below the scroll");
+  assertSameNode(setup.parentElement, dock, "the setup docked beside it");
+  // The setup comes first, so the mode keeps the position it was given:
+  // immediately above the input it governs.
+  const order = Array.from(dock.children);
+  assert.ok(
+    order.indexOf(setup) < order.indexOf(mode),
+    "the mode must stay adjacent to the composer",
+  );
+  // Two named controls, not one dropdown with both decisions in it.
+  await openTurnSetup();
+  assert.notEqual(
+    screen.getByLabelText("What the assistant may do").getAttribute("id"),
+    screen.getByLabelText("How the assistant speaks").getAttribute("id"),
+    "two controls, two ids",
+  );
+});
+
+// ── Transcript attribution ─────────────────────────────────────────────────
+
+test("the transcript marks where the attribution changed, and only there", async () => {
+  const first = {
+    provider: "openai-main",
+    model: "gpt-4o-mini",
+    personaId: "dns-expert",
+  };
+  const second = {
+    provider: "anthropic-main",
+    model: "claude-sonnet-4-20250514",
+    personaId: "security-auditor",
+  };
+  installBackend({
+    providers: [
+      providerProfile(),
+      providerProfile({
+        id: "anthropic-main",
+        label: "Anthropic",
+        protocol: "anthropic",
+      }),
+    ],
+    conversations: [conversationMeta()],
+    conversation: conversation({
+      messages: [
+        textMessage("m1", "user", "First question", first),
+        textMessage("m2", "assistant", "First answer", first),
+        textMessage("m3", "user", "Second question", second),
+        textMessage("m4", "assistant", "Second answer", second),
+      ],
+    }),
+  });
+  render(<AiAssistantPanel />);
+
+  await screen.findByText("Second answer");
+  // Exactly one marker, at the turn the switch took effect on. A marker per
+  // message, or one at the start, would put rows on every conversation.
+  const markers = screen.getAllByTestId("ai-origin-switch");
+  assert.equal(markers.length, 1);
+  // The divider is one whole template rather than "Switched to" glued onto
+  // the per-message sentence, so it carries no stray terminator.
+  assert.equal(
+    markers[0].textContent,
+    "Switched to Security auditor · Anthropic · claude-sonnet-4-20250514",
+  );
+  assert.match(markers[0].textContent ?? "", /Anthropic/);
+  assert.match(markers[0].textContent ?? "", /claude-sonnet-4-20250514/);
+  assert.match(markers[0].textContent ?? "", /Security auditor/);
+
+  // And every attributed message can still say for itself which model wrote
+  // it, without the transcript spending a line on each.
+  const attributions = screen
+    .getAllByTestId("ai-message-origin")
+    .map((node) => node.getAttribute("title"));
+  // Persona first, the same order the composer dock's summary uses.
+  assert.deepEqual(attributions, [
+    "DNS expert · OpenAI · gpt-4o-mini.",
+    "DNS expert · OpenAI · gpt-4o-mini.",
+    "Security auditor · Anthropic · claude-sonnet-4-20250514.",
+    "Security auditor · Anthropic · claude-sonnet-4-20250514.",
+  ]);
+});
+
+test("a transcript that never switched gets no attribution rows", async () => {
+  const only = {
+    provider: "openai-main",
+    model: "gpt-4o-mini",
+    personaId: "dns-expert",
+  };
+  installBackend({
+    providers: [providerProfile()],
+    conversations: [conversationMeta()],
+    conversation: conversation({
+      messages: [
+        textMessage("m1", "user", "Question", only),
+        textMessage("m2", "assistant", "Answer", only),
+      ],
+    }),
+  });
+  render(<AiAssistantPanel />);
+
+  await screen.findByText("Answer");
+  assertAbsent(
+    screen.queryByTestId("ai-origin-switch"),
+    "a switch marker on a conversation that never switched",
+  );
+});
+
+test("a deleted provider or persona is marked in the transcript, never renamed", async () => {
+  installBackend({
+    providers: [providerProfile()],
+    conversations: [conversationMeta()],
+    conversation: conversation({
+      messages: [
+        textMessage("m1", "assistant", "From a vanished endpoint", {
+          provider: "groq-fast",
+          model: "llama-3.1-70b",
+          personaId: "custom-also-gone",
+        }),
+      ],
+    }),
+  });
+  render(<AiAssistantPanel />);
+
+  const attribution = await screen.findByTestId("ai-message-origin");
+  // The raw ids survive, marked, because substituting the one configured
+  // profile's label would claim the wrong endpoint saw the transcript.
+  // Whole sentences: the ids appear as themselves in the line, and what is
+  // wrong with them is *stated*, rather than a "(deleted)" parenthetical
+  // spliced inside a list a translator cannot reorder.
+  assert.equal(
+    attribution.getAttribute("title"),
+    "custom-also-gone · groq-fast · llama-3.1-70b. " +
+      "The provider profile groq-fast no longer exists. " +
+      "The persona custom-also-gone no longer exists.",
+  );
+});
+
+test("a turn that had to substitute a missing choice says so in the transcript", async () => {
+  installBackend({
+    providers: [providerProfile()],
+    conversations: [conversationMeta()],
+    conversation: conversation({
+      messages: [
+        textMessage("m1", "assistant", "Answered by the fallback", {
+          provider: "openai-main",
+          model: "gpt-4o-mini",
+          personaId: "dns-expert",
+          missingPersonaId: "custom-deleted",
+          missingProviderId: "groq-fast",
+        }),
+      ],
+    }),
+  });
+  render(<AiAssistantPanel />);
+
+  const attribution = await screen.findByTestId("ai-message-origin");
+  const title = attribution.getAttribute("title") ?? "";
+  // What actually ran, *and* what could not be honoured. Either alone leaves
+  // the reader with a wrong answer to "which model said this".
+  assert.equal(
+    title,
+    "DNS expert · OpenAI · gpt-4o-mini. " +
+      "The persona custom-deleted was not available, so it was not used. " +
+      "The provider profile groq-fast was not configured, so it was not used.",
+  );
+});
+
+test("a message recorded before attribution existed claims nothing", async () => {
+  installBackend({
+    providers: [providerProfile()],
+    conversations: [conversationMeta()],
+  });
+  render(<AiAssistantPanel />);
+
+  await screen.findByText("Hello");
+  // The default conversation's messages carry no origin, which is every
+  // transcript stored before this change. Inventing one from the
+  // conversation's current provider would be exactly the wrong-model claim
+  // the per-message record exists to prevent.
+  assertAbsent(
+    screen.queryByTestId("ai-message-origin"),
+    "an invented attribution on an unattributed message",
+  );
+  assertAbsent(
+    screen.queryByTestId("ai-origin-switch"),
+    "a switch marker with nothing to compare",
+  );
+});
+
+test("each message names its role, and an attributed one composes both", async () => {
+  // `roleLabel` used to hand the caller a bare English word to pass through
+  // `t(label, label)`, which the catalogue extractor cannot see — so three of
+  // the four rendered in English in every translated locale. It now passes a
+  // literal key per case, and this pins that each case still maps to its own
+  // word: the mapping is the half a refactor can silently get wrong, and
+  // nothing else in this file reads the role line.
+  const origin = {
+    provider: "openai-main",
+    model: "gpt-4o-mini",
+    personaId: "dns-expert",
+  };
+  installBackend({
+    providers: [providerProfile()],
+    conversations: [conversationMeta()],
+    conversation: conversation({
+      messages: [
+        textMessage("m1", "user", "A question", origin),
+        textMessage("m2", "assistant", "An answer"),
+      ],
+    }),
+  });
+  render(<AiAssistantPanel />);
+
+  await screen.findByText("An answer");
+  const roles = screen
+    .getByTestId("ai-transcript")
+    .querySelectorAll("[data-role]");
+  assert.equal(roles.length, 2);
+  assert.equal(roles[0].getAttribute("data-role"), "user");
+  assert.equal(roles[1].getAttribute("data-role"), "assistant");
+  assert.match(roles[0].textContent ?? "", /^You/);
+  assert.match(roles[1].textContent ?? "", /^Assistant/);
+
+  // The attributed message reads as one heading rather than the role word and
+  // then an unrelated label; the unattributed one is left alone.
+  assert.equal(
+    screen.getByTestId("ai-message-origin").getAttribute("aria-label"),
+    "You · DNS expert · OpenAI · gpt-4o-mini.",
+  );
+  assert.equal(
+    roles[1].querySelector("[aria-label]"),
+    null,
+    "a message with no attribution gets no composed label",
+  );
+});
+
+test("a turn that sent no persona says so, in the line and at the switch", async () => {
+  // Reachable two ways: the conversation carries its own system prompt, which
+  // outranks a persona outright, or nothing resolved at all. Either way the
+  // transcript must not credit the turn with a persona it did not have — and
+  // "no persona" is part of each whole template rather than a word spliced
+  // into one, so it is the *template* that changes, not a value inside it.
+  installBackend({
+    providers: [providerProfile()],
+    conversations: [conversationMeta()],
+    conversation: conversation({
+      messages: [
+        textMessage("m1", "assistant", "With a persona", {
+          provider: "openai-main",
+          model: "gpt-4o-mini",
+          personaId: "dns-expert",
+        }),
+        textMessage("m2", "assistant", "Without one", {
+          provider: "openai-main",
+          model: "gpt-4o-mini",
+        }),
+      ],
+    }),
+  });
+  render(<AiAssistantPanel />);
+
+  await screen.findByText("Without one");
+  const attributions = screen
+    .getAllByTestId("ai-message-origin")
+    .map((node) => node.getAttribute("title"));
+  assert.deepEqual(attributions, [
+    "DNS expert · OpenAI · gpt-4o-mini.",
+    "No persona · OpenAI · gpt-4o-mini.",
+  ]);
+
+  // Dropping a persona is a change like any other, and the divider has its
+  // own persona-less form rather than interpolating an empty name.
+  const markers = screen.getAllByTestId("ai-origin-switch");
+  assert.equal(markers.length, 1);
+  assert.equal(
+    markers[0].textContent,
+    "Switched to no persona · OpenAI · gpt-4o-mini",
+  );
 });

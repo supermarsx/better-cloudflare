@@ -64,7 +64,7 @@ import {
 } from "@/hooks/ai/use-ai-chat";
 import { useAiLinks } from "@/hooks/ai/use-ai-links";
 import { useAiPlan } from "@/hooks/ai/use-ai-plan";
-import { useAiPermissions } from "@/hooks/ai/use-ai-settings";
+import { useAiPermissions, useAiPersonas } from "@/hooks/ai/use-ai-settings";
 import { useI18n } from "@/hooks/use-i18n";
 import { usePrefersReducedMotion } from "@/hooks/use-prefers-reduced-motion";
 import type { AiLinkNavigation } from "@/lib/ai/links";
@@ -81,6 +81,7 @@ import { AiPlanView } from "./AiPlanView";
 import type { AiSettingsSection } from "./AiSettingsPanel";
 import { AiToolNotice, type AiToolPosture } from "./AiToolNotice";
 import { AiTranscript } from "./AiTranscript";
+import { AiTurnSetup } from "./AiTurnSetup";
 import { describeAiError } from "./ai-error";
 
 export type { AiSettingsSection };
@@ -173,6 +174,8 @@ export function AiAssistantPanel({
     Record<string, string>
   >({});
   const [creating, setCreating] = useState(false);
+  /** A persona or provider switch is in flight for the open conversation. */
+  const [switching, setSwitching] = useState(false);
   const [panelError, setPanelError] = useState<string | null>(null);
   const [lastSent, setLastSent] = useState<string | null>(null);
   // There is no reject command and `ai_cancel_generation` does not clear
@@ -186,6 +189,15 @@ export function AiAssistantPanel({
   const providers = useAiProviders();
   const agentConfig = useAiConfig();
   const conversations = useAiConversations();
+  /**
+   * The persona catalogue, for the dock's persona picker.
+   *
+   * Read unconditionally rather than behind a posture gate like the
+   * permission snapshot is: the picker is shown whenever a conversation is,
+   * so there is no state in which the list is not needed, and it is an
+   * in-memory list rather than a question about MCP grants.
+   */
+  const personas = useAiPersonas();
   const chat = useAiChat(selectedId, watchdogMs ? { watchdogMs } : {});
   /**
    * The conversation's plan.
@@ -309,6 +321,65 @@ export function AiAssistantPanel({
         });
     },
     [t, toolPermissions],
+  );
+
+  /**
+   * Point the open conversation at a persona, or back at the configured one.
+   *
+   * `switching` is tracked separately from `chat.streaming` because the two
+   * are different refusals: streaming means the backend will not accept the
+   * change at all, while this is a change already in flight. Both disable the
+   * controls, and neither queues — see `AiTurnSetup`.
+   */
+  const handlePersonaChange = useCallback(
+    (personaId: string | null) => {
+      if (selectedId === null) return;
+      setPanelError(null);
+      setSwitching(true);
+      void conversations
+        .setPersona(selectedId, personaId)
+        // The conversation itself carries the persona, so the open transcript
+        // has to be re-read as well as the listing.
+        .then(() => chat.refresh())
+        .catch((error) => {
+          setPanelError(
+            describeAiError(
+              error,
+              t(
+                "The persona could not be changed.",
+                "The persona could not be changed.",
+              ),
+            ).message,
+          );
+        })
+        .finally(() => setSwitching(false));
+    },
+    [chat, conversations, selectedId, t],
+  );
+
+  /** The same, for the provider profile and model — always together. */
+  const handleConversationProviderChange = useCallback(
+    (provider: string, model: string) => {
+      if (selectedId === null) return;
+      setPanelError(null);
+      setSwitching(true);
+      void conversations
+        .setProvider(selectedId, provider, model)
+        .then(() => chat.refresh())
+        .catch((error) => {
+          setPanelError(
+            describeAiError(
+              error,
+              t(
+                "The provider could not be changed.",
+                "The provider could not be changed.",
+              ),
+            ).message,
+          );
+        })
+        .finally(() => setSwitching(false));
+    },
+    [chat, conversations, selectedId, t],
   );
 
   const handleCreate = useCallback(() => {
@@ -691,6 +762,11 @@ export function AiAssistantPanel({
             }
             onStopRun={handleStop}
             reducedMotion={reducedMotion}
+            // So a recorded provider or persona id can be shown as the name
+            // the user gave it. An id that no longer resolves is shown as
+            // itself, which is why an unread catalogue is safe here.
+            configuredProviders={configuredProviders}
+            personas={personas.personas}
           />
         </div>
 
@@ -755,6 +831,26 @@ export function AiAssistantPanel({
               </div>
             </div>
           ) : null}
+
+          {/* Who answers the next message: persona, provider and model. Above
+              the mode rather than below it, so the mode keeps the position it
+              was given — immediately above the input it governs. One line of
+              summary unless it is opened, which it is by itself only on a
+              conversation with no messages yet: that is the moment the choice
+              is being made, and the moment there is no transcript to crowd.
+              See `AiTurnSetup` for what each state costs in height. */}
+          <AiTurnSetup
+            conversation={chat.conversation}
+            configuredProviders={configuredProviders}
+            personas={personas.personas}
+            configuredPersonaId={agentConfig.config?.personaId ?? null}
+            streaming={chat.streaming}
+            saving={switching}
+            onPersonaChange={handlePersonaChange}
+            onProviderChange={handleConversationProviderChange}
+            idPrefix={modeId}
+            compact={framed}
+          />
 
           {/* The mode, changeable without leaving the conversation, and
               directly above the input it governs — it answers "what will

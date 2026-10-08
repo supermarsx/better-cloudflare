@@ -94,10 +94,10 @@ pub fn validate_persona_id(id: &str) -> Result<(), AgentError> {
             format!("must contain between 1 and {MAX_PERSONA_ID_BYTES} bytes"),
         ));
     }
-    if !id
-        .chars()
-        .all(|value| value.is_ascii_alphanumeric() || value == '-' || value == '_')
-    {
+    // Shared with `bc_ai_chat`, which validates the persona id a conversation
+    // stores: one rule, so a persona id that can be selected can always be
+    // stored against a conversation and recorded on a message.
+    if !bc_ai_chat::limits::is_well_formed_persona_id(id) {
         return Err(invalid(
             "id",
             "must contain only letters, digits, '-' or '_'",

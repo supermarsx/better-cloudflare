@@ -122,6 +122,37 @@ export type MessageStatus =
   | { error: { message: string } }
   | "cancelled";
 
+/**
+ * What one turn ran under, recorded on the messages it produced.
+ *
+ * **This is how a transcript is attributed.** A conversation's `provider`,
+ * `model` and `personaId` say what the *next* turn will use; once they can be
+ * changed mid-conversation they stop describing the transcript, and an
+ * assistant answer credited to the wrong model is a correctness problem
+ * rather than a cosmetic one. So the answer travels with the message.
+ *
+ * Every id here may name something that no longer exists — a profile or a
+ * persona can be deleted while the transcript that used it survives. Resolve
+ * an id to a label where you can and show the raw id where you cannot; never
+ * substitute another provider's name for one that does not resolve.
+ */
+export interface MessageOrigin {
+  /** Id of the {@link AiProviderProfile} the turn actually ran against. */
+  provider: string;
+  /** The model the turn actually asked for. */
+  model: string;
+  /**
+   * The persona whose system prompt the turn sent. Absent means none was
+   * sent at all — nothing resolved, or the conversation's own `systemPrompt`
+   * won, which outranks a persona outright.
+   */
+  personaId?: string;
+  /** A persona the conversation named that no longer existed. */
+  missingPersonaId?: string;
+  /** A provider profile the conversation named that was no longer configured. */
+  missingProviderId?: string;
+}
+
 /** A chat message with metadata. */
 export interface ChatMessage {
   id: string;
@@ -130,6 +161,16 @@ export interface ChatMessage {
   createdAt: string;
   usage?: Usage;
   pendingToolCalls: ToolCall[];
+  /**
+   * What produced this message — see {@link MessageOrigin}.
+   *
+   * Absent on a message recorded before the conversation's provider, model and
+   * persona could change, and on every tool result: a tool result is the
+   * mechanical record of a call, not something a model said. The backend omits
+   * the key rather than sending `null`, so this really is optional and not
+   * nullable.
+   */
+  origin?: MessageOrigin;
 }
 
 // ─── Tool Types ────────────────────────────────────────────────────────────
@@ -177,6 +218,8 @@ export interface ConversationMeta {
   title: string;
   provider: string;
   model: string;
+  /** The conversation's own persona — see {@link Conversation.personaId}. */
+  personaId?: string;
   messageCount: number;
   createdAt: string;
   updatedAt: string;
@@ -186,9 +229,32 @@ export interface ConversationMeta {
 export interface Conversation {
   id: string;
   title: string;
+  /**
+   * The profile the conversation will send through next.
+   *
+   * **The selection in force, not a description of the transcript.** It was
+   * both while provider and model were fixed at creation; now that they can be
+   * changed mid-conversation, what each message ran under is on the message —
+   * see {@link ChatMessage.origin}.
+   */
   provider: string;
   model: string;
   systemPrompt?: string;
+  /**
+   * The persona this conversation is set to, or absent to use the configured
+   * one ({@link AgentConfig.personaId}).
+   *
+   * Absent is the pre-existing behaviour and indistinguishable from it, so a
+   * conversation that has never chosen a persona must be left alone rather
+   * than written to on open. An id naming a deleted persona is kept rather
+   * than scrubbed: the turn falls back to the configured persona and records
+   * the substitution in {@link MessageOrigin.missingPersonaId}, which is more
+   * honest than silently rewriting the user's choice.
+   *
+   * Outranked by {@link systemPrompt}, which is the conversation's literal
+   * prompt and therefore the more specific instruction of the two.
+   */
+  personaId?: string;
   messages: ChatMessage[];
   createdAt: string;
   updatedAt: string;

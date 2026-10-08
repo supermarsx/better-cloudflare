@@ -75,6 +75,19 @@ pub enum AgentError {
         action: &'static str,
     },
 
+    /// A change to what the *next* turn runs under, asked for while a turn is
+    /// still running.
+    ///
+    /// Refused rather than queued. A turn resolves its provider, model and
+    /// persona once, before it starts, and records them on the messages it
+    /// produces; honouring a switch halfway through would either take no
+    /// effect — leaving the conversation claiming a model that never saw the
+    /// request — or change the prompt under a reply already streaming. The
+    /// user's way through is to wait or to stop the run, both of which are
+    /// already offered.
+    #[error("a turn is running in this conversation")]
+    TurnInProgress,
+
     #[error("conversation disposed while generation was active: {0}")]
     ConversationDisposed(Uuid),
 
@@ -192,6 +205,9 @@ impl AgentError {
             Self::PlanStepNotFound => "The plan step was not found.".into(),
             Self::PlanStateConflict { state, action } => {
                 format!("A plan in state '{state}' cannot {action}.")
+            }
+            Self::TurnInProgress => {
+                "The assistant is still answering. Wait for it to finish, or stop the run.".into()
             }
             Self::ConversationDisposed(_) => "The AI conversation was closed.".into(),
             Self::ConsumerDropped => "The AI event consumer disconnected.".into(),

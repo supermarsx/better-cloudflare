@@ -11,7 +11,7 @@ use crate::limits::{
     validate_conversation, ChatLimits, MAX_CONFIGURED_EVICTIONS_PER_WRITE, MAX_CONVERSATIONS,
     MAX_GLOBAL_RETAINED_BYTES,
 };
-use crate::types::{ChatMessage, Conversation, ConversationMeta};
+use crate::types::{ChatMessage, Conversation, ConversationMeta, ConversationRouting};
 
 #[derive(Default)]
 struct ChatState {
@@ -241,6 +241,65 @@ impl ChatManager {
 
     /// Update a conversation title or return its bounded validation error.
     pub async fn try_set_title(&self, id: Uuid, title: String) -> Result<(), ChatError> {
+        self.try_edit(id, |conversation| {
+            conversation.title = title;
+        })
+        .await
+        .map(|_| ())
+    }
+
+    /// Point the conversation at a persona, or at the configured one.
+    ///
+    /// `None` restores the pre-existing behaviour exactly: the turn runs under
+    /// `AgentConfig::persona_id`, which is what every conversation did before
+    /// a conversation could carry its own. Nothing here checks that the id
+    /// names a persona that exists — that is the agent's to enforce, because
+    /// only it owns the persona store.
+    ///
+    /// Applies **forward only**. No stored message is touched: the earlier
+    /// turns really were produced under the old persona, and rewriting their
+    /// attribution would make the transcript claim something that never
+    /// happened.
+    pub async fn try_set_persona(
+        &self,
+        id: Uuid,
+        persona_id: Option<String>,
+    ) -> Result<ConversationMeta, ChatError> {
+        self.try_edit(id, |conversation| {
+            conversation.persona_id = persona_id;
+        })
+        .await
+    }
+
+    /// Point the conversation at a provider profile and a model.
+    ///
+    /// The two move together because they are not independent: a model name is
+    /// only meaningful to the endpoint that serves it, so setting the provider
+    /// alone would leave the conversation asking a new connection for a model
+    /// chosen for the old one. Forward only, like the persona.
+    pub async fn try_set_provider(
+        &self,
+        id: Uuid,
+        provider: String,
+        model: String,
+    ) -> Result<ConversationMeta, ChatError> {
+        self.try_edit(id, |conversation| {
+            conversation.provider = provider;
+            conversation.model = model;
+        })
+        .await
+    }
+
+    /// Apply `edit` to one conversation, and keep it only if the result still
+    /// validates.
+    ///
+    /// The clone is the point: `validate_conversation` runs against the edited
+    /// copy, so a refused edit leaves the stored conversation byte-for-byte as
+    /// it was rather than half-applied.
+    async fn try_edit<F>(&self, id: Uuid, edit: F) -> Result<ConversationMeta, ChatError>
+    where
+        F: FnOnce(&mut Conversation),
+    {
         let mut state = self.state.write().await;
         let limits = state.limits;
         let conversation = state
@@ -248,12 +307,19 @@ impl ChatManager {
             .get_mut(&id)
             .ok_or(ChatError::ConversationNotFound(id))?;
         let mut updated = conversation.clone();
-        updated.title = title;
+        edit(&mut updated);
         updated.updated_at = chrono::Utc::now();
         validate_conversation(&updated, &limits)?;
+        let meta = updated.meta();
         *conversation = updated;
         state.enforce_global_limits();
-        Ok(())
+        // A retention pass can evict the very conversation that was just
+        // edited, and reporting a stored metadata for something no longer in
+        // the store would be a false success.
+        if !state.conversations.contains_key(&id) {
+            return Err(ChatError::ConversationNotFound(id));
+        }
+        Ok(meta)
     }
 
     /// Get provider messages for sending to LLM.
@@ -264,6 +330,17 @@ impl ChatManager {
             .conversations
             .get(&id)
             .map(Conversation::provider_messages)
+    }
+
+    /// Everything the next turn in this conversation is pointed at, read
+    /// under one lock — see [`ConversationRouting`].
+    pub async fn routing(&self, id: Uuid) -> Option<ConversationRouting> {
+        self.state
+            .read()
+            .await
+            .conversations
+            .get(&id)
+            .map(Conversation::routing)
     }
 
     /// Get conversation system prompt.
@@ -340,7 +417,11 @@ mod tests {
     use bc_ai_provider::limits::MAX_MESSAGE_BYTES;
 
     use super::*;
-    use crate::limits::{MAX_CONVERSATION_BYTES, MAX_MESSAGES_PER_CONVERSATION, MAX_TITLE_BYTES};
+    use crate::limits::{
+        MAX_CONVERSATION_BYTES, MAX_MESSAGES_PER_CONVERSATION, MAX_PERSONA_ID_BYTES,
+        MAX_TITLE_BYTES,
+    };
+    use crate::types::MessageOrigin;
 
     async fn conversation(manager: &ChatManager) -> Uuid {
         manager
@@ -784,5 +865,163 @@ mod tests {
         manager.clear().await;
         cleared_rx.changed().await.expect("clear signal");
         assert!(*cleared_rx.borrow());
+    }
+
+    // ── Per-conversation persona, provider and model ───────────────────────
+
+    /// What "behaves exactly as today" means in the store: a conversation
+    /// nobody has chosen a persona for carries `None`, and `None` is what the
+    /// agent reads as "use the configured persona".
+    #[tokio::test]
+    async fn a_new_conversation_carries_no_persona_of_its_own() {
+        let manager = ChatManager::default();
+        let id = conversation(&manager).await;
+        assert_eq!(
+            manager
+                .get_conversation(id)
+                .await
+                .expect("conversation")
+                .persona_id,
+            None
+        );
+        assert_eq!(
+            manager.list_conversations().await[0].persona_id,
+            None,
+            "the listing has to agree with the conversation"
+        );
+        assert_eq!(manager.routing(id).await.expect("routing").persona_id, None);
+    }
+
+    /// Switching is **forward only**: the stored messages keep the
+    /// attribution they were recorded with, because the earlier turns really
+    /// were produced under the old selection. This is the test that fails if
+    /// a switch ever starts rewriting history.
+    #[tokio::test]
+    async fn switching_never_rewrites_the_messages_already_recorded() {
+        let manager = ChatManager::default();
+        let id = conversation(&manager).await;
+        let before = MessageOrigin {
+            provider: "ollama".into(),
+            model: "test-model".into(),
+            persona_id: Some("default".into()),
+            missing_persona_id: None,
+            missing_provider_id: None,
+        };
+        manager
+            .try_push_message(
+                id,
+                ChatMessage::user("first turn").with_origin(before.clone()),
+            )
+            .await
+            .expect("push");
+
+        manager
+            .try_set_persona(id, Some("dns-expert".into()))
+            .await
+            .expect("set persona");
+        let meta = manager
+            .try_set_provider(id, "anthropic-main".into(), "claude-next".into())
+            .await
+            .expect("set provider");
+
+        assert_eq!(meta.persona_id.as_deref(), Some("dns-expert"));
+        assert_eq!(meta.provider, "anthropic-main");
+        assert_eq!(meta.model, "claude-next");
+
+        let conversation = manager.get_conversation(id).await.expect("conversation");
+        assert_eq!(conversation.persona_id.as_deref(), Some("dns-expert"));
+        assert_eq!(
+            conversation.messages[0].origin,
+            Some(before),
+            "the message recorded before the switch must be untouched"
+        );
+    }
+
+    /// A refused edit leaves the conversation byte-for-byte as it was, rather
+    /// than half-applied — the provider and the model are written together, so
+    /// a rejected model would otherwise strand the conversation on a new
+    /// profile with the old model.
+    #[tokio::test]
+    async fn a_refused_switch_leaves_the_conversation_untouched() {
+        let manager = ChatManager::default();
+        let id = conversation(&manager).await;
+
+        let error = manager
+            .try_set_provider(
+                id,
+                "anthropic-main".into(),
+                "m".repeat(bc_ai_provider::limits::MAX_MODEL_BYTES + 1),
+            )
+            .await
+            .expect_err("an oversized model must be refused");
+        assert!(matches!(error, ChatError::LimitExceeded { .. }));
+
+        let error = manager
+            .try_set_persona(id, Some("not a persona id".into()))
+            .await
+            .expect_err("a malformed persona id must be refused");
+        assert!(matches!(
+            error,
+            ChatError::InvalidField {
+                field: "personaId",
+                ..
+            }
+        ));
+        assert!(matches!(
+            manager
+                .try_set_persona(id, Some("p".repeat(MAX_PERSONA_ID_BYTES + 1)))
+                .await,
+            Err(ChatError::InvalidField {
+                field: "personaId",
+                ..
+            })
+        ));
+
+        let conversation = manager.get_conversation(id).await.expect("conversation");
+        assert_eq!(conversation.provider, "ollama");
+        assert_eq!(conversation.model, "test-model");
+        assert_eq!(conversation.persona_id, None);
+    }
+
+    /// Attribution is retained state, so it is counted against the retention
+    /// ceilings. An origin absorbed into the flat per-message overhead would
+    /// let the byte bound under-count by an origin per message, which is the
+    /// number the memory bound is built on.
+    #[tokio::test]
+    async fn an_attributed_message_is_charged_for_its_attribution() {
+        let manager = ChatManager::default();
+        let plain = conversation(&manager).await;
+        let attributed = conversation(&manager).await;
+        let origin = MessageOrigin {
+            provider: "a".repeat(64),
+            model: "b".repeat(64),
+            persona_id: Some("c".repeat(64)),
+            missing_persona_id: Some("d".repeat(64)),
+            missing_provider_id: Some("e".repeat(64)),
+        };
+
+        let before = manager.retained_bytes().await;
+        manager
+            .try_push_message(plain, ChatMessage::user("same text"))
+            .await
+            .expect("push");
+        let plain_delta = manager.retained_bytes().await.saturating_sub(before);
+
+        let before = manager.retained_bytes().await;
+        manager
+            .try_push_message(
+                attributed,
+                ChatMessage::user("same text").with_origin(origin),
+            )
+            .await
+            .expect("push");
+        let attributed_delta = manager.retained_bytes().await.saturating_sub(before);
+
+        assert_eq!(
+            attributed_delta,
+            plain_delta + 5 * 64,
+            "all five origin strings have to be charged for, not absorbed into \
+             the flat per-message overhead"
+        );
     }
 }

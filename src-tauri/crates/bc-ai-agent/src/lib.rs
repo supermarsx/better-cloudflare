@@ -19,7 +19,7 @@ pub use config::AgentConfig;
 pub use error::AgentError;
 pub use events::AgentEvent;
 pub use links::{AiLink, AiLinkInput, AiLinkKind, LinkStore};
-pub use manager::AgentManager;
+pub use manager::{AgentManager, ResolvedProvider, TurnContext};
 pub use personas::{AiPersona, AiPersonaInput, PersonaStore};
 pub use plan::{AiPlan, AiPlanStatus, AiPlanStep, AiPlanStepRefusal, AiPlanStepStatus, PlanStore};
 pub use run_summary::{

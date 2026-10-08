@@ -18,7 +18,7 @@ use bc_ai_provider::limits::{
 use bc_ai_provider::{MessageContent, ToolCall};
 
 use crate::error::ChatError;
-use crate::types::{ChatMessage, Conversation, MessageStatus};
+use crate::types::{ChatMessage, Conversation, MessageOrigin, MessageStatus};
 
 pub const MAX_CONVERSATIONS: usize = 128;
 pub const MAX_MESSAGES_PER_CONVERSATION: usize = 256;
@@ -27,6 +27,31 @@ pub const MAX_CONVERSATION_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_GLOBAL_RETAINED_BYTES: usize = 32 * 1024 * 1024;
 pub const MAX_TITLE_BYTES: usize = 512;
 pub const MAX_STATUS_ERROR_BYTES: usize = 64 * 1024;
+
+/// UTF-8 bytes in a persona id, wherever one is stored or recorded.
+///
+/// Personas themselves are issued one crate up, in `bc_ai_agent::personas`,
+/// which cannot be called from here — but a conversation stores a persona id
+/// and a [`crate::MessageOrigin`] records one, so the *shape* rule has to be
+/// readable from both crates or it would exist in two hand-copied versions.
+/// It lives here, the lower crate, with `bc_ai_agent` asserting at compile
+/// time that its own bound still equals this one.
+pub const MAX_PERSONA_ID_BYTES: usize = 128;
+
+/// Whether `id` is shaped like a persona id this application issues.
+///
+/// The companion to [`MAX_PERSONA_ID_BYTES`] and the single definition of the
+/// character rule: ASCII alphanumerics, `-` and `_`. Deliberately a predicate
+/// rather than a validator, because each crate reports the failure in its own
+/// error type and neither should have to translate the other's.
+#[must_use]
+pub fn is_well_formed_persona_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= MAX_PERSONA_ID_BYTES
+        && id
+            .chars()
+            .all(|value| value.is_ascii_alphanumeric() || value == '-' || value == '_')
+}
 
 /// How many retained items one write may evict to honour a *configured*
 /// limit that sits below its hard ceiling.
@@ -140,6 +165,56 @@ fn validate_tool_call(tool_call: &ToolCall) -> Result<usize, ChatError> {
         .saturating_add(arguments))
 }
 
+/// Bound an attribution's own strings.
+///
+/// Every origin this crate stores is built from values the backend already
+/// validated, so this is the last line rather than the first — but it is the
+/// line that keeps [`origin_retained_bytes`] bounded, and a stored transcript
+/// deserialized from a future build reaches it without passing through any of
+/// the earlier checks.
+fn validate_origin(origin: &MessageOrigin) -> Result<(), ChatError> {
+    validate_provider_field("message origin provider", &origin.provider)?;
+    validate_string("message origin model", &origin.model, MAX_MODEL_BYTES)
+        .map_err(provider_error)?;
+    for (field, value) in [
+        ("message origin persona", &origin.persona_id),
+        ("message origin missing persona", &origin.missing_persona_id),
+    ] {
+        if let Some(value) = value {
+            validate_persona_field(field, value)?;
+        }
+    }
+    if let Some(provider) = &origin.missing_provider_id {
+        validate_provider_field("message origin missing provider", provider)?;
+    }
+    Ok(())
+}
+
+/// A provider profile id, reported against `field` rather than against the
+/// provider crate's own wording, so the caller is told which field is wrong.
+fn validate_provider_field(field: &'static str, value: &str) -> Result<(), ChatError> {
+    bc_ai_provider::validate_provider_id(value).map_err(|error| match error {
+        bc_ai_provider::AiProviderError::InvalidRequest { message, .. } => {
+            ChatError::InvalidField { field, message }
+        }
+        other => provider_error(other),
+    })
+}
+
+/// A persona id, against the rule both this crate and `bc_ai_agent` share.
+fn validate_persona_field(field: &'static str, value: &str) -> Result<(), ChatError> {
+    if !crate::limits::is_well_formed_persona_id(value) {
+        return Err(ChatError::InvalidField {
+            field,
+            message: format!(
+                "must contain between 1 and {MAX_PERSONA_ID_BYTES} bytes of letters, digits, \
+                 '-' or '_'"
+            ),
+        });
+    }
+    Ok(())
+}
+
 pub(crate) fn validate_chat_message(
     message: &ChatMessage,
     limits: &ChatLimits,
@@ -158,6 +233,9 @@ pub(crate) fn validate_chat_message(
     }
     for tool_call in &message.pending_tool_calls {
         validate_tool_call(tool_call)?;
+    }
+    if let Some(origin) = &message.origin {
+        validate_origin(origin)?;
     }
     // The configured value is the one reported, so the error names the number
     // the user actually set rather than the ceiling they never see.
@@ -200,6 +278,25 @@ pub(crate) fn message_retained_bytes(message: &ChatMessage) -> usize {
         .saturating_add(pending_bytes)
         .saturating_add(status_bytes)
         .saturating_add(message.message.tool_call_id.as_ref().map_or(0, String::len))
+        .saturating_add(origin_retained_bytes(message.origin.as_ref()))
+}
+
+/// Bytes an attribution adds to the message that carries it.
+///
+/// Counted rather than absorbed by the flat 128-byte overhead above: five
+/// strings, three of them ids the user chose the length of, so leaving them
+/// out would let the retained-bytes ceiling under-count by roughly the size of
+/// an origin per message — which is the number the memory bound is built on.
+fn origin_retained_bytes(origin: Option<&MessageOrigin>) -> usize {
+    origin.map_or(0, |origin| {
+        origin
+            .provider
+            .len()
+            .saturating_add(origin.model.len())
+            .saturating_add(origin.persona_id.as_ref().map_or(0, String::len))
+            .saturating_add(origin.missing_persona_id.as_ref().map_or(0, String::len))
+            .saturating_add(origin.missing_provider_id.as_ref().map_or(0, String::len))
+    })
 }
 
 pub(crate) fn conversation_retained_bytes(conversation: &Conversation) -> usize {
@@ -212,6 +309,7 @@ pub(crate) fn conversation_retained_bytes(conversation: &Conversation) -> usize 
         .saturating_add(conversation.title.len())
         .saturating_add(conversation.model.len())
         .saturating_add(conversation.system_prompt.as_ref().map_or(0, String::len))
+        .saturating_add(conversation.persona_id.as_ref().map_or(0, String::len))
         .saturating_add(message_bytes)
 }
 
@@ -227,15 +325,15 @@ pub(crate) fn validate_conversation_metadata(
     }
     // The provider is a user-defined profile id now, so it is bounded text
     // rather than a closed enum the deserializer could vet.
-    bc_ai_provider::validate_provider_id(&conversation.provider).map_err(|error| match error {
-        bc_ai_provider::AiProviderError::InvalidRequest { message, .. } => {
-            ChatError::InvalidField {
-                field: "provider",
-                message,
-            }
-        }
-        other => provider_error(other),
-    })?;
+    validate_provider_field("provider", &conversation.provider)?;
+    // Same for the persona: a free-text id, so the shape rule is the only
+    // thing standing between a stored conversation and an unbounded field.
+    // Whether it names a persona that *exists* is not decided here — a
+    // deleted persona must leave the conversation loadable and degrade at
+    // send time, not make the transcript unreadable.
+    if let Some(persona_id) = &conversation.persona_id {
+        validate_persona_field("personaId", persona_id)?;
+    }
     validate_string("conversation model", &conversation.model, MAX_MODEL_BYTES)
         .map_err(provider_error)?;
     validate_string(

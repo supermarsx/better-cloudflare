@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::{mpsc, oneshot, watch, RwLock};
 use uuid::Uuid;
 
-use bc_ai_chat::ChatManager;
+use bc_ai_chat::{ChatManager, MessageOrigin};
 use bc_ai_provider::anthropic::AnthropicProvider;
 use bc_ai_provider::ollama::OllamaProvider;
 use bc_ai_provider::openai::OpenAiProvider;
@@ -43,6 +43,41 @@ struct ActiveTurn {
 struct ActiveApproval {
     generation: Uuid,
     cancellation: watch::Sender<bool>,
+}
+
+/// The profile a send resolved to, and the conversation's own choice when that
+/// choice could not be honoured.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedProvider {
+    /// The profile the turn will actually run against.
+    pub id: String,
+    /// The conversation's stored profile, when it named nothing configured and
+    /// this resolution fell through to the default instead.
+    pub unavailable: Option<String>,
+}
+
+/// Which persona a turn speaks as, after the fallback chain.
+struct ResolvedPersona {
+    /// The prompt to send, or `None` when nothing resolved at all.
+    prompt: Option<String>,
+    /// The persona the prompt came from.
+    id: Option<String>,
+    /// A persona that was asked for and does not exist.
+    missing: Option<String>,
+}
+
+/// Everything one turn runs under — see
+/// [`AgentManager::resolve_turn_context`].
+#[derive(Debug, Clone)]
+pub struct TurnContext {
+    /// Stamped onto the messages the turn records, so the transcript can say
+    /// which model answered and under which persona.
+    pub origin: MessageOrigin,
+    /// The base system prompt: the conversation's own prompt if it has one,
+    /// otherwise the resolved persona's. `AgentConfig::system_prompt_override`
+    /// is appended to it by the agent loop, which is the one composition rule
+    /// this does not apply itself.
+    pub system_prompt: Option<String>,
 }
 
 struct ApprovalGuard {
@@ -329,35 +364,233 @@ impl AgentManager {
         conversation_id: Option<Uuid>,
         requested: Option<String>,
     ) -> Result<String, AgentError> {
-        if let Some(id) = requested {
-            validate_provider_id(&id)?;
-            return Ok(id);
-        }
+        Ok(self.resolve_provider(conversation_id, requested).await?.id)
+    }
 
-        if let Some(conversation_id) = conversation_id {
-            if let Some(id) = self.chat.provider(conversation_id).await {
-                // Only when it still names something configured: an id left
-                // over from a deleted profile must fall through rather than
-                // fail a send the default could have served.
-                if validate_provider_id(&id).is_ok() && self.provider(&id).await.is_some() {
-                    return Ok(id);
-                }
+    /// [`Self::resolve_provider_id`], and *why*.
+    ///
+    /// The fall-through from a conversation's own profile to the configured
+    /// default already existed, and it is the right behaviour — a deleted
+    /// profile must not fail a send the default could serve. What was missing
+    /// is any record that it happened, which would leave a transcript
+    /// attributing an answer to the profile the conversation names rather than
+    /// to the one that produced it. [`ResolvedProvider::unavailable`] is that
+    /// record, and it reaches the transcript through [`MessageOrigin`].
+    pub async fn resolve_provider(
+        &self,
+        conversation_id: Option<Uuid>,
+        requested: Option<String>,
+    ) -> Result<ResolvedProvider, AgentError> {
+        let stored = match conversation_id {
+            Some(conversation_id) => self.chat.provider(conversation_id).await,
+            None => None,
+        };
+        // An id left over from a deleted profile must fall through rather than
+        // fail a send the default could have served.
+        let stored_usable = match &stored {
+            Some(id) => validate_provider_id(id).is_ok() && self.provider(id).await.is_some(),
+            None => false,
+        };
+
+        let id = match (requested, stored_usable) {
+            (Some(requested), _) => {
+                validate_provider_id(&requested)?;
+                requested
+            }
+            (None, true) => stored.clone().unwrap_or_default(),
+            (None, false) => {
+                let id = self
+                    .agent_config
+                    .read()
+                    .await
+                    .default_provider_id
+                    .clone()
+                    .ok_or_else(|| {
+                        AgentError::Provider(AiProviderError::NotConfigured(
+                            "no default AI provider is selected".into(),
+                        ))
+                    })?;
+                validate_provider_id(&id)?;
+                id
+            }
+        };
+
+        // Reported only when the conversation's own choice was *lost*: a
+        // caller that deliberately overrode a perfectly good stored profile
+        // substituted nothing, and a conversation that already pointed at the
+        // profile in use has nothing to report either.
+        let unavailable = stored.filter(|stored| !stored_usable && *stored != id);
+        Ok(ResolvedProvider { id, unavailable })
+    }
+
+    /// Everything one turn will run under, resolved once.
+    ///
+    /// One snapshot, taken before the turn starts, for two reasons. The
+    /// conversation is read through [`ChatManager::routing`] so a switch
+    /// cannot land between reading the prompt and reading the model and leave
+    /// the turn running under half of each. And the result is what gets
+    /// stamped onto the turn's messages, so the transcript's attribution is
+    /// the same value the request was built from rather than a second,
+    /// separately derived guess at it.
+    pub async fn resolve_turn_context(
+        &self,
+        conversation_id: Uuid,
+        provider: &ResolvedProvider,
+    ) -> Result<TurnContext, AgentError> {
+        let routing = self
+            .chat
+            .routing(conversation_id)
+            .await
+            .ok_or(bc_ai_chat::ChatError::ConversationNotFound(conversation_id))?;
+        let configured_persona = self.agent_config.read().await.persona_id.clone();
+        let persona = self
+            .resolve_persona(routing.persona_id.as_deref(), &configured_persona)
+            .await;
+
+        // The conversation's own prompt outranks a persona outright — it is
+        // the literal replacement channel, and that precedence predates
+        // per-conversation personas. When it wins, no persona prompt is sent,
+        // and the origin says so rather than naming a persona that had no
+        // effect on the request.
+        let (system_prompt, persona_id) = match routing.system_prompt {
+            Some(prompt) => (Some(prompt), None),
+            None => (persona.prompt, persona.id),
+        };
+
+        Ok(TurnContext {
+            origin: MessageOrigin {
+                provider: provider.id.clone(),
+                model: routing.model,
+                persona_id,
+                missing_persona_id: persona.missing,
+                missing_provider_id: provider.unavailable.clone(),
+            },
+            system_prompt,
+        })
+    }
+
+    /// Resolve the persona a turn should speak as.
+    ///
+    /// The conversation's own choice first, the configured one as the
+    /// fallback, and no prompt at all as the last resort. A conversation that
+    /// has chosen nothing therefore behaves exactly as every conversation did
+    /// before it could: the configured persona, resolved the same way.
+    ///
+    /// A choice that no longer resolves is reported rather than hidden. It
+    /// does **not** fail the turn and it does not send an empty prompt: the
+    /// turn runs under the configured persona and the substitution is recorded
+    /// on every message it produces.
+    async fn resolve_persona(&self, requested: Option<&str>, configured: &str) -> ResolvedPersona {
+        if let Some(requested) = requested {
+            if let Some(prompt) = self.personas.system_prompt(requested).await {
+                return ResolvedPersona {
+                    prompt: Some(prompt),
+                    id: Some(requested.to_string()),
+                    missing: None,
+                };
+            }
+            let fallback = self.personas.system_prompt(configured).await;
+            return ResolvedPersona {
+                id: fallback.is_some().then(|| configured.to_string()),
+                prompt: fallback,
+                missing: Some(requested.to_string()),
+            };
+        }
+        let prompt = self.personas.system_prompt(configured).await;
+        ResolvedPersona {
+            id: prompt.is_some().then(|| configured.to_string()),
+            prompt,
+            missing: None,
+        }
+    }
+
+    /// Whether this conversation has a turn the user has to wait out.
+    ///
+    /// Both halves count. A turn paused on a tool approval has already
+    /// resolved its provider, model and persona and will resume with them, so
+    /// it is as much "mid-turn" as one that is streaming — and its active-turn
+    /// entry is gone by then, because `run_turn` returns at the pause.
+    fn turn_in_progress(&self, conversation_id: Uuid) -> Result<bool, AgentError> {
+        let generating = self
+            .active_turns
+            .lock()
+            .map_err(|_| AgentError::StateUnavailable)?
+            .contains_key(&conversation_id);
+        let approving = self
+            .active_approvals
+            .lock()
+            .map_err(|_| AgentError::StateUnavailable)?
+            .contains_key(&conversation_id);
+        Ok(generating || approving)
+    }
+
+    /// Point a conversation at a persona, from now on.
+    ///
+    /// `None` means "use the configured persona", which is what a conversation
+    /// that has never chosen one already does.
+    ///
+    /// **Forward only.** Earlier turns were produced under the old persona and
+    /// their recorded attribution is left alone; what changes is the system
+    /// prompt sent on the next turn. The model will therefore see a
+    /// conversation it did not have — and that is deliberate: the alternative
+    /// is re-writing history, and no fabricated turn explaining the switch is
+    /// inserted into the transcript either. Where the change happened is
+    /// readable from the per-message attribution instead.
+    ///
+    /// An id that names no persona is refused here rather than stored. Storing
+    /// it would create a dangling selection on purpose, when the dangling case
+    /// this has to tolerate — a persona deleted *after* it was chosen — is
+    /// already handled at send time.
+    pub async fn set_conversation_persona(
+        &self,
+        conversation_id: Uuid,
+        persona_id: Option<String>,
+    ) -> Result<bc_ai_chat::ConversationMeta, AgentError> {
+        if self.turn_in_progress(conversation_id)? {
+            return Err(AgentError::TurnInProgress);
+        }
+        if let Some(persona_id) = &persona_id {
+            crate::personas::validate_persona_id(persona_id)?;
+            if self.personas.system_prompt(persona_id).await.is_none() {
+                return Err(AgentError::PersonaNotFound);
             }
         }
+        Ok(self
+            .chat
+            .try_set_persona(conversation_id, persona_id)
+            .await?)
+    }
 
-        let id = self
-            .agent_config
-            .read()
-            .await
-            .default_provider_id
-            .clone()
-            .ok_or_else(|| {
-                AgentError::Provider(AiProviderError::NotConfigured(
-                    "no default AI provider is selected".into(),
-                ))
-            })?;
-        validate_provider_id(&id)?;
-        Ok(id)
+    /// Point a conversation at a provider profile and a model, from now on.
+    ///
+    /// Both together, because a model name only means anything to the endpoint
+    /// that serves it: setting the provider alone would leave the conversation
+    /// asking a new connection for a model chosen for the old one, and the
+    /// failure would arrive on the next send rather than here.
+    ///
+    /// The profile has to be configured. Unlike a stored transcript, which may
+    /// legitimately name a profile that has since been deleted, this is a
+    /// choice about the *next* turn — and a choice that cannot be honoured is
+    /// better refused than accepted and reported later.
+    pub async fn set_conversation_provider(
+        &self,
+        conversation_id: Uuid,
+        provider: String,
+        model: String,
+    ) -> Result<bc_ai_chat::ConversationMeta, AgentError> {
+        if self.turn_in_progress(conversation_id)? {
+            return Err(AgentError::TurnInProgress);
+        }
+        validate_provider_id(&provider)?;
+        if self.provider(&provider).await.is_none() {
+            return Err(AgentError::Provider(AiProviderError::NotConfigured(
+                provider,
+            )));
+        }
+        Ok(self
+            .chat
+            .try_set_provider(conversation_id, provider, model)
+            .await?)
     }
 
     pub async fn agent_config(&self) -> AgentConfig {
@@ -435,8 +668,40 @@ impl AgentManager {
         Ok(())
     }
 
+    /// Record the user's message for the turn that is about to run, and
+    /// return its id.
+    ///
+    /// Here rather than in the command layer because the attribution is the
+    /// turn's, and the turn's is resolved here: a caller that assembled the
+    /// message itself would have to work out which persona and model it was
+    /// about to run under, and a second derivation of that is a second chance
+    /// to disagree with the first.
+    ///
+    /// Stamping the *user's* message as well as the assistant's is what puts a
+    /// switch at the turn it took effect on rather than only on the reply, so
+    /// a reader can see which question was asked under which persona.
+    pub async fn push_user_message(
+        &self,
+        conversation_id: Uuid,
+        text: String,
+        provider: &ResolvedProvider,
+    ) -> Result<Uuid, AgentError> {
+        let turn = self.resolve_turn_context(conversation_id, provider).await?;
+        let message = bc_ai_chat::ChatMessage::user(text).with_origin(turn.origin);
+        let id = message.id;
+        self.chat.try_push_message(conversation_id, message).await?;
+        Ok(id)
+    }
+
     /// Start a turn against one provider profile and return its bounded event
     /// receiver immediately.
+    ///
+    /// The turn resolves its own context — provider, model, persona and system
+    /// prompt — rather than taking one: a caller that resolved earlier (to
+    /// stamp the user message, say) would have to be trusted to hand over a
+    /// value it could have changed, and the only thing that can legitimately
+    /// differ between the two resolutions is a configuration the user wrote in
+    /// between, which is a difference the attribution should *show*.
     pub async fn send_message(
         &self,
         conversation_id: Uuid,
@@ -461,7 +726,16 @@ impl AgentManager {
         // were constructed before one was set.
         self.chat.set_limits(config.chat_limits()).await;
         self.plans.set_limits(config.plan_limits()).await;
-        let persona_prompt = self.personas.system_prompt(&config.persona_id).await;
+        // Resolved *after* the configuration is pushed into the stores, so the
+        // persona and the limits a turn runs under come from the same read.
+        let turn = self
+            .resolve_turn_context(
+                conversation_id,
+                &self
+                    .resolve_provider(Some(conversation_id), Some(provider_id.to_string()))
+                    .await?,
+            )
+            .await?;
         let (event_tx, event_rx) = mpsc::channel(AGENT_EVENT_CHANNEL_CAPACITY);
         let (cancellation_tx, cancellation_rx) = watch::channel(false);
         let generation = Uuid::new_v4();
@@ -500,7 +774,7 @@ impl AgentManager {
                 plans.as_ref(),
                 links.as_ref(),
                 &config,
-                persona_prompt,
+                turn,
                 conversation_id,
                 task_event_tx.clone(),
                 cancellation_rx,
@@ -2498,5 +2772,437 @@ mod tests {
                 ..
             }))
         ));
+    }
+
+    // ─── Per-conversation persona, provider and model ──────────────────────
+    //
+    // The precedence these tests pin used to live inside `run_turn`, which
+    // read the conversation's prompt and the configured persona itself. It
+    // moved to `resolve_turn_context` so that one snapshot decides everything
+    // a turn runs under *and* everything its messages are attributed with —
+    // which is only safe if the precedence is still exactly what it was for a
+    // conversation that has chosen nothing.
+
+    async fn turn_context(manager: &AgentManager, conversation_id: Uuid) -> TurnContext {
+        let provider = manager
+            .resolve_provider(Some(conversation_id), None)
+            .await
+            .expect("the conversation's own profile resolves");
+        manager
+            .resolve_turn_context(conversation_id, &provider)
+            .await
+            .expect("turn context")
+    }
+
+    /// The compatibility requirement, stated as a test: a conversation with no
+    /// persona of its own runs under the configured one, exactly as every
+    /// conversation did before it could carry one.
+    #[tokio::test]
+    async fn a_conversation_with_no_persona_runs_under_the_configured_one() {
+        let (manager, _, _) = manager_with_provider(MockMode::Finite(1)).await;
+        let conversation_id = create_conversation(&manager).await;
+
+        let mut config = manager.agent_config().await;
+        config.persona_id = "dns-expert".into();
+        manager.try_set_agent_config(config).await.expect("valid");
+
+        let turn = turn_context(&manager, conversation_id).await;
+        assert_eq!(turn.origin.persona_id.as_deref(), Some("dns-expert"));
+        assert_eq!(turn.origin.missing_persona_id, None);
+        assert_eq!(turn.origin.provider, MOCK_PROVIDER_ID);
+        assert_eq!(turn.origin.model, "mock");
+        assert_eq!(
+            turn.system_prompt,
+            manager.personas.system_prompt("dns-expert").await,
+            "the configured persona's own prompt, unaltered"
+        );
+    }
+
+    /// And the feature: the conversation's own choice outranks the configured
+    /// one, so switching persona mid-conversation actually changes the prompt.
+    #[tokio::test]
+    async fn a_conversations_own_persona_outranks_the_configured_one() {
+        let (manager, _, _) = manager_with_provider(MockMode::Finite(1)).await;
+        let conversation_id = create_conversation(&manager).await;
+
+        let mut config = manager.agent_config().await;
+        config.persona_id = DEFAULT_PERSONA_ID.into();
+        manager.try_set_agent_config(config).await.expect("valid");
+
+        let meta = manager
+            .set_conversation_persona(conversation_id, Some("security-auditor".into()))
+            .await
+            .expect("a builtin persona is a valid choice");
+        assert_eq!(meta.persona_id.as_deref(), Some("security-auditor"));
+
+        let turn = turn_context(&manager, conversation_id).await;
+        assert_eq!(turn.origin.persona_id.as_deref(), Some("security-auditor"));
+        assert_eq!(
+            turn.system_prompt,
+            manager.personas.system_prompt("security-auditor").await
+        );
+
+        // Clearing it restores the configured persona rather than sending no
+        // prompt at all, which is the degradation that must never happen.
+        manager
+            .set_conversation_persona(conversation_id, None)
+            .await
+            .expect("clearing is a valid choice");
+        let turn = turn_context(&manager, conversation_id).await;
+        assert_eq!(turn.origin.persona_id.as_deref(), Some(DEFAULT_PERSONA_ID));
+        assert!(turn
+            .system_prompt
+            .is_some_and(|prompt| !prompt.trim().is_empty()));
+    }
+
+    /// The honest-degradation requirement. A persona deleted after it was
+    /// chosen must not fail the turn and must not send an empty prompt: the
+    /// configured persona takes over, and the substitution is recorded on
+    /// every message the turn produces.
+    #[tokio::test]
+    async fn a_deleted_persona_falls_back_and_records_what_was_asked_for() {
+        let (manager, _, _) = manager_with_provider(MockMode::Finite(1)).await;
+        let conversation_id = create_conversation(&manager).await;
+        let persona = manager
+            .create_persona(AiPersonaInput {
+                name: "Doomed".into(),
+                description: String::new(),
+                system_prompt: "You will be deleted.".into(),
+            })
+            .await
+            .expect("create");
+        manager
+            .set_conversation_persona(conversation_id, Some(persona.id.clone()))
+            .await
+            .expect("set");
+
+        manager.delete_persona(&persona.id).await.expect("delete");
+        // Deliberately *not* scrubbed from the conversation: the user's choice
+        // is kept, and the fallback is reported rather than hidden by
+        // rewriting it.
+        assert_eq!(
+            manager
+                .chat
+                .get_conversation(conversation_id)
+                .await
+                .expect("conversation")
+                .persona_id
+                .as_deref(),
+            Some(persona.id.as_str())
+        );
+
+        let turn = turn_context(&manager, conversation_id).await;
+        assert_eq!(
+            turn.origin.missing_persona_id.as_deref(),
+            Some(persona.id.as_str()),
+            "the transcript has to show which choice could not be honoured"
+        );
+        assert_eq!(turn.origin.persona_id.as_deref(), Some(DEFAULT_PERSONA_ID));
+        assert!(
+            turn.system_prompt
+                .as_deref()
+                .is_some_and(|prompt| !prompt.trim().is_empty()),
+            "a missing persona must never produce an empty system prompt"
+        );
+    }
+
+    /// A conversation's own system prompt still outranks a persona outright —
+    /// it is the literal replacement channel, and that precedence predates
+    /// per-conversation personas. The origin then names no persona, because
+    /// none reached the request.
+    #[tokio::test]
+    async fn a_conversation_prompt_outranks_the_persona_and_the_origin_says_so() {
+        let (manager, _, _) = manager_with_provider(MockMode::Finite(1)).await;
+        let conversation_id = manager
+            .chat
+            .try_create_conversation(
+                MOCK_PROVIDER_ID.into(),
+                "mock".into(),
+                None,
+                Some("Conversation prompt.".into()),
+            )
+            .await
+            .expect("conversation")
+            .id;
+        manager
+            .set_conversation_persona(conversation_id, Some("dns-expert".into()))
+            .await
+            .expect("set");
+
+        let turn = turn_context(&manager, conversation_id).await;
+        assert_eq!(turn.system_prompt.as_deref(), Some("Conversation prompt."));
+        assert_eq!(
+            turn.origin.persona_id, None,
+            "no persona prompt was sent, so none is credited"
+        );
+    }
+
+    /// A profile deleted after the conversation was pointed at it falls
+    /// through to the configured default, and the attribution records the
+    /// substitution — otherwise the transcript would credit the answer to the
+    /// endpoint that never saw the request.
+    #[tokio::test]
+    async fn a_deleted_profile_falls_back_and_the_origin_records_the_substitution() {
+        let (manager, _, _) = manager_with_provider(MockMode::Finite(1)).await;
+        let own = manager
+            .prepare_profile(profile_input(ProviderProtocol::Ollama, "Own"))
+            .await
+            .expect("prepare");
+        let own_id = own.id.clone();
+        manager
+            .store_profile(own, mock_provider(MockMode::Finite(1)).0)
+            .await
+            .expect("store");
+        let mut config = manager.agent_config().await;
+        config.default_provider_id = Some(MOCK_PROVIDER_ID.into());
+        manager.try_set_agent_config(config).await.expect("valid");
+
+        let conversation_id = manager
+            .chat
+            .try_create_conversation(own_id.clone(), "mock".into(), None, None)
+            .await
+            .expect("conversation")
+            .id;
+        let resolved = manager
+            .resolve_provider(Some(conversation_id), None)
+            .await
+            .expect("resolves");
+        assert_eq!(resolved.id, own_id);
+        assert_eq!(
+            resolved.unavailable, None,
+            "nothing was substituted while the profile existed"
+        );
+
+        assert!(manager
+            .delete_provider_profile(&own_id)
+            .await
+            .expect("delete"));
+        let resolved = manager
+            .resolve_provider(Some(conversation_id), None)
+            .await
+            .expect("the default takes over");
+        assert_eq!(resolved.id, MOCK_PROVIDER_ID);
+        assert_eq!(resolved.unavailable.as_deref(), Some(own_id.as_str()));
+        let turn = manager
+            .resolve_turn_context(conversation_id, &resolved)
+            .await
+            .expect("turn context");
+        assert_eq!(turn.origin.provider, MOCK_PROVIDER_ID);
+        assert_eq!(
+            turn.origin.missing_provider_id.as_deref(),
+            Some(own_id.as_str())
+        );
+    }
+
+    /// Overriding a perfectly good stored profile substituted nothing, so
+    /// nothing is reported as missing. Only a *lost* choice is.
+    #[tokio::test]
+    async fn an_override_of_a_usable_profile_is_not_reported_as_a_substitution() {
+        let (manager, _, _) = manager_with_provider(MockMode::Finite(1)).await;
+        let conversation_id = create_conversation(&manager).await;
+        let resolved = manager
+            .resolve_provider(Some(conversation_id), Some("chosen-by-hand".into()))
+            .await
+            .expect("an explicit id is used as given");
+        assert_eq!(resolved.id, "chosen-by-hand");
+        assert_eq!(resolved.unavailable, None);
+    }
+
+    /// A switch is **refused**, not queued, while a turn is running: that turn
+    /// has already resolved what it runs under, so honouring the change would
+    /// either take no effect or change the prompt under a reply in flight.
+    #[tokio::test]
+    async fn switching_is_refused_while_a_turn_is_running() {
+        let (manager, _, _) = manager_with_provider(MockMode::Endless).await;
+        let conversation_id = create_conversation(&manager).await;
+        // `send_message` registers the turn before it returns, so the refusals
+        // below are checked against a turn that is definitely active without
+        // waiting for the stream to produce anything. Waiting on the stream
+        // instead would be a race: cancellation can land before the provider
+        // is ever entered, in which case nothing is ever streamed to observe.
+        let _events = manager
+            .send_message(conversation_id, MOCK_PROVIDER_ID)
+            .await
+            .expect("turn starts");
+
+        assert!(matches!(
+            manager
+                .set_conversation_persona(conversation_id, Some("dns-expert".into()))
+                .await,
+            Err(AgentError::TurnInProgress)
+        ));
+        assert!(matches!(
+            manager
+                .set_conversation_provider(
+                    conversation_id,
+                    MOCK_PROVIDER_ID.into(),
+                    "other-model".into()
+                )
+                .await,
+            Err(AgentError::TurnInProgress)
+        ));
+        // Refused means refused: nothing was half-applied.
+        let conversation = manager
+            .chat
+            .get_conversation(conversation_id)
+            .await
+            .expect("conversation");
+        assert_eq!(conversation.persona_id, None);
+        assert_eq!(conversation.model, "mock");
+
+        // And the way out is the one the conversation already offers.
+        assert!(manager.cancel(conversation_id).await.expect("cancel"));
+        wait_for_no_active_turns(&manager).await;
+        manager
+            .set_conversation_persona(conversation_id, Some("dns-expert".into()))
+            .await
+            .expect("a stopped run no longer blocks the switch");
+    }
+
+    /// Both halves of "mid-turn" count. A turn paused on a tool approval has
+    /// already resolved its context and will resume with it, and its
+    /// active-turn entry is gone by then — so checking only `active_turns`
+    /// would let a switch through at exactly the wrong moment.
+    #[tokio::test]
+    async fn switching_is_refused_while_a_tool_approval_is_pending() {
+        let (manager, _, _) = manager_with_provider(MockMode::Finite(1)).await;
+        let conversation_id = create_conversation(&manager).await;
+        let (cancellation, _) = watch::channel(false);
+        manager.active_approvals.lock().expect("approvals").insert(
+            conversation_id,
+            ActiveApproval {
+                generation: Uuid::new_v4(),
+                cancellation,
+            },
+        );
+
+        assert!(matches!(
+            manager
+                .set_conversation_persona(conversation_id, Some("dns-expert".into()))
+                .await,
+            Err(AgentError::TurnInProgress)
+        ));
+    }
+
+    /// A dangling selection is never created on purpose. The dangling case
+    /// that has to be tolerated — a persona or profile deleted *after* it was
+    /// chosen — is handled at send time instead.
+    #[tokio::test]
+    async fn an_unknown_persona_or_unconfigured_profile_cannot_be_selected() {
+        let (manager, _, _) = manager_with_provider(MockMode::Finite(1)).await;
+        let conversation_id = create_conversation(&manager).await;
+
+        assert!(matches!(
+            manager
+                .set_conversation_persona(conversation_id, Some("custom-nope".into()))
+                .await,
+            Err(AgentError::PersonaNotFound)
+        ));
+        assert!(matches!(
+            manager
+                .set_conversation_persona(conversation_id, Some("not a persona id".into()))
+                .await,
+            Err(AgentError::InvalidPersona { field: "id", .. })
+        ));
+        assert!(matches!(
+            manager
+                .set_conversation_provider(
+                    conversation_id,
+                    "never-configured".into(),
+                    "mock".into()
+                )
+                .await,
+            Err(AgentError::Provider(AiProviderError::NotConfigured(_)))
+        ));
+        let conversation = manager
+            .chat
+            .get_conversation(conversation_id)
+            .await
+            .expect("conversation");
+        assert_eq!(conversation.persona_id, None);
+        assert_eq!(conversation.provider, MOCK_PROVIDER_ID);
+    }
+
+    /// Both halves of a turn are attributed, so a transcript shows the switch
+    /// at the question it took effect on and not only at the answer.
+    #[tokio::test]
+    async fn both_the_users_message_and_the_reply_record_the_turns_attribution() {
+        let (manager, _, _) = manager_with_provider(MockMode::Finite(1)).await;
+        let conversation_id = create_conversation(&manager).await;
+        manager
+            .set_conversation_persona(conversation_id, Some("migration-helper".into()))
+            .await
+            .expect("set");
+
+        let provider = manager
+            .resolve_provider(Some(conversation_id), None)
+            .await
+            .expect("resolves");
+        manager
+            .push_user_message(conversation_id, "move my domain".into(), &provider)
+            .await
+            .expect("push");
+
+        let user = manager
+            .chat
+            .get_conversation(conversation_id)
+            .await
+            .expect("conversation")
+            .messages
+            .pop()
+            .expect("the user message");
+        let origin = user.origin.expect("the user message is attributed");
+        assert_eq!(origin.provider, MOCK_PROVIDER_ID);
+        assert_eq!(origin.model, "mock");
+        assert_eq!(origin.persona_id.as_deref(), Some("migration-helper"));
+
+        // And the reply the turn produces carries the same snapshot.
+        let _events = manager
+            .send_message(conversation_id, MOCK_PROVIDER_ID)
+            .await
+            .expect("turn starts");
+        wait_for_no_active_turns(&manager).await;
+        let assistant = manager
+            .chat
+            .get_conversation(conversation_id)
+            .await
+            .expect("conversation")
+            .messages
+            .into_iter()
+            .find(|message| message.message.role == bc_ai_provider::Role::Assistant)
+            .expect("an assistant message");
+        assert_eq!(
+            assistant.origin.and_then(|origin| origin.persona_id),
+            Some("migration-helper".to_string())
+        );
+    }
+
+    /// The provider and the model move together, because a model name only
+    /// means anything to the endpoint that serves it.
+    #[tokio::test]
+    async fn switching_provider_sets_the_model_in_the_same_write() {
+        let (manager, _, _) = manager_with_provider(MockMode::Finite(1)).await;
+        let other = manager
+            .prepare_profile(profile_input(ProviderProtocol::Anthropic, "Other"))
+            .await
+            .expect("prepare");
+        let other_id = other.id.clone();
+        manager
+            .store_profile(other, mock_provider(MockMode::Finite(1)).0)
+            .await
+            .expect("store");
+        let conversation_id = create_conversation(&manager).await;
+
+        let meta = manager
+            .set_conversation_provider(conversation_id, other_id.clone(), "claude-switched".into())
+            .await
+            .expect("a configured profile is a valid choice");
+        assert_eq!(meta.provider, other_id);
+        assert_eq!(meta.model, "claude-switched");
+
+        let turn = turn_context(&manager, conversation_id).await;
+        assert_eq!(turn.origin.provider, other_id);
+        assert_eq!(turn.origin.model, "claude-switched");
+        assert_eq!(turn.origin.missing_provider_id, None);
     }
 }

@@ -15,7 +15,7 @@ use uuid::Uuid;
 use bc_ai_agent::personas::{AiPersona, AiPersonaInput, MAX_PERSONA_ID_BYTES};
 use bc_ai_agent::plan::AiPlan;
 use bc_ai_agent::{AgentConfig, AgentError, AgentEvent, AgentManager, AiLink, AiRunSummary};
-use bc_ai_chat::{ChatError, ChatMessage, ConversationMeta};
+use bc_ai_chat::{ChatError, ConversationMeta};
 use bc_ai_provider::{
     AdvancedField, AiProviderError, AiProviderProfile, AiProviderProfileInput, Model,
     MAX_PROVIDER_ID_BYTES,
@@ -49,7 +49,7 @@ fn attach_trail(agent: &AgentManager, storage: &Storage) {
 /// `main.rs`. A command the renderer is written against but that was never
 /// registered fails only at runtime, so the list is asserted at build time.
 #[cfg(test)]
-pub const COMMAND_NAMES: [&str; 33] = [
+pub const COMMAND_NAMES: [&str; 35] = [
     "ai_list_providers",
     "ai_configure_provider",
     "ai_delete_provider",
@@ -63,6 +63,8 @@ pub const COMMAND_NAMES: [&str; 33] = [
     "ai_get_conversation",
     "ai_delete_conversation",
     "ai_set_conversation_title",
+    "ai_set_conversation_persona",
+    "ai_set_conversation_provider",
     "ai_send_message",
     "ai_approve_tool_call",
     "ai_cancel_generation",
@@ -388,6 +390,20 @@ fn map_agent_error(error: AgentError, operation: &'static str) -> AiCommandError
             );
             error.details.kind = Some(state);
             error.details.remediation = Some("Re-read the plan with ai_get_plan and try again.");
+            error
+        }
+        // Retryable, and the remediation is the whole point: the user does not
+        // have to undo anything, they have to wait or stop the run — both of
+        // which the conversation already offers.
+        AgentError::TurnInProgress => {
+            let mut error = AiCommandError::new(
+                "AI_TURN_IN_PROGRESS",
+                "The assistant is still answering, so this cannot be changed yet.",
+                operation,
+            );
+            error.details.remediation =
+                Some("Wait for the reply to finish, or stop the run, then try again.");
+            error.retryable = true;
             error
         }
         AgentError::ConversationDisposed(_) => AiCommandError::new(
@@ -766,6 +782,83 @@ pub async fn ai_set_conversation_title(
     set_conversation_title_inner(&agent, id, title).await
 }
 
+async fn set_conversation_persona_inner(
+    agent: &AgentManager,
+    id: Uuid,
+    persona_id: Option<String>,
+) -> Result<ConversationMeta, AiCommandError> {
+    agent
+        .set_conversation_persona(id, persona_id)
+        .await
+        .map_err(|error| map_agent_error(error, "ai:set_conversation_persona"))
+}
+
+/// Point a conversation at a persona, from the next turn onwards.
+///
+/// `personaId` is `null` for "use the configured persona", which is what a
+/// conversation that has never chosen one already does — so clearing the
+/// choice restores exactly the pre-existing behaviour rather than sending no
+/// system prompt.
+///
+/// **Forward only.** The stored messages keep the attribution they were
+/// recorded with, because the earlier turns really were produced under the old
+/// persona; what changes is the system prompt sent on the next turn. The model
+/// therefore sees a conversation it did not have, and no fabricated turn is
+/// inserted to explain the switch — where it happened is readable from each
+/// message's own `origin`.
+///
+/// Refused with `AI_TURN_IN_PROGRESS` while the conversation is generating or
+/// waiting on a tool approval: that turn already resolved what it runs under.
+/// Refused with `AI_PERSONA_NOT_FOUND` for an id that names no persona.
+#[tauri::command]
+pub async fn ai_set_conversation_persona(
+    agent: State<'_, AgentManager>,
+    id: Uuid,
+    persona_id: Option<String>,
+) -> Result<ConversationMeta, AiCommandError> {
+    set_conversation_persona_inner(&agent, id, persona_id).await
+}
+
+async fn set_conversation_provider_inner(
+    agent: &AgentManager,
+    id: Uuid,
+    provider: String,
+    model: String,
+) -> Result<ConversationMeta, AiCommandError> {
+    validate_provider_id_bounds(&provider, "ai:set_conversation_provider")?;
+    bc_ai_provider::limits::validate_string(
+        "conversation model",
+        &model,
+        bc_ai_provider::limits::MAX_MODEL_BYTES,
+    )
+    .map_err(|error| map_provider_error(error, "ai:set_conversation_provider"))?;
+    agent
+        .set_conversation_provider(id, provider, model)
+        .await
+        .map_err(|error| map_agent_error(error, "ai:set_conversation_provider"))
+}
+
+/// Point a conversation at a provider profile and a model, from the next turn
+/// onwards.
+///
+/// Both at once, because a model name only means anything to the endpoint that
+/// serves it: setting the provider alone would leave the conversation asking a
+/// new connection for a model chosen for the old one.
+///
+/// Unlike a stored transcript — which may legitimately name a profile that has
+/// since been deleted — this is a choice about the next turn, so an
+/// unconfigured `provider` is refused here rather than accepted and reported
+/// at send time. Refused with `AI_TURN_IN_PROGRESS` while a turn is running.
+#[tauri::command]
+pub async fn ai_set_conversation_provider(
+    agent: State<'_, AgentManager>,
+    id: Uuid,
+    provider: String,
+    model: String,
+) -> Result<ConversationMeta, AiCommandError> {
+    set_conversation_provider_inner(&agent, id, provider, model).await
+}
+
 // ─── Messaging ─────────────────────────────────────────────────────────────
 
 async fn start_message_inner(
@@ -785,13 +878,13 @@ async fn start_message_inner(
     }
     // An absent id means "use the configured default"; nothing here falls
     // through to an arbitrary configured provider.
-    let provider_id = agent
-        .resolve_provider_id(Some(conversation_id), provider_id)
+    let provider = agent
+        .resolve_provider(Some(conversation_id), provider_id)
         .await
         .map_err(|error| map_agent_error(error, "ai:send_message"))?;
-    if agent.provider(&provider_id).await.is_none() {
+    if agent.provider(&provider.id).await.is_none() {
         return Err(map_provider_error(
-            AiProviderError::NotConfigured(provider_id),
+            AiProviderError::NotConfigured(provider.id),
             "ai:send_message",
         ));
     }
@@ -801,15 +894,19 @@ async fn start_message_inner(
         .validate()
         .map_err(|error| map_agent_error(error, "ai:send_message"))?;
 
-    let user_msg = ChatMessage::user(text);
-    let user_msg_id = user_msg.id;
-    agent
-        .chat
-        .try_push_message(conversation_id, user_msg)
+    // The user's own message carries the turn's attribution too, so a
+    // transcript shows a switch at the turn it took effect on rather than only
+    // on the reply. `send_message` resolves the same context again for the
+    // assistant message rather than being handed this one — see its doc
+    // comment: the only thing that can differ between the two is a
+    // configuration the user wrote in between, which is a difference the
+    // attribution should show rather than smooth over.
+    let user_msg_id = agent
+        .push_user_message(conversation_id, text, &provider)
         .await
-        .map_err(|error| map_chat_error(error, "ai:send_message"))?;
+        .map_err(|error| map_agent_error(error, "ai:send_message"))?;
     let receiver = agent
-        .send_message(conversation_id, &provider_id)
+        .send_message(conversation_id, &provider.id)
         .await
         .map_err(|error| map_agent_error(error, "ai:send_message"))?;
     Ok((user_msg_id, receiver))
@@ -1702,6 +1799,137 @@ mod tests {
             .await
             .expect_err("a second delete must fail");
         assert_eq!(error.code, "AI_PERSONA_NOT_FOUND");
+    }
+
+    /// A conversation can be pointed at a persona, and pointed back at the
+    /// configured one — which is the state a conversation that never chose
+    /// starts in, so clearing restores the old behaviour exactly rather than
+    /// leaving the turn with no system prompt.
+    #[tokio::test]
+    async fn a_conversations_persona_can_be_set_and_cleared_through_the_command() {
+        let agent = AgentManager::default();
+        let conversation_id = create_valid_conversation(&agent).await;
+        assert_eq!(
+            set_conversation_persona_inner(&agent, conversation_id, None)
+                .await
+                .expect("clearing an unset persona is a no-op, not an error")
+                .persona_id,
+            None
+        );
+
+        let meta = set_conversation_persona_inner(
+            &agent,
+            conversation_id,
+            Some("security-auditor".into()),
+        )
+        .await
+        .expect("a builtin persona is a valid choice");
+        assert_eq!(meta.persona_id.as_deref(), Some("security-auditor"));
+        assert_eq!(
+            meta.id, conversation_id,
+            "the stored metadata is the conversation's own"
+        );
+
+        let meta = set_conversation_persona_inner(&agent, conversation_id, None)
+            .await
+            .expect("clearing is a valid choice");
+        assert_eq!(meta.persona_id, None);
+    }
+
+    /// A choice that cannot be honoured is refused here rather than stored:
+    /// the dangling case that *has* to be tolerated is a persona deleted after
+    /// it was chosen, which is handled at send time instead.
+    #[tokio::test]
+    async fn an_unselectable_persona_or_provider_is_refused_by_name() {
+        let agent = AgentManager::default();
+        let conversation_id = create_valid_conversation(&agent).await;
+
+        let error = set_conversation_persona_inner(
+            &agent,
+            conversation_id,
+            Some("custom-0123456789abcdef".into()),
+        )
+        .await
+        .expect_err("an unknown persona must be refused");
+        assert_eq!(error.code, "AI_PERSONA_NOT_FOUND");
+
+        let error =
+            set_conversation_persona_inner(&agent, conversation_id, Some("not an id".into()))
+                .await
+                .expect_err("a malformed persona id must be refused");
+        assert_eq!(error.code, "AI_VALIDATION");
+        assert_eq!(error.details.field, Some("id"));
+
+        // Nothing is configured on a default manager, so every profile id is
+        // unconfigured — which is the case that must not be stored.
+        let error = set_conversation_provider_inner(
+            &agent,
+            conversation_id,
+            "never-configured".into(),
+            "some-model".into(),
+        )
+        .await
+        .expect_err("an unconfigured profile must be refused");
+        assert_eq!(error.code, "AI_NOT_CONFIGURED");
+
+        // An over-long id is reported as a *limit* naming the bound, the same
+        // shape every other provider-keyed command reports one with, rather
+        // than falling through to the manager's generic validation error.
+        let error = set_conversation_provider_inner(
+            &agent,
+            conversation_id,
+            "p".repeat(MAX_PROVIDER_ID_BYTES + 1),
+            "some-model".into(),
+        )
+        .await
+        .expect_err("an over-long provider id must fail");
+        assert_eq!(error.code, "AI_LIMIT_EXCEEDED");
+        assert_eq!(error.details.resource, Some("provider id"));
+
+        let conversation = agent
+            .chat
+            .get_conversation(conversation_id)
+            .await
+            .expect("conversation");
+        assert_eq!(conversation.persona_id, None);
+        assert_eq!(conversation.provider, "ollama");
+        assert_eq!(conversation.model, "bounded-model");
+    }
+
+    /// The model is bounded before the profile is looked up, so an oversized
+    /// one is reported as a limit rather than as "that provider is not
+    /// configured".
+    #[tokio::test]
+    async fn an_oversized_model_is_refused_as_a_limit_not_as_a_missing_provider() {
+        let agent = AgentManager::default();
+        let conversation_id = create_valid_conversation(&agent).await;
+        let error = set_conversation_provider_inner(
+            &agent,
+            conversation_id,
+            "never-configured".into(),
+            "m".repeat(bc_ai_provider::limits::MAX_MODEL_BYTES + 1),
+        )
+        .await
+        .expect_err("an oversized model must fail");
+        assert_eq!(error.code, "AI_LIMIT_EXCEEDED");
+        assert_eq!(error.details.resource, Some("conversation model"));
+    }
+
+    /// The refusal a mid-turn switch produces has to tell the user what to do
+    /// about it, because there is nothing to undo — they have to wait or stop
+    /// the run, both of which the conversation already offers.
+    #[tokio::test]
+    async fn a_mid_turn_switch_is_refused_with_a_retryable_remediation() {
+        let error = map_agent_error(
+            bc_ai_agent::AgentError::TurnInProgress,
+            "ai:set_conversation_persona",
+        );
+        assert_eq!(error.code, "AI_TURN_IN_PROGRESS");
+        assert!(error.retryable);
+        assert!(error
+            .details
+            .remediation
+            .is_some_and(|remediation| remediation.contains("stop the run")));
     }
 
     #[tokio::test]

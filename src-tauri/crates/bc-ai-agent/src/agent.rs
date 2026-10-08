@@ -18,6 +18,7 @@ use crate::config::AgentConfig;
 use crate::error::AgentError;
 use crate::events::AgentEvent;
 use crate::links::{self, LinkStore};
+use crate::manager::TurnContext;
 use crate::plan::{self, PlanStore};
 use crate::run_summary::RunLedger;
 
@@ -146,6 +147,14 @@ async fn stream_completion(
     Ok(response)
 }
 
+/// A tool result, deliberately **without** an origin.
+///
+/// A tool result is the mechanical record of a call, not something a model
+/// said, so it has no "which model answered" to record. It is also pushed from
+/// two places — this turn loop and the approval command, which resumes a turn
+/// that paused — and only the first has the turn's resolved context to hand;
+/// re-resolving it in the second could produce a different answer and make two
+/// halves of the same turn disagree. See `ChatMessage::origin`.
 pub(crate) fn tool_result_message(result: bc_ai_provider::ToolResult) -> ChatMessage {
     ChatMessage {
         id: Uuid::new_v4(),
@@ -154,6 +163,7 @@ pub(crate) fn tool_result_message(result: bc_ai_provider::ToolResult) -> ChatMes
         created_at: chrono::Utc::now(),
         usage: None,
         pending_tool_calls: Vec::new(),
+        origin: None,
     }
 }
 
@@ -391,24 +401,24 @@ pub async fn run_turn(
     plans: &PlanStore,
     links: &LinkStore,
     config: &AgentConfig,
-    persona_prompt: Option<String>,
+    turn: TurnContext,
     conversation_id: Uuid,
     event_tx: mpsc::Sender<AgentEvent>,
     mut cancellation: watch::Receiver<bool>,
     mut disposal: watch::Receiver<bool>,
 ) -> Result<Uuid, AgentError> {
     config.validate()?;
-    // A prompt chosen for this conversation wins; the configured persona is
-    // the fallback, so selecting one actually changes how the agent behaves.
-    // The configured override is appended to whichever of the two applies.
+    // The prompt, the model and the persona all come from the one snapshot the
+    // manager took before this turn started — see `TurnContext`. Re-reading
+    // them here would let a switch land mid-turn and leave the request built
+    // from a prompt and a model chosen on different sides of it. The
+    // configured override is still appended, which is the one composition this
+    // loop performs itself.
     let system_prompt = compose_system_prompt(
-        chat.system_prompt(conversation_id).await.or(persona_prompt),
+        turn.system_prompt.clone(),
         config.system_prompt_override.as_deref(),
     );
-    let model = chat
-        .model(conversation_id)
-        .await
-        .ok_or(bc_ai_chat::ChatError::ConversationNotFound(conversation_id))?;
+    let model = turn.origin.model.clone();
     // Advertise only the tools that could actually run: granted by the
     // application's MCP permissions and not denied by the assistant's own
     // policy. Offering the rest buys a refused round, and offering an empty
@@ -482,7 +492,10 @@ pub async fn run_turn(
             timeout_ms: config.request_timeout_ms,
         };
 
-        let assistant_message = ChatMessage::assistant_pending();
+        // Stamped with what this turn is actually running under, so the
+        // transcript can say which model produced which answer once the
+        // conversation's own selection is free to change underneath it.
+        let assistant_message = ChatMessage::assistant_pending().with_origin(turn.origin.clone());
         let message_id = assistant_message.id;
         chat.try_push_message(conversation_id, assistant_message)
             .await?;
@@ -783,11 +796,18 @@ mod tests {
             }
         }
 
+        /// Run a turn with `base_prompt` already resolved.
+        ///
+        /// Which prompt that *is* — a conversation's own, a persona's, or
+        /// none — is `AgentManager::resolve_turn_context`'s decision and is
+        /// pinned over there. From here it is simply the base the loop
+        /// composes the configured override onto, which is the one prompt
+        /// rule this file still owns.
         async fn run(
             &self,
             provider: &dyn AiProvider,
             config: &AgentConfig,
-            persona_prompt: Option<String>,
+            base_prompt: Option<String>,
         ) -> Result<Uuid, AgentError> {
             let disposal = self
                 .chat
@@ -804,13 +824,34 @@ mod tests {
                 &self.plans,
                 &self.links,
                 config,
-                persona_prompt,
+                TurnContext {
+                    origin: bc_ai_chat::MessageOrigin {
+                        provider: "ollama".into(),
+                        model: "mock".into(),
+                        persona_id: base_prompt.as_ref().map(|_| "default".into()),
+                        missing_persona_id: None,
+                        missing_provider_id: None,
+                    },
+                    system_prompt: base_prompt,
+                },
                 self.conversation_id,
                 event_tx,
                 cancellation_rx,
                 disposal,
             )
             .await
+        }
+
+        /// Every message in the transcript, as `(role, origin)`.
+        async fn origins(&self) -> Vec<(Role, Option<bc_ai_chat::MessageOrigin>)> {
+            self.chat
+                .get_conversation(self.conversation_id)
+                .await
+                .expect("conversation")
+                .messages
+                .iter()
+                .map(|message| (message.message.role.clone(), message.origin.clone()))
+                .collect()
         }
 
         async fn tool_results(&self) -> Vec<(String, bool)> {
@@ -1365,16 +1406,23 @@ mod tests {
         );
     }
 
+    /// The turn runs on the snapshot it was handed, not on a re-read.
+    ///
+    /// This is what makes a mid-conversation switch safe to refuse rather than
+    /// have to coordinate: the conversation's stored model and prompt can be
+    /// anything at all, and the request is still built from the `TurnContext`
+    /// resolved before the turn started. Reading them back here is how a turn
+    /// could end up asking one model with another model's prompt.
     #[tokio::test]
-    async fn a_conversation_prompt_outranks_the_persona_prompt() {
+    async fn the_request_is_built_from_the_turn_context_not_from_the_conversation() {
         let harness = Harness::new(AiPermissions::default()).await;
         let conversation_id = harness
             .chat
             .try_create_conversation(
                 "ollama".into(),
-                "mock".into(),
+                "stored-model".into(),
                 None,
-                Some("Conversation prompt.".into()),
+                Some("Stored conversation prompt.".into()),
             )
             .await
             .expect("conversation")
@@ -1393,6 +1441,13 @@ mod tests {
             .expect("disposal subscription");
         let (_cancellation_tx, cancellation_rx) = watch::channel(false);
         let (event_tx, _event_rx) = mpsc::channel(256);
+        let origin = bc_ai_chat::MessageOrigin {
+            provider: "resolved-profile".into(),
+            model: "resolved-model".into(),
+            persona_id: Some("dns-expert".into()),
+            missing_persona_id: Some("custom-gone".into()),
+            missing_provider_id: None,
+        };
 
         run_turn(
             &provider,
@@ -1402,7 +1457,10 @@ mod tests {
             &harness.plans,
             &harness.links,
             &config(2),
-            Some("You are the persona.".into()),
+            TurnContext {
+                origin: origin.clone(),
+                system_prompt: Some("Resolved prompt.".into()),
+            },
             conversation_id,
             event_tx,
             cancellation_rx,
@@ -1417,7 +1475,78 @@ mod tests {
             .expect("request")
             .clone()
             .expect("the provider was called");
-        assert_eq!(request.system.as_deref(), Some("Conversation prompt."));
+        assert_eq!(request.system.as_deref(), Some("Resolved prompt."));
+        assert_eq!(request.model, "resolved-model");
+
+        // And the assistant message carries that same snapshot, so the
+        // transcript credits the answer to the model that produced it —
+        // including the persona substitution the turn had to make.
+        let assistant = harness
+            .chat
+            .get_conversation(conversation_id)
+            .await
+            .expect("conversation")
+            .messages
+            .into_iter()
+            .find(|message| message.message.role == Role::Assistant)
+            .expect("an assistant message");
+        assert_eq!(assistant.origin, Some(origin));
+    }
+
+    /// Every round of a multi-round turn is attributed, and deliberately only
+    /// the assistant messages are — see `tool_result_message`.
+    ///
+    /// One assistant message per round is what makes this worth pinning: an
+    /// origin stamped once at the start of the turn and then dropped would
+    /// leave the later rounds of a long turn unattributed, which is the half
+    /// of a transcript a reader is most likely to be reading.
+    #[tokio::test]
+    async fn every_assistant_message_of_a_multi_round_turn_is_attributed() {
+        let harness = Harness::new(AiPermissions {
+            mode: AiPermissionMode::Ask,
+            tools: BTreeMap::new(),
+        })
+        .await;
+        let provider = ToolLoopProvider::new(READ_TOOL);
+        let rounds = 3;
+
+        let error = harness
+            .run(
+                &provider,
+                &config(rounds),
+                Some("You are the persona.".into()),
+            )
+            .await
+            .expect_err("a model that only calls tools must hit the round limit");
+        assert!(matches!(error, AgentError::ToolRoundLimit(limit) if limit == rounds));
+
+        let origins = harness.origins().await;
+        let attributed = origins
+            .iter()
+            .filter(|(role, _)| *role == Role::Assistant)
+            .count();
+        assert_eq!(
+            attributed, rounds as usize,
+            "one assistant message per round: {origins:#?}"
+        );
+        for (role, origin) in origins {
+            match role {
+                // The seeded user message predates the turn, so it carries
+                // nothing: the commands layer is what stamps a user message.
+                Role::User => assert!(origin.is_none(), "seeded message"),
+                Role::Assistant => {
+                    let origin = origin.expect("every assistant message is attributed");
+                    assert_eq!(origin.model, "mock");
+                    assert_eq!(origin.provider, "ollama");
+                    assert_eq!(origin.persona_id.as_deref(), Some("default"));
+                }
+                Role::Tool => assert!(
+                    origin.is_none(),
+                    "a tool result is a record of a call, not something a model said"
+                ),
+                Role::System => {}
+            }
+        }
     }
 
     /// The defect these fields exist to fix: `top_p` was stored, validated,

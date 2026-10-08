@@ -83,6 +83,8 @@ test("every AI method throws a clear error off desktop", async () => {
     () => TauriClient.aiGetConversation("c1"),
     () => TauriClient.aiDeleteConversation("c1"),
     () => TauriClient.aiSetConversationTitle("c1", "t"),
+    () => TauriClient.aiSetConversationPersona("c1", "dns-expert"),
+    () => TauriClient.aiSetConversationProvider("c1", "openai-main", "gpt-4o"),
     () => TauriClient.aiSendMessage("c1", "hi", "openai-main"),
     () => TauriClient.aiApproveToolCall("c1", "tc1"),
     () => TauriClient.aiCancelGeneration("c1"),
@@ -107,8 +109,8 @@ test("every AI method throws a clear error off desktop", async () => {
     () => TauriClient.aiDeletePersona("p1"),
     () => TauriClient.onAiEvent(() => {}),
   ];
-  // Twenty-five commands plus the event subscription.
-  assert.equal(attempts.length, 26);
+  // Twenty-seven commands plus the event subscription.
+  assert.equal(attempts.length, 28);
   for (const attempt of attempts) {
     await assert.rejects(attempt, { message: AI_DESKTOP_ONLY });
   }
@@ -153,6 +155,11 @@ test("every chat and provider command uses the camelCase Tauri contract", async 
       case "ai_set_conversation_title":
       case "ai_cancel_generation":
         return true;
+      // Both switches answer with the *stored* metadata, so a caller reads
+      // what was kept rather than assuming its own input was taken verbatim.
+      case "ai_set_conversation_persona":
+      case "ai_set_conversation_provider":
+        return { id: "c1", title: "New", provider: "openai-main" };
       case "ai_send_message":
         return "user-msg-1";
       case "ai_list_presets":
@@ -208,6 +215,9 @@ test("every chat and provider command uses the camelCase Tauri contract", async 
   await TauriClient.aiGetConversation("c1");
   await TauriClient.aiDeleteConversation("c1");
   await TauriClient.aiSetConversationTitle("c1", "Renamed");
+  await TauriClient.aiSetConversationPersona("c1", "security-auditor");
+  await TauriClient.aiSetConversationPersona("c1", null);
+  await TauriClient.aiSetConversationProvider("c1", "openai-main", "gpt-4o");
   await TauriClient.aiSendMessage("c1", "hello", "openai-main");
   await TauriClient.aiSendMessage("c1", "hello again");
   await TauriClient.aiApproveToolCall("c1", "tc1");
@@ -233,6 +243,9 @@ test("every chat and provider command uses the camelCase Tauri contract", async 
       "ai_get_conversation",
       "ai_delete_conversation",
       "ai_set_conversation_title",
+      "ai_set_conversation_persona",
+      "ai_set_conversation_persona",
+      "ai_set_conversation_provider",
       "ai_send_message",
       "ai_send_message",
       "ai_approve_tool_call",
@@ -281,6 +294,25 @@ test("every chat and provider command uses the camelCase Tauri contract", async 
   assert.deepEqual(byCommand("ai_set_conversation_title")[0].payload, {
     id: "c1",
     title: "Renamed",
+  });
+  // `personaId` is sent as an explicit null for "use the configured
+  // persona", matching the `Option<String>` parameter rather than relying on
+  // an absent key — an absent key would be indistinguishable from a caller
+  // that forgot the argument.
+  assert.deepEqual(byCommand("ai_set_conversation_persona")[0].payload, {
+    id: "c1",
+    personaId: "security-auditor",
+  });
+  assert.deepEqual(byCommand("ai_set_conversation_persona")[1].payload, {
+    id: "c1",
+    personaId: null,
+  });
+  // The provider and the model travel together, in one command, because a
+  // model name only means anything to the endpoint that serves it.
+  assert.deepEqual(byCommand("ai_set_conversation_provider")[0].payload, {
+    id: "c1",
+    provider: "openai-main",
+    model: "gpt-4o",
   });
   assert.deepEqual(byCommand("ai_get_preset")[0].payload, { id: "p1" });
   assert.deepEqual(byCommand("ai_export_conversation")[0].payload, {

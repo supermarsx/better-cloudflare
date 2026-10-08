@@ -336,6 +336,32 @@ export function useAiConversations() {
     [available, refresh],
   );
 
+  /**
+   * Point a conversation at a persona, or back at the configured one.
+   *
+   * Rejects on refusal, so the caller can show the backend's own message: a
+   * switch is refused outright while a turn is running, and a persona that was
+   * deleted since the list was read no longer exists to be chosen.
+   */
+  const setPersona = useCallback(
+    async (id: string, personaId: string | null) => {
+      if (!available) return;
+      await TauriClient.aiSetConversationPersona(id, personaId);
+      await refresh();
+    },
+    [available, refresh],
+  );
+
+  /** Point a conversation at a provider profile and a model, together. */
+  const setProvider = useCallback(
+    async (id: string, provider: string, model: string) => {
+      if (!available) return;
+      await TauriClient.aiSetConversationProvider(id, provider, model);
+      await refresh();
+    },
+    [available, refresh],
+  );
+
   return {
     conversations,
     loading,
@@ -344,6 +370,8 @@ export function useAiConversations() {
     create,
     remove,
     setTitle,
+    setPersona,
+    setProvider,
   };
 }
 

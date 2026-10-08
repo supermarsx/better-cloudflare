@@ -67,6 +67,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useI18n } from "@/hooks/use-i18n";
+import { aiProviderLabel } from "@/lib/ai/origin";
 import { cn } from "@/lib/utils";
 import {
   useEffect,
@@ -263,13 +264,9 @@ export function AiConversationList({
   const canCreate =
     !creating && provider !== null && model.trim().length > 0 && !loading;
 
-  /** The profile's label, or the bare id when it no longer resolves. */
-  const providerLabel = (id: string): string =>
-    configuredProviders.find((entry) => entry.id === id)?.label ?? id;
-
   /** What a tab's hover text says, since the strip only has room for a title. */
   const tabDetail = (meta: ConversationMeta): string =>
-    `${providerLabel(meta.provider)} · ${meta.model} · ${t(
+    `${aiProviderLabel(meta.provider, configuredProviders)} · ${meta.model} · ${t(
       "{{count}} messages",
       {
         count: meta.messageCount,

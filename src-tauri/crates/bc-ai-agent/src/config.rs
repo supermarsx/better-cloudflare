@@ -11,6 +11,12 @@ use crate::error::AgentError;
 
 pub const MAX_TOOL_ROUNDS: u32 = 32;
 pub const MAX_PRESET_BYTES: usize = 128;
+/// A persona id is stored in three places — this config, a conversation, and
+/// a recorded message origin — and bounded in two crates, because
+/// `bc_ai_chat` cannot call back into this one. Equality is asserted rather
+/// than assumed: an id that fits the selection but not the conversation would
+/// be a setting that validates and then cannot be stored against a chat.
+const _: () = assert!(MAX_PRESET_BYTES == bc_ai_chat::limits::MAX_PERSONA_ID_BYTES);
 pub const AGENT_EVENT_CHANNEL_CAPACITY: usize = 128;
 /// Aliases, not copies: the number the settings form enforces is literally the
 /// number the request validator enforces, so the two cannot drift. The
@@ -375,9 +381,14 @@ impl Default for AgentConfig {
 }
 
 /// Whether a persona id is shaped like one this backend issues or recognises.
+///
+/// The character rule itself lives in `bc_ai_chat`, which is the crate a
+/// conversation's own persona id is validated in; keeping one definition is
+/// what stops a selection and a conversation disagreeing about what an id may
+/// contain. The length is still reported separately here, so the error names
+/// the bound rather than lumping both failures together.
 fn is_valid_persona_id(id: &str) -> bool {
-    id.chars()
-        .all(|value| value.is_ascii_alphanumeric() || value == '-' || value == '_')
+    bc_ai_chat::limits::is_well_formed_persona_id(id)
 }
 
 impl AgentConfig {
