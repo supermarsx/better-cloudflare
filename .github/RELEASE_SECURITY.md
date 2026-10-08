@@ -298,13 +298,29 @@ and are expected to survive a scan unsuppressed.
 
 #### Value-scoped entry
 
-One entry is scoped to a literal value rather than to a path. The regex is
-anchored to the whole secret, so it suppresses exactly one 44-byte string and
+Four entries are scoped to a literal value rather than to a path. Every regex
+is anchored to the whole secret, so each suppresses exactly one string and
 nothing that merely contains it. No rule is disabled and no file is excluded.
 
-| Value                                            | Class        | Rationale                                                                                                                                                                                                                                                                                                                                                                                   |
-| ------------------------------------------------ | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `^mQINBGRhbmRvbUtleURhdGFGb3JUZXN0aW5nT25seQ==$` | test fixture | The OPENPGPKEY row of the `(record type, sample content)` table that drives the DNS record-type validation tests in `src-tauri/crates/bc-dns-tools/src/import.rs`, inside that file's `#[cfg(test)] mod tests`. Not a credential: it decodes to the OpenPGP public-key packet header `99 02 0d 04` followed by the ASCII text `dandomKeyDataForTestingOnly`, so it carries no key material. |
+Three of the four are the planted credentials in
+`test/diagnosticsReport.test.ts` — the test whose whole purpose is to prove the
+diagnostics report never publishes one. Their values say so: one is literally
+`mcp-bearer-token-MUST-NEVER-BE-PUBLISHED`. The test asserts over the entire
+serialised payload that none of them appears, so deleting the fixtures would
+delete the only evidence that a report is safe to paste into a public issue.
+
+The dev-server identity fixture is tabled twice, as the base64 literal and as
+its decoded form, because Gitleaks scans decoded content as well as the source
+text: one fixture produces two findings, and both have to be named. Verified
+with Gitleaks 8.30.1 against the full history: the scan reports exactly these
+findings, and the four regexes clear all of them while every rule stays live.
+
+| Value                                            | Class        | Rationale                                                                                                                                                                                                                                                                                                                                                                                       |
+| ------------------------------------------------ | ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `^mQINBGRhbmRvbUtleURhdGFGb3JUZXN0aW5nT25seQ==$` | test fixture | The OPENPGPKEY row of the `(record type, sample content)` table that drives the DNS record-type validation tests in `src-tauri/crates/bc-dns-tools/src/import.rs`, inside that file's `#[cfg(test)] mod tests`. Not a credential: it decodes to the OpenPGP public-key packet header `99 02 0d 04` followed by the ASCII text `dandomKeyDataForTestingOnly`, so it carries no key material.     |
+| `^Zm9vYmFyYmF6cXV1eHdvbWJhdHNxdWlkb2N0bzEyMzQ1$` | test fixture | The dev-server identity fixture in `test/diagnosticsReport.test.ts`. Not a credential: 43 characters of base64url standing in for the per-launch token from `src/lib/dev-identity.ts`, present so the test can assert the report excludes a value no credential pattern can recognise. Suppressed, not rewritten: `gitleaks git` attributes the finding to the commit that introduced the line. |
+| `^foobarbazquuxwombatsquidocto12345$`            | test fixture | The same fixture as the row above, decoded. Gitleaks scans base64-decoded content as well as the literal, so one fixture yields two findings and both must be named. Nonsense words by construction.                                                                                                                                                                                            |
+| `^mcp-bearer-token-MUST-NEVER-BE-PUBLISHED$`     | test fixture | The MCP bearer-token fixture in `test/diagnosticsReport.test.ts`, planted in a field the report builder never reads so that structure, not filtering, is what removes it. The value names its own purpose. Suppressed, not rewritten, for the same history reason.                                                                                                                              |
 
 The entry deliberately carries no `paths` filter, and the validator refuses one,
 even though scoping it to `import.rs` reads as narrower. A `paths` filter in a

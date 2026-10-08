@@ -263,8 +263,28 @@ paths = [
 #
 # The regex is anchored to the whole secret, so it suppresses this exact 44-byte
 # string and nothing that merely contains it.
+# The three further literals are the planted credentials in
+# `test/diagnosticsReport.test.ts`, the test that proves the diagnostics report
+# never publishes one. Their values say so: `mcpBearerToken` is literally
+# `mcp-bearer-token-MUST-NEVER-BE-PUBLISHED`. The test asserts over the whole
+# serialised payload that none of them appears, so removing them would remove
+# the only evidence that the report is safe to paste in public.
+#
+# `Zm9vYmFyYmF6cXV1eHdvbWJhdHNxdWlkb2N0bzEyMzQ1` is the dev-server identity
+# fixture, and `foobarbazquuxwombatsquidocto12345` is the same string decoded:
+# Gitleaks scans base64-decoded content as well as the literal, so one fixture
+# produces two findings and both have to be named. Verified with Gitleaks
+# 8.30.1 locally: the git scan reports exactly three findings, and these three
+# regexes clear all of them while every other rule stays live.
+#
+# Suppressed rather than rewritten, for the same reason as the fixture above:
+# `gitleaks git` attributes a finding to the commit that introduced the line, so
+# editing the fixtures today cannot clear findings already in history.
 [[allowlists]]
-description = "DNS record-type test fixture in bc-dns-tools, pinned to one exact literal. The value is a fake OpenPGP packet whose payload is the ASCII text \"dandomKeyDataForTestingOnly\", carried in git history since 5972d00."
+description = "DNS record-type test fixture in bc-dns-tools, plus the three planted fixtures in test/diagnosticsReport.test.ts, each pinned to one exact literal. None is a credential: the OpenPGP packet's payload is the ASCII text \"dandomKeyDataForTestingOnly\", and the diagnostics fixtures exist so a test can prove the report never publishes them."
 regexes = [
     '''^mQINBGRhbmRvbUtleURhdGFGb3JUZXN0aW5nT25seQ==$''',
+    '''^Zm9vYmFyYmF6cXV1eHdvbWJhdHNxdWlkb2N0bzEyMzQ1$''',
+    '''^foobarbazquuxwombatsquidocto12345$''',
+    '''^mcp-bearer-token-MUST-NEVER-BE-PUBLISHED$''',
 ]

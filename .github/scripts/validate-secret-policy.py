@@ -78,21 +78,38 @@ APPROVED_ALLOWLIST_PATHS = {
     r"^\.github/gitleaks\.toml$",
 }
 
-# The single reviewed value-scoped global allowlist. It suppresses one exact
-# literal in one exact file: the OPENPGPKEY fixture in the bc-dns-tools record
-# type table, which is a fake OpenPGP packet carrying the ASCII text
-# "dandomKeyDataForTestingOnly". It is allowlisted rather than rewritten because
-# the history scan attributes the finding to the commit that introduced the line,
-# so editing the fixture today cannot clear it.
+# The reviewed value-scoped global allowlist. Every entry suppresses one exact
+# literal, and every one is a test fixture rather than a credential:
 #
+#   * The OPENPGPKEY fixture in the bc-dns-tools record type table, a fake
+#     OpenPGP packet carrying the ASCII text "dandomKeyDataForTestingOnly".
+#   * Three planted values in `test/diagnosticsReport.test.ts`, the test that
+#     proves the diagnostics report never publishes a credential. Their names
+#     say it: one of them is literally
+#     "mcp-bearer-token-MUST-NEVER-BE-PUBLISHED". The test asserts over the
+#     whole serialised payload that none appears, so deleting them would delete
+#     the evidence that the report is safe to paste in public.
 #
-# It carries no `paths` filter and must never gain one. A `paths` filter in a
+# The dev-identity fixture appears twice, as the base64 literal and as its
+# decoded form, because Gitleaks scans decoded content as well as the source
+# text: one fixture, two findings, both named.
+#
+# Each is allowlisted rather than rewritten because the history scan attributes
+# a finding to the commit that introduced the line, so editing a fixture today
+# cannot clear it.
+#
+# None carries a `paths` filter and none may gain one. A `paths` filter in a
 # global allowlist is a file filter: a `gitleaks dir` scan drops the whole file
-# before any rule runs, so scoping this entry to import.rs would stop that file
+# before any rule runs, so scoping an entry to its file would stop that file
 # being scanned at all rather than narrowing what is hidden. `condition = "AND"`
 # does not prevent that either, so neither key is accepted here.
 APPROVED_VALUE_ALLOWLIST = {
-    "regexes": [r"^mQINBGRhbmRvbUtleURhdGFGb3JUZXN0aW5nT25seQ==$"],
+    "regexes": [
+        r"^mQINBGRhbmRvbUtleURhdGFGb3JUZXN0aW5nT25seQ==$",
+        r"^Zm9vYmFyYmF6cXV1eHdvbWJhdHNxdWlkb2N0bzEyMzQ1$",
+        r"^foobarbazquuxwombatsquidocto12345$",
+        r"^mcp-bearer-token-MUST-NEVER-BE-PUBLISHED$",
+    ],
 }
 
 # Only this rule may carry a value-shaped allowlist, and only for reserved
