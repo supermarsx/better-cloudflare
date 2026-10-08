@@ -9,7 +9,9 @@ description: Curated documentation for Better Cloudflare, a Cloudflare DNS conso
 
 Curated documentation for [Better Cloudflare](https://github.com/supermarsx/better-cloudflare) — a Cloudflare DNS console shipped as a Tauri v2 desktop application. Start at the [readme](https://github.com/supermarsx/better-cloudflare/blob/main/readme.md) for an overview and installation.
 
-> **This is experimental software.** Better Cloudflare is under active development and is not stable. Expect breaking changes to behaviour, storage formats and preferences between releases, and expect bugs. It writes to live DNS, so use it at your own risk: keep your own backups, and verify what it changed in the Cloudflare dashboard. It is not recommended for production-critical DNS management unless you check its results yourself. The software is provided as-is, without warranty — see the [license](https://github.com/supermarsx/better-cloudflare/blob/main/license.md). What does and does not work today is listed under [current status](#current-status-at-a-glance).
+> **This is a tool for advanced users.** Better Cloudflare writes to live DNS and assumes you know what a change will do before you make it. Bulk edits apply to the whole selection, so keep your own backups and verify what it changed in the Cloudflare dashboard. Don't point it at production-critical DNS unless you check its results yourself. The software is provided as-is, without warranty — see the [license](https://github.com/supermarsx/better-cloudflare/blob/main/license.md).
+>
+> **The AI assistant is the one experimental part.** It is the newest and least settled area: expect bugs there, and expect its settings and saved conversations to change shape between releases. What does and does not work today is listed under [current status](#current-status-at-a-glance).
 
 Generated API reference is written separately to `docs/api/`, so `npm run docs` never overwrites these guides.
 
@@ -18,7 +20,7 @@ Generated API reference is written separately to `docs/api/`, so `npm run docs` 
 | Guide                                  | What it covers                                                  |
 | -------------------------------------- | --------------------------------------------------------------- |
 | **[Screens and features](screens.md)** | All 26 screens with screenshots and what you do on each         |
-| [Architecture](architecture.md)        | The desktop shell, the 17 Rust crates, key frontend modules, CI |
+| [Architecture](architecture.md)        | The desktop shell, the 19 Rust crates, key frontend modules, CI |
 | [Security model](security.md)          | Encryption, keyring storage, and the current limits             |
 
 ## Reference
@@ -45,7 +47,7 @@ Every image on this site uses synthetic demo data — a fictional "Harborline Fr
 These are the things most likely to be assumed incorrectly:
 
 - **Passkey login and registration do not work.** Both fail closed by design; only listing and deleting legacy credentials works, for recovery.
-- **There is no AI assistant in the UI.** Four Rust crates and a React hook exist as groundwork, but nothing in the interface imports the hook.
+- **The AI assistant is experimental.** It ships and works — as a tab, a side panel or a floating bubble — but it is the newest and least settled part of the app, so expect bugs and expect its settings and saved conversations to change shape between releases. It can act only through tools you grant one at a time; with none granted it will talk and do nothing.
 - **Biometrics are macOS Touch ID only.** Windows Hello and Linux are not implemented.
 - **The app does not update itself**, and there is no code signing or macOS notarization. Package-manager channels do not exist. It does check whether a newer release exists and link to it, which is a setting you can turn off.
 - **The desktop app is the only shipped target.** A browser-context storage path still exists in the source — it backs the frontend dev server and the jsdom tests — and it never persists credentials.

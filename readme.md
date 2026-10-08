@@ -18,14 +18,21 @@ ours, because there isn't one.
 
 > ### Please read this first
 >
-> **This is experimental software, and it edits live DNS.**
+> **This is a tool for advanced users, and it edits live DNS.**
 >
-> It is under active development and is not stable. Expect bugs, and expect
-> settings and saved data to change shape between releases. Keep your own
-> backups, and check what it changed in the Cloudflare dashboard afterwards.
+> It assumes you already know what a change will do before you make it. Bulk
+> edits apply to everything in the selection, and a selection you got wrong is
+> applied just as faithfully as one you got right. Keep your own backups, and
+> check what it changed in the Cloudflare dashboard afterwards.
 >
-> Don't rely on it for DNS you can't afford to break unless you verify its
-> work yourself. No warranty — see [license.md](license.md).
+> Don't point it at DNS you can't afford to break unless you verify its work
+> yourself. No warranty — see [license.md](license.md).
+>
+> **The AI assistant is experimental.** It is the newest part of the app and
+> the least settled: expect bugs there, and expect its settings and saved
+> conversations to change shape between releases. It can only act through
+> tools you grant it one at a time, so grant the ones that write with the same
+> care you'd apply to making those edits yourself.
 
 ![The DNS records table for a zone, showing per-record type badges, inline content, comments, TTL and proxy toggles, with workspace tabs across the top](docs/screenshots/dark/dns-records-table.png)
 
