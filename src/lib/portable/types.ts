@@ -26,14 +26,20 @@
  * dropped instead of being granted at `admin` risk. There is no import-only
  * path into the enabled set.
  *
- * **An import cannot turn a feature on.** Feature switches
- * (`passkeysEnabled`, `registryMonitoringEnabled`, `cloudflareLatencyEnabled`)
- * are a security posture the user set on *this* machine; a file from elsewhere
- * re-opening the passkey ceremony path someone deliberately shut is the hazard
- * `BrowserPreferenceData` already names in its own comment. They are not
- * withheld outright -- that would make exporting a configured machine useless
- * -- but they are separated into {@link PortableSettingsDiff.optIn}, excluded
- * from "apply all", and applied only if the user ticks each one.
+ * **An import cannot move a feature switch in its dangerous direction.** Which
+ * direction that is differs per switch, and treating them alike gets half of
+ * them wrong. Turning registry monitoring or the latency probe *on* restarts
+ * outbound work someone deliberately stopped, so that direction needs a
+ * deliberate tick and is excluded from "apply all"; turning them off only
+ * stops requests and is safe. `passkeysEnabled` is the mirror image: turning
+ * it *on* merely adds a sign-in route and can strand nobody, while turning it
+ * *off* removes one -- and because a passkey here releases the API key from
+ * the OS vault without that key's password, it is a second *route* rather than
+ * a second factor, and may be the only route a user still remembers. The
+ * settings screen therefore refuses to turn it off without proving that key's
+ * password in the same dialog. An import has no such proof and a tick is not
+ * one, so that direction is withheld outright. See
+ * {@link PORTABLE_FEATURE_SWITCH_POLICY}.
  */
 import type { BrowserPreferenceData } from "@/lib/storage/storage-util";
 
@@ -191,10 +197,19 @@ export interface PortableSettingsDiff {
   /** Applied by "apply all". */
   changed: PortableSettingsDiffRow[];
   /**
-   * Feature switches. Excluded from "apply all" and applied only per-row, for
-   * the reason this module's header gives.
+   * Feature switches moving in the direction that needs a deliberate choice.
+   * Excluded from "apply all" and applied only per row.
    */
   optIn: PortableSettingsDiffRow[];
+  /**
+   * Changes an import is not allowed to make at all, with the reason.
+   *
+   * Distinct from {@link optIn} because a tick cannot substitute for every
+   * guard. Turning passkeys *off* is the case: the settings screen refuses
+   * that until the password for the signed-in key has been proven in the same
+   * dialog, and ticking a row in an import preview is not that proof.
+   */
+  withheld: PortableWithheldRow[];
   /** Present in both and equal. Counted rather than listed. */
   unchangedCount: number;
   /**
@@ -207,14 +222,20 @@ export interface PortableSettingsDiff {
   droppedKeys: string[];
 }
 
+/** Why a change was refused outright, as a tag the renderer words. */
+export type PortableWithheldReason = "needs-password-proof";
+
+export interface PortableWithheldRow extends PortableSettingsDiffRow {
+  reason: PortableWithheldReason;
+}
+
 /**
  * The preference keys an import must never write directly.
  *
- * `mcpEnabledTools` is here because granting a tool is gated, and the gate
- * lives in the permissions layer rather than in a preference write -- an
- * import routes it through `applyPortableToolPermissions` instead. The three
- * feature switches are here because turning a feature on is the user's call on
- * the machine it affects.
+ * Granting a tool is gated, and the gate lives in the permissions layer rather
+ * than in a preference write -- an import routes it through
+ * `applyPortableToolPermissions` instead, so these four never appear in a
+ * diff row at all.
  *
  * Declared `satisfies readonly (keyof BrowserPreferenceData)[]` so a rename in
  * storage breaks this list at compile time rather than quietly emptying it.
@@ -224,17 +245,45 @@ export const PORTABLE_GATED_PREFERENCE_KEYS = [
   "mcpPendingHighRiskTools",
   "mcpRemovedImportedToolIds",
   "mcpPermissionPolicyVersion",
-  "passkeysEnabled",
-  "registryMonitoringEnabled",
-  "cloudflareLatencyEnabled",
 ] as const satisfies readonly (keyof BrowserPreferenceData)[];
 
-/** The subset of the above the user may still opt into, one row at a time. */
-export const PORTABLE_OPT_IN_PREFERENCE_KEYS = [
-  "passkeysEnabled",
-  "registryMonitoringEnabled",
-  "cloudflareLatencyEnabled",
-] as const satisfies readonly (keyof BrowserPreferenceData)[];
+/**
+ * How an import may move each feature switch, and in which direction.
+ *
+ * The direction matters, and getting it wrong in either place is a real
+ * hazard, so it is stated per key rather than applied uniformly.
+ *
+ * `enabling-needs-opt-in` — turning the feature *on* restarts outbound work
+ * someone deliberately stopped, so it needs a deliberate tick. Turning it off
+ * only stops requests and is safe to apply with everything else.
+ *
+ * `disabling-withheld` — turning the feature *off* removes something the user
+ * may depend on, and no tick substitutes for the guard the UI applies. This is
+ * `passkeysEnabled`: a passkey here is not a second factor but a second
+ * *route*, because it releases the API key from the OS vault without that
+ * key's password. For someone who enrolled one and has relied on it since, it
+ * can be the only route they still remember. The settings screen therefore
+ * refuses to turn it off until `decryptApiKey` has proven the password for the
+ * signed-in key in the same dialog — and an import has no such proof, so a
+ * profile carrying `passkeysEnabled: false` would route straight around the
+ * lockout defence. Turning passkeys *on* is the safe direction: it only adds a
+ * route and can strand nobody.
+ */
+export type PortableSwitchPolicy =
+  "enabling-needs-opt-in" | "disabling-withheld";
+
+export const PORTABLE_FEATURE_SWITCH_POLICY = {
+  passkeysEnabled: "disabling-withheld",
+  registryMonitoringEnabled: "enabling-needs-opt-in",
+  cloudflareLatencyEnabled: "enabling-needs-opt-in",
+} as const satisfies Partial<
+  Record<keyof BrowserPreferenceData, PortableSwitchPolicy>
+>;
+
+/** The feature switches the policy above governs. */
+export const PORTABLE_FEATURE_SWITCH_KEYS = Object.keys(
+  PORTABLE_FEATURE_SWITCH_POLICY,
+) as readonly (keyof typeof PORTABLE_FEATURE_SWITCH_POLICY)[];
 
 /**
  * Preferences that describe *this* machine or *this* moment and mean nothing

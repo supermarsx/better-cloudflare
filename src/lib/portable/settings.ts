@@ -13,8 +13,9 @@
  *
  * Nothing here writes anything. {@link diffPortableSettings} is the only
  * sanctioned path into a preference write: `changed` is what "apply all"
- * applies, `optIn` is what the user must tick row by row, and a key in
- * `PORTABLE_GATED_PREFERENCE_KEYS` never reaches either.
+ * applies, `optIn` is what the user must tick row by row, `withheld` is what
+ * an import may not do at all, and a key in
+ * `PORTABLE_GATED_PREFERENCE_KEYS` reaches none of the three.
  */
 import {
   sanitizeBrowserPreferencesValue,
@@ -31,20 +32,18 @@ import {
   type PortableEnvelopeOptions,
 } from "./envelope";
 import {
+  PORTABLE_FEATURE_SWITCH_POLICY,
   PORTABLE_GATED_PREFERENCE_KEYS,
   PORTABLE_MACHINE_LOCAL_PREFERENCE_KEYS,
-  PORTABLE_OPT_IN_PREFERENCE_KEYS,
   type PortableParse,
   type PortableSettings,
   type PortableSettingsDiff,
   type PortableSettingsDiffRow,
   type PortableSettingsEnvelope,
+  type PortableWithheldRow,
 } from "./types";
 
 const GATED_KEYS: ReadonlySet<string> = new Set(PORTABLE_GATED_PREFERENCE_KEYS);
-const OPT_IN_KEYS: ReadonlySet<string> = new Set(
-  PORTABLE_OPT_IN_PREFERENCE_KEYS,
-);
 const MACHINE_LOCAL_KEYS: ReadonlySet<string> = new Set(
   PORTABLE_MACHINE_LOCAL_PREFERENCE_KEYS,
 );
@@ -211,23 +210,44 @@ export function diffPortableSettings(
   try {
     projection = projectPortablePreferences(incoming.preferences);
   } catch {
-    return { changed: [], optIn: [], unchangedCount: 0, droppedKeys: [] };
+    return {
+      changed: [],
+      optIn: [],
+      withheld: [],
+      unchangedCount: 0,
+      droppedKeys: [],
+    };
   }
 
   const changed: PortableSettingsDiffRow[] = [];
   const optIn: PortableSettingsDiffRow[] = [];
+  const withheld: PortableWithheldRow[] = [];
   let unchangedCount = 0;
 
   for (const [key, value] of Object.entries(projection.preferences)) {
     const typedKey = key as keyof BrowserPreferenceData;
-    // `mcpEnabledTools` and the other permission preferences are gated without
-    // an opt-in row: granting a tool is decided by
-    // `applyPortableToolPermissions`, and a preference write is precisely the
-    // path around that gate.
-    if (GATED_KEYS.has(key) && !OPT_IN_KEYS.has(key)) continue;
+    // The permission preferences are gated with no row at all: granting a tool
+    // is decided by `applyPortableToolPermissions`, and a preference write is
+    // precisely the path around that gate.
+    if (GATED_KEYS.has(key)) continue;
 
     const currentValue = current?.[typedKey];
-    if (deepEqualPreference(currentValue, value)) {
+    const policy =
+      PORTABLE_FEATURE_SWITCH_POLICY[
+        key as keyof typeof PORTABLE_FEATURE_SWITCH_POLICY
+      ];
+
+    // A feature switch is compared by *state*, not by value. Absence means on
+    // for all three, so an unset preference and an explicit `true` are the
+    // same state, and a row reading "(unset) -> on" would ask the user to
+    // approve a change that changes nothing. Everything else is compared by
+    // value, where `undefined` and `false` really are different -- see the
+    // note on `current` above.
+    const unchanged =
+      policy === undefined
+        ? deepEqualPreference(currentValue, value)
+        : (currentValue !== false) === (value !== false);
+    if (unchanged) {
       unchangedCount += 1;
       continue;
     }
@@ -236,13 +256,37 @@ export function diffPortableSettings(
       current: currentValue,
       incoming: value,
     };
-    if (OPT_IN_KEYS.has(key)) optIn.push(row);
+
+    if (policy === undefined) {
+      changed.push(row);
+      continue;
+    }
+
+    // Absent means on for every one of these, so the state is `!== false`
+    // rather than the value itself. Reading the raw value here would call an
+    // unset preference "off" and get the direction backwards exactly half the
+    // time.
+    const enablingNow = currentValue === false && value !== false;
+    const disablingNow = currentValue !== false && value === false;
+
+    if (policy === "enabling-needs-opt-in") {
+      // Turning it on restarts outbound work someone stopped; turning it off
+      // only stops requests, which needs no ceremony.
+      if (enablingNow) optIn.push(row);
+      else changed.push(row);
+      continue;
+    }
+
+    // "disabling-withheld": refused outright rather than offered as a tick,
+    // because the guard it bypasses is a password proof and a tick is not one.
+    if (disablingNow) withheld.push({ ...row, reason: "needs-password-proof" });
     else changed.push(row);
   }
 
   return {
     changed,
     optIn,
+    withheld,
     unchangedCount,
     // Bounded like a warning's subjects, for the same reason: these are key
     // names the file chose.

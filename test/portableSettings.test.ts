@@ -33,7 +33,6 @@ import {
 import {
   PORTABLE_GATED_PREFERENCE_KEYS,
   PORTABLE_MACHINE_LOCAL_PREFERENCE_KEYS,
-  PORTABLE_OPT_IN_PREFERENCE_KEYS,
   type PortableSettings,
 } from "../src/lib/portable/types";
 import type { BrowserPreferenceData } from "../src/lib/storage/storage-util";
@@ -122,27 +121,89 @@ test("a file cannot put a credential back", () => {
   assert.deepEqual(diff.droppedKeys.sort(), ["apiKeys", "currentSession"]);
 });
 
-test("an import cannot turn a feature on through apply-all", () => {
-  const diff = diffPortableSettings(
-    {},
+test("turning the outbound switches on needs a tick; turning them off does not", () => {
+  // Direction is the whole point. Restarting RDAP lookups or the latency
+  // probe is work someone deliberately stopped, so it is a question the user
+  // answers row by row. Stopping them is not a hazard and needs no ceremony.
+  const on = diffPortableSettings(
+    { registryMonitoringEnabled: false, cloudflareLatencyEnabled: false },
     incoming({
-      passkeysEnabled: true,
       registryMonitoringEnabled: true,
       cloudflareLatencyEnabled: true,
       defaultPerPage: 50,
     }),
   );
+  assert.deepEqual(keysOf(on.optIn).sort(), [
+    "cloudflareLatencyEnabled",
+    "registryMonitoringEnabled",
+  ]);
+  assert.deepEqual(keysOf(on.changed), ["defaultPerPage"]);
+  assert.deepEqual(on.withheld, []);
 
-  // The row exists -- exporting a configured machine would be useless if it
-  // did not -- but it is a question the user answers one row at a time.
-  assert.deepEqual(
-    keysOf(diff.optIn).sort(),
-    [...PORTABLE_OPT_IN_PREFERENCE_KEYS].sort(),
+  const off = diffPortableSettings(
+    {},
+    incoming({
+      registryMonitoringEnabled: false,
+      cloudflareLatencyEnabled: false,
+    }),
   );
-  assert.deepEqual(keysOf(diff.changed), ["defaultPerPage"]);
-  for (const key of PORTABLE_OPT_IN_PREFERENCE_KEYS) {
-    assert.equal(keysOf(diff.changed).includes(key), false);
-  }
+  assert.deepEqual(keysOf(off.changed).sort(), [
+    "cloudflareLatencyEnabled",
+    "registryMonitoringEnabled",
+  ]);
+  assert.deepEqual(off.optIn, []);
+});
+
+test("an import may switch passkeys on, and may never switch them off", () => {
+  // The mirror of the two above, and the reason the policy is per key. A
+  // passkey here releases the API key from the OS vault without that key's
+  // password, so it is a second *route*, not a second factor -- and it may be
+  // the only route a user still remembers. The settings screen refuses to turn
+  // it off until that key's password is proven in the same dialog; a tick in
+  // an import preview is not that proof, so the off direction is refused
+  // outright rather than offered.
+  const off = diffPortableSettings({}, incoming({ passkeysEnabled: false }));
+  assert.deepEqual(keysOf(off.changed), []);
+  assert.deepEqual(keysOf(off.optIn), []);
+  assert.deepEqual(off.withheld, [
+    {
+      key: "passkeysEnabled",
+      current: undefined,
+      incoming: false,
+      reason: "needs-password-proof",
+    },
+  ]);
+
+  // On only adds a route, so it applies with everything else.
+  const on = diffPortableSettings(
+    { passkeysEnabled: false },
+    incoming({ passkeysEnabled: true }),
+  );
+  assert.deepEqual(keysOf(on.changed), ["passkeysEnabled"]);
+  assert.deepEqual(on.withheld, []);
+});
+
+test("an unset switch counts as on, so the direction is read correctly", () => {
+  // Absence means on for all three. Reading the raw value would call an unset
+  // preference "off" and get the direction backwards half the time: an
+  // incoming `false` against an absent current is a *disable*, which is the
+  // withheld direction for passkeys and the safe one for the others.
+  const diff = diffPortableSettings(
+    {},
+    incoming({ passkeysEnabled: false, registryMonitoringEnabled: false }),
+  );
+  assert.deepEqual(keysOf(diff.withheld), ["passkeysEnabled"]);
+  assert.deepEqual(keysOf(diff.changed), ["registryMonitoringEnabled"]);
+
+  // And an incoming `true` against an absent current changes nothing at all,
+  // because both mean on.
+  const noop = diffPortableSettings(
+    {},
+    incoming({ passkeysEnabled: true, registryMonitoringEnabled: true }),
+  );
+  assert.deepEqual(keysOf(noop.changed), []);
+  assert.deepEqual(keysOf(noop.optIn), []);
+  assert.equal(noop.unchangedCount, 2);
 });
 
 test("no gated preference ever reaches the changed rows", () => {
@@ -167,11 +228,25 @@ test("no gated preference ever reaches the changed rows", () => {
   }
   // The permission preferences are not even offered: granting a tool is
   // `applyPortableToolPermissions`'s decision, and a preference write is the
-  // path around that gate.
-  assert.deepEqual(
-    keysOf(diff.optIn).sort(),
-    [...PORTABLE_OPT_IN_PREFERENCE_KEYS].sort(),
-  );
+  // path around that gate. So none of them reaches any of the three lists.
+  for (const key of PORTABLE_GATED_PREFERENCE_KEYS) {
+    for (const [name, rows] of [
+      ["optIn", diff.optIn],
+      ["withheld", diff.withheld],
+    ] as const) {
+      assert.equal(
+        keysOf(rows).includes(key),
+        false,
+        `${key} must not appear in ${name} either`,
+      );
+    }
+  }
+  // `registryMonitoringEnabled: false` and `cloudflareLatencyEnabled: false`
+  // are disables, which is their safe direction.
+  assert.deepEqual(keysOf(diff.changed).sort(), [
+    "cloudflareLatencyEnabled",
+    "registryMonitoringEnabled",
+  ]);
 });
 
 test("machine-local preferences travel in neither direction", () => {
