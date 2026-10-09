@@ -74,7 +74,9 @@
 use bc_cloudflare_api::{
     CloudflareError, CloudflareHttpError, CloudflareTransportCategory, VerificationFailureKind,
 };
-use bc_storage::{AuditActor, AuditEntry, AuditOutcome, RecordSnapshot};
+use bc_storage::{
+    AuditActor, AuditEntry, AuditOutcome, AuditTrail, EvictionCause, RecordSnapshot, RetainedRecord,
+};
 use serde_json::{json, Map, Value};
 
 use crate::cloudflare_api::{DNSRecord, DNSRecordInput};
@@ -98,7 +100,12 @@ pub const MAX_RECORD_DETAIL_BYTES: usize = 420;
 
 /// Appended to a value this module shortened, so a reader does not mistake the
 /// truncation for the value.
-const TRUNCATION_MARKER: &str = "…";
+///
+/// Public because `commands::history` has to recognise it: a shortened value
+/// cannot be compared for equality against what Cloudflare holds now, and a
+/// drift check that treated a prefix match as a match would pre-select a row
+/// and overwrite the rest of the record.
+pub const TRUNCATION_MARKER: &str = "…";
 
 /// `denied_by` for a record the local validation gate refused.
 ///
@@ -110,11 +117,105 @@ pub const DENIED_BY_RECORD_VALIDATION: &str = "record_validation";
 /// an export page size, an unsupported format — before any HTTP call.
 pub const DENIED_BY_REQUEST_BOUNDS: &str = "request_bounds";
 
+// ── Operations ──────────────────────────────────────────────────────────────
+
+/// The detail key that groups every entry one user action produced.
+///
+/// Read back by `commands::history`, which is the only reason it is a named
+/// constant: a grouping key spelled by hand in two places is a grouping key
+/// that silently stops grouping.
+pub const OPERATION_ID_KEY: &str = "operation_id";
+
+/// The detail key carrying when the snapshot that backs this entry's undo is
+/// due to be purged.
+///
+/// On the *trail* entry as well as on the stored snapshot, and that redundancy
+/// is the point. Once a snapshot leaves the store, the store cannot say why it
+/// went — and `UndoAvailability` in `src/lib/history/types.ts` asks this
+/// application to distinguish `expired` (which carries the date) from
+/// `evicted`. With the expiry recorded here, a missing snapshot whose recorded
+/// expiry has passed is `expired` and one whose expiry is still in the future
+/// was `evicted`; without it, both are a guess, and telling a user their change
+/// expired when the store actually threw it away early is a different
+/// conversation about whether their retention window is too short.
+///
+/// Absent on an entry that took no snapshot, which is exactly what makes
+/// `no-snapshot` decidable rather than assumed.
+pub const UNDO_EXPIRES_AT_KEY: &str = "undo_expires_at";
+
+/// Groups every entry produced by one user action.
+///
+/// One user action is not one command. A bulk entry is a single record of a
+/// single call, but a selection the user deletes goes through
+/// `commands::retention::retain_dns_record` once per record — thirty-seven
+/// calls, thirty-seven entries, one thing the user did and expects to undo as
+/// one. So the id can be *supplied* by the caller that knows the action's
+/// extent, and is minted here when it is not. There is no second code path for
+/// a single-record write: it is an operation of one with an id of its own.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct OperationId(String);
+
+impl OperationId {
+    /// Mint an id for one user action. A UUID v4, as the renderer's contract
+    /// (`src/lib/history/types.ts`) states.
+    pub fn mint() -> Self {
+        Self(uuid::Uuid::new_v4().to_string())
+    }
+
+    /// The id this action should be recorded under.
+    ///
+    /// A supplied id is honoured only if it is a well-formed, non-nil UUID;
+    /// anything else is replaced with a fresh one rather than refused. Two
+    /// reasons, and they point the same way:
+    ///
+    /// * **Refusing would cost the user their DNS edit.** An audit input must
+    ///   never be able to fail a write — the same rule
+    ///   [`RecordFacts::of_claim`] follows. Minting degrades the grouping of
+    ///   one action; refusing degrades the zone.
+    /// * **Trusting it would cost the grouping its meaning.** A free-text key
+    ///   lets a caller file its entries under another action's id, or under a
+    ///   constant — the nil UUID is the obvious one — which would collapse an
+    ///   entire zone's history into one operation and offer to undo all of it
+    ///   at once. A minted id is never wrong about which action it names.
+    ///
+    /// Any parseable UUID is accepted, not only a v4: minting is this
+    /// application's choice, and rejecting a v7 from some later caller would
+    /// be enforcing a version nothing here depends on.
+    pub fn of(supplied: Option<&str>) -> Self {
+        match supplied
+            .map(str::trim)
+            .and_then(|raw| uuid::Uuid::parse_str(raw).ok())
+            .filter(|id| !id.is_nil())
+        {
+            Some(id) => Self(id.to_string()),
+            None => Self::mint(),
+        }
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 // ── Entries ─────────────────────────────────────────────────────────────────
 
 /// Open an entry for something the person at the keyboard did.
 pub fn user_action(operation: &str, outcome: AuditOutcome) -> AuditEntry {
     AuditEntry::new(AuditActor::User, operation, outcome)
+}
+
+/// Stamp an entry with the action it belongs to.
+///
+/// Spent **first**, before the zone and before the record, and that ordering is
+/// the point rather than a preference. [`AuditEntry::detail`] drops a detail
+/// that does not fit the entry's budget, silently and by design, and an entry
+/// whose operation id was dropped is an entry the history list cannot group and
+/// undo cannot find — it would read as a separate, unundoable action. Forty-odd
+/// bytes out of [`bc_storage::audit::MAX_AUDIT_DETAIL_BYTES`] buys that never
+/// happening.
+#[must_use]
+pub fn stamp(entry: AuditEntry, operation: &OperationId) -> AuditEntry {
+    entry.detail(OPERATION_ID_KEY, operation.as_str())
 }
 
 /// Record where a Cloudflare call stopped, and under what status.
@@ -324,6 +425,79 @@ pub fn describe_change(entry: AuditEntry, before: &RecordFacts, after: &RecordFa
         .detail("record_name", after.name.as_str());
     let fields = changed_fields(before, after);
     attach_fields(entry, "changes", "changes_omitted", fields)
+}
+
+// ── Retention side effects ──────────────────────────────────────────────────
+//
+// Retaining a snapshot can cost the store other entries, and
+// `bc_storage::retention::evict_to_cap` hands every one of them back for
+// exactly this reason: "a record this application forgets must not be a record
+// it forgot silently". These live here rather than in one command's file
+// because there are now two callers of `Storage::retain_record` —
+// `commands::retention::retain_dns_record`, which deletes a record and keeps
+// it, and `commands::dns::update_dns_record`, which keeps the state an edit
+// supersedes — and both owe the log the same account of what the write cost.
+//
+// They take the trail rather than the store so the entries they write can be
+// asserted without standing one up.
+
+/// One entry for a whole purge, not one per entry purged.
+///
+/// A purge of five hundred expired entries would otherwise fill half the audit
+/// log with events the user was already shown a date for. Eviction is the
+/// opposite case and gets an entry each.
+pub fn record_purged(trail: &dyn AuditTrail, purged: &[Value]) {
+    if purged.is_empty() {
+        return;
+    }
+    trail.record(
+        user_action("retention:purge", AuditOutcome::Succeeded)
+            .detail("entries", purged.len() as u64)
+            .optional_detail(
+                "record_name",
+                purged
+                    .first()
+                    .and_then(|entry| entry.get("name"))
+                    .and_then(Value::as_str)
+                    .map(ToString::to_string),
+            ),
+    );
+}
+
+/// One entry per evicted record.
+///
+/// An eviction means the application forgot something the user could still have
+/// restored. For a `disabled` record that is the only copy there was; for a
+/// `superseded` one it is an undo the user will reach for and not find. Neither
+/// may be a thing that happened silently, and the entry names the reason so a
+/// reader can tell the two apart.
+pub fn record_evicted(trail: &dyn AuditTrail, entry: &Value, cause: EvictionCause) {
+    let parsed = RetainedRecord::of(entry);
+    let (zone_id, reason) = parsed
+        .as_ref()
+        .map(|entry| (entry.zone_id.clone(), entry.reason.clone()))
+        .unwrap_or_default();
+    let facts = parsed
+        .as_ref()
+        .map(|entry| RecordFacts::of_snapshot(&entry.snapshot))
+        .unwrap_or_default();
+    trail.record(describe_record(
+        user_action("retention:evict", AuditOutcome::Succeeded)
+            .resource(
+                parsed
+                    .as_ref()
+                    .and_then(|entry| entry.origin_record_id.as_deref())
+                    .unwrap_or_default(),
+            )
+            .detail("zone_id", zone_id.as_str())
+            .detail("reason", reason.as_str())
+            .detail("cause", cause.as_str())
+            .optional_detail(
+                OPERATION_ID_KEY,
+                parsed.as_ref().and_then(|entry| entry.operation_id.clone()),
+            ),
+        &facts,
+    ));
 }
 
 // ── Settings ────────────────────────────────────────────────────────────────
@@ -825,5 +999,124 @@ mod tests {
                 );
             }
         }
+    }
+    // ── Operation ids ───────────────────────────────────────────────────────
+
+    #[test]
+    fn a_minted_id_is_a_distinct_uuid_v4() {
+        let first = OperationId::mint();
+        let second = OperationId::mint();
+        assert_ne!(first, second, "every action gets its own id");
+        let parsed = uuid::Uuid::parse_str(first.as_str()).expect("a minted id parses");
+        assert_eq!(
+            parsed.get_version_num(),
+            4,
+            "the renderer's contract says v4"
+        );
+    }
+
+    #[test]
+    fn a_caller_that_knows_the_action_keeps_its_id_so_its_entries_group() {
+        let shared = OperationId::mint();
+        let first = OperationId::of(Some(shared.as_str()));
+        let second = OperationId::of(Some(shared.as_str()));
+        assert_eq!(first, shared);
+        assert_eq!(
+            second, shared,
+            "thirty-seven single-record deletes have to land under one id"
+        );
+    }
+
+    #[test]
+    fn a_supplied_id_that_would_corrupt_the_grouping_is_replaced_not_refused() {
+        // Each of these would group entries under something that is not an
+        // action: a constant that collapses a whole zone's history into one
+        // undoable operation, or a key with no bound at all.
+        for supplied in [
+            "",
+            "   ",
+            "not-a-uuid",
+            "00000000-0000-0000-0000-000000000000",
+            "'; drop table --",
+            &"f".repeat(4096),
+        ] {
+            let minted = OperationId::of(Some(supplied));
+            assert_ne!(
+                minted.as_str(),
+                supplied.trim(),
+                "{supplied:?} must not become a grouping key"
+            );
+            let parsed = uuid::Uuid::parse_str(minted.as_str())
+                .expect("the replacement is a well-formed id");
+            assert!(!parsed.is_nil());
+        }
+        assert_ne!(
+            OperationId::of(None).as_str(),
+            "",
+            "an operation of one still gets an id of its own"
+        );
+    }
+
+    #[test]
+    fn a_supplied_id_is_normalised_rather_than_stored_as_typed() {
+        let id = OperationId::of(Some("  3F2504E0-4F89-41D3-9A0C-0305E82C3301  "));
+        assert_eq!(
+            id.as_str(),
+            "3f2504e0-4f89-41d3-9a0c-0305e82c3301",
+            "two spellings of one id would read as two operations"
+        );
+    }
+
+    #[test]
+    fn the_stamp_survives_an_entry_whose_budget_is_otherwise_spent() {
+        // The failure this guards: `AuditEntry::detail` drops silently, so an
+        // id added after a long change set would vanish and the entry would
+        // read as an action of its own that undo cannot find.
+        let operation = OperationId::mint();
+        let long = "x".repeat(4_000);
+        let before = facts(&long);
+        let after = RecordFacts {
+            content: format!("{long}-moved"),
+            comment: Some(long.clone()),
+            ..before.clone()
+        };
+        let value = recorded(describe_change(
+            stamp(
+                user_action("dns:update", AuditOutcome::Succeeded).resource("record-1"),
+                &operation,
+            )
+            .detail("zone_id", "zone-1"),
+            &before,
+            &after,
+        ));
+        assert_eq!(
+            value[OPERATION_ID_KEY],
+            json!(operation.as_str()),
+            "the grouping key must outlive every field that competes with it"
+        );
+    }
+
+    #[test]
+    fn stamping_does_not_disturb_what_the_entry_already_said() {
+        let operation = OperationId::mint();
+        let before = facts("203.0.113.1");
+        let after = RecordFacts {
+            content: "203.0.113.9".to_string(),
+            ..before.clone()
+        };
+        let value = recorded(describe_change(
+            stamp(
+                user_action("dns:update", AuditOutcome::Succeeded).resource("record-1"),
+                &operation,
+            ),
+            &before,
+            &after,
+        ));
+        assert_eq!(value["operation"], json!("dns:update"));
+        assert_eq!(value["record_name"], json!("www.example.com"));
+        assert_eq!(
+            value["changes"],
+            json!({ "content": { "from": "203.0.113.1", "to": "203.0.113.9" } })
+        );
     }
 }

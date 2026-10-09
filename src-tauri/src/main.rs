@@ -309,6 +309,12 @@ fn main() {
             update_commands::update_check,
             diagnostics_commands::app_host_facts,
             diagnostics_commands::audit_trail_summary,
+            // Zone history and undo. Two commands, not three: an undo is
+            // applied by the renderer's own undo stack, which already knows how
+            // to re-point a dead record id and to route a binned delete through
+            // retention. See `commands::history::COMMAND_NAMES`.
+            commands::history::list_zone_history,
+            commands::history::preview_undo_operation,
             commands::retention::retain_dns_record,
             commands::retention::list_retained_records,
             commands::retention::restore_retained_record,
@@ -593,6 +599,28 @@ mod tests {
             production.contains("tauri::RunEvent::Exit"),
             "app exit must drop the notification service token"
         );
+    }
+
+    /// An unregistered command compiles and fails only when a user reaches it.
+    ///
+    /// The zone history commands are named in one place the renderer and the
+    /// backend both read — `HISTORY_COMMANDS` in `src/lib/history/types.ts`,
+    /// which `commands::history::COMMAND_NAMES` is pinned against — so this
+    /// closes the last gap: the strings agree, and the handler actually has
+    /// them.
+    #[test]
+    fn every_zone_history_command_is_registered() {
+        let source = include_str!("main.rs");
+        let production = source
+            .split_once("#[cfg(test)]")
+            .map(|(production, _)| production)
+            .expect("main.rs should retain a separate test module");
+        for command in commands::history::COMMAND_NAMES {
+            assert!(
+                production.contains(&format!("commands::history::{command},")),
+                "{command} must be registered in the invoke handler"
+            );
+        }
     }
 
     #[test]

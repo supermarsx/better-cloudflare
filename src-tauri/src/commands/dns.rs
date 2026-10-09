@@ -7,13 +7,15 @@ use bc_cloudflare_api::{
     DNS_LIST_OPERATION,
 };
 use bc_error::{AppError, ProviderErrorDetail, RequestErrorSource, RequestFailureKind};
-use bc_storage::{AuditEntry, AuditOutcome, AuditTrail};
+use bc_storage::retention::{self, RecordSnapshot, RetainedRecord, RetentionReason};
+use bc_storage::{AuditEntry, AuditOutcome, AuditTrail, RetainOutcome};
+use chrono::Utc;
 use serde_json::Value;
 
 use crate::cloudflare_api::{CloudflareClient, DNSRecord, DNSRecordInput, Zone};
 use crate::storage::Storage;
 
-use super::trail::{self, RecordFacts};
+use super::trail::{self, OperationId, RecordFacts};
 use crate::notifications::NotificationManager;
 
 const MAX_NATIVE_EXPORT_PAGE: u32 = 10_000;
@@ -774,6 +776,7 @@ mod validation_gate_tests {
             None,
             "zone-id".to_string(),
             invalid_record(),
+            &OperationId::mint(),
         )
         .await
         .expect_err("create must reject an invalid record");
@@ -791,6 +794,8 @@ mod validation_gate_tests {
             "zone-id".to_string(),
             "record-id".to_string(),
             record("MX", "example.com", "mail.example.com"),
+            None,
+            &OperationId::mint(),
             None,
         )
         .await
@@ -818,6 +823,8 @@ mod validation_gate_tests {
                 "zone-id".to_string(),
                 vec![valid_record(), invalid_record()],
                 dryrun,
+                &OperationId::mint(),
+                None,
             )
             .await
             .expect_err("bulk create must reject a batch containing an invalid record");
@@ -893,6 +900,7 @@ mod audit_trail_tests {
             Some(ACCOUNT_EMAIL.to_string()),
             "zone-1".to_string(),
             invalid_txt(),
+            &OperationId::mint(),
         )
         .await
         .expect_err("the gate must refuse a record with no name");
@@ -960,6 +968,8 @@ mod audit_trail_tests {
             "record-1".to_string(),
             invalid_txt(),
             Some(json!({ "type": "TXT", "name": "old.example.com", "content": "old" })),
+            &OperationId::mint(),
+            None,
         )
         .await
         .expect_err("the gate must refuse a record with no name");
@@ -1005,6 +1015,8 @@ mod audit_trail_tests {
             "zone-1".to_string(),
             batch,
             Some(false),
+            &OperationId::mint(),
+            None,
         )
         .await
         .expect_err("one invalid record must fail the batch");
@@ -1061,15 +1073,29 @@ mod audit_trail_tests {
 // than only the successes. `commands::trail` holds the vocabulary and the line
 // around what an entry may carry.
 
-/// Open an entry for an action on one record, naming the zone and the record.
-fn record_entry(operation: &str, outcome: AuditOutcome, zone_id: &str) -> AuditEntry {
-    trail::user_action(operation, outcome).detail("zone_id", zone_id)
+/// Open an entry for an action on one record, naming the action, the zone and
+/// the record.
+///
+/// `action` is spent before anything else, including the zone: see
+/// [`trail::stamp`] for why losing it is worse than losing any field it
+/// competes with.
+fn record_entry(
+    operation: &str,
+    outcome: AuditOutcome,
+    zone_id: &str,
+    action: &OperationId,
+) -> AuditEntry {
+    trail::stamp(trail::user_action(operation, outcome), action).detail("zone_id", zone_id)
 }
 
 /// Record an action this application refused before any HTTP call.
 ///
 /// The refusal comes first out of the entry's budget, like the tool-call half
 /// does: the reason is what a reader of a non-success entry wants first.
+///
+/// Stamped with the operation id like a success is. A refused write is part of
+/// the action the user took, and a history list that showed only the rows that
+/// landed would make a half-applied bulk edit look complete.
 fn record_denied(
     storage: &Storage,
     operation: &str,
@@ -1077,9 +1103,10 @@ fn record_denied(
     record_id: Option<&str>,
     denied_by: &str,
     facts: Option<&RecordFacts>,
+    action: &OperationId,
 ) {
-    let entry =
-        record_entry(operation, AuditOutcome::Denied, zone_id).detail("denied_by", denied_by);
+    let entry = record_entry(operation, AuditOutcome::Denied, zone_id, action)
+        .detail("denied_by", denied_by);
     storage.record(describe(with_resource(entry, record_id), facts));
 }
 
@@ -1096,9 +1123,10 @@ fn record_failed(
     record_id: Option<&str>,
     error: &CloudflareError,
     facts: Option<&RecordFacts>,
+    action: &OperationId,
 ) {
     let entry = trail::attach_failure(
-        record_entry(operation, AuditOutcome::Failed, zone_id),
+        record_entry(operation, AuditOutcome::Failed, zone_id, action),
         error,
     );
     storage.record(describe(with_resource(entry, record_id), facts));
@@ -1144,6 +1172,17 @@ pub async fn get_dns_records(
         .map_err(map_dns_records_error)
 }
 
+/// Create one record.
+///
+/// `operation_id` groups this write with the rest of the user action it belongs
+/// to. Omit it and the write is an operation of one, with an id minted here;
+/// pass one and a caller spanning several records files them all under it. See
+/// [`OperationId`] for why a supplied id is validated rather than trusted.
+///
+/// A create needs no snapshot. Undoing a create is a delete, and a delete needs
+/// only the id of the record Cloudflare returned — which the entry's `resource`
+/// already carries.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn create_dns_record(
     storage: State<'_, Storage>,
@@ -1151,21 +1190,31 @@ pub async fn create_dns_record(
     email: Option<String>,
     zone_id: String,
     record: DNSRecordInput,
+    operation_id: Option<String>,
     notifications: State<'_, NotificationManager>,
 ) -> Result<DNSRecord, String> {
-    let created = create_dns_record_impl(&storage, api_key, email, zone_id.clone(), record).await?;
+    let created = create_dns_record_impl(
+        &storage,
+        api_key,
+        email,
+        zone_id.clone(),
+        record,
+        &OperationId::of(operation_id.as_deref()),
+    )
+    .await?;
     if let Some(id) = created.id.as_deref() {
         notifications.ledger().note(&zone_id, id, "create");
     }
     Ok(created)
 }
 
-async fn create_dns_record_impl(
+pub(super) async fn create_dns_record_impl(
     storage: &Storage,
     api_key: String,
     email: Option<String>,
     zone_id: String,
     record: DNSRecordInput,
+    action: &OperationId,
 ) -> Result<DNSRecord, String> {
     let requested = RecordFacts::of_input(&record);
     if let Err(refusal) = ensure_record_is_valid(&record, None) {
@@ -1176,6 +1225,7 @@ async fn create_dns_record_impl(
             None,
             trail::DENIED_BY_RECORD_VALIDATION,
             Some(&requested),
+            action,
         );
         return Err(refusal);
     }
@@ -1190,6 +1240,7 @@ async fn create_dns_record_impl(
                 None,
                 &error,
                 Some(&requested),
+                action,
             );
             return Err(error.to_string());
         }
@@ -1198,7 +1249,7 @@ async fn create_dns_record_impl(
     // default TTL, normalises the name, and may refuse to proxy. What the trail
     // should say the user created is what now exists.
     storage.record(trail::describe_record(
-        record_entry("dns:create", AuditOutcome::Succeeded, &zone_id)
+        record_entry("dns:create", AuditOutcome::Succeeded, &zone_id, action)
             .resource(created.id.as_deref().unwrap_or_default()),
         &RecordFacts::of_record(&created),
     ));
@@ -1218,6 +1269,18 @@ async fn create_dns_record_impl(
 ///
 /// Tauri derives the IPC argument names from this signature, so `previous`
 /// travels under that name alongside `record`.
+///
+/// # Undo
+///
+/// `previous` is also the only thing an undo can be built from. Where it
+/// arrives complete, an exact `superseded` snapshot of it goes into the
+/// retention store under `operation_id`, and `undo_expires_at` on the trail
+/// entry records when that snapshot is due — see [`retain_superseded`] for why
+/// the trail carries the expiry as well as the store. Where it does not, the
+/// edit still happens and the history list reports the entry as having no
+/// snapshot, which is true. An undo is never invented from the trail's own
+/// `changes`: those values went through `trail::shortened` and a truncated
+/// `from` would put back a record that is subtly not the one that was there.
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn update_dns_record(
@@ -1228,6 +1291,8 @@ pub async fn update_dns_record(
     record_id: String,
     record: DNSRecordInput,
     previous: Option<Value>,
+    operation_id: Option<String>,
+    retention_days: Option<u32>,
     notifications: State<'_, NotificationManager>,
 ) -> Result<DNSRecord, String> {
     let updated = update_dns_record_impl(
@@ -1238,13 +1303,16 @@ pub async fn update_dns_record(
         record_id.clone(),
         record,
         previous,
+        &OperationId::of(operation_id.as_deref()),
+        retention_days,
     )
     .await?;
     notifications.ledger().note(&zone_id, &record_id, "update");
     Ok(updated)
 }
 
-async fn update_dns_record_impl(
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn update_dns_record_impl(
     storage: &Storage,
     api_key: String,
     email: Option<String>,
@@ -1252,6 +1320,8 @@ async fn update_dns_record_impl(
     record_id: String,
     record: DNSRecordInput,
     previous: Option<Value>,
+    action: &OperationId,
+    retention_days: Option<u32>,
 ) -> Result<DNSRecord, String> {
     let requested = RecordFacts::of_input(&record);
     let before = previous.as_ref().and_then(RecordFacts::of_claim);
@@ -1263,9 +1333,34 @@ async fn update_dns_record_impl(
             Some(&record_id),
             trail::DENIED_BY_RECORD_VALIDATION,
             Some(&requested),
+            action,
         );
         return Err(refusal);
     }
+    // Before the call, not after, for the reason `commands::retention`'s header
+    // gives about the delete path: `AuditOutcome::Failed` covers a write that
+    // left the application and stopped being observable, which is to say a
+    // write that may well have landed. A snapshot taken only on a confirmed
+    // success is exactly the snapshot missing from the edit the user most wants
+    // to take back. If the call then fails the snapshot is kept rather than
+    // dropped: should the edit not have landed, the snapshot describes the
+    // record's current state, the preview reports that row as `unchanged`, and
+    // applying it writes back values the record already holds — visible and
+    // harmless, unlike a lost undo.
+    let undo_expires_at = match before.as_ref() {
+        Some(before) => {
+            retain_superseded(
+                storage,
+                &zone_id,
+                &record_id,
+                before,
+                action,
+                retention_days,
+            )
+            .await
+        }
+        None => None,
+    };
     let client = CloudflareClient::new(&api_key, email.as_deref());
     let updated = match client.update_dns_record(&zone_id, &record_id, record).await {
         Ok(updated) => updated,
@@ -1277,17 +1372,118 @@ async fn update_dns_record_impl(
                 Some(&record_id),
                 &error,
                 Some(&requested),
+                action,
             );
             return Err(error.to_string());
         }
     };
     let after = RecordFacts::of_record(&updated);
-    let entry = record_entry("dns:update", AuditOutcome::Succeeded, &zone_id).resource(&record_id);
+    let entry = record_entry("dns:update", AuditOutcome::Succeeded, &zone_id, action)
+        .resource(&record_id)
+        .optional_detail(trail::UNDO_EXPIRES_AT_KEY, undo_expires_at);
     storage.record(match before.as_ref() {
         Some(before) => trail::describe_change(entry, before, &after),
         None => trail::describe_record(entry, &after),
     });
     Ok(updated)
+}
+
+/// Keep the exact state a record held before an edit, so the edit can be taken
+/// back.
+///
+/// Returns the moment the snapshot is due, where one was written, for the trail
+/// entry to carry. The trail needs it as well as the store, and this is the
+/// only reason it is returned rather than kept to the store: once a snapshot is
+/// gone the store cannot say *why* it went, and "expired on the 3rd" and
+/// "dropped early to stay in bounds" are different sentences for the user —
+/// different enough that one of them is about their retention settings being
+/// too tight. With the expiry recorded on the trail entry, a missing snapshot
+/// whose recorded expiry has passed is `expired`, and one whose expiry is still
+/// in the future is `evicted`. Without it, both read as a guess.
+///
+/// Three ways this writes nothing, each of them a `None` the caller records
+/// honestly rather than an error that would cost the user their edit:
+///
+/// * **An incomplete before-state.** A `previous` that has no content, no type
+///   or no name is not a record this could put back; a snapshot built from one
+///   would restore something broken. `RecordFacts::of_claim` is lenient by
+///   design — it defaults a missing `content` to the empty string — so the
+///   check belongs here, at the point the value stops being a log detail and
+///   becomes a restore source.
+/// * **A full store.** `RetainOutcome::StoreFull` refuses the write. For a
+///   *delete* that refusal cancels the delete, because the store would be the
+///   only copy. For an edit it must not: the record is still there under its
+///   new values, so the cost is an undo and not the data, and refusing to let
+///   someone edit DNS because a recycle bin is full would be absurd.
+/// * **An unwritable store.** Same reasoning, one layer down.
+async fn retain_superseded(
+    storage: &Storage,
+    zone_id: &str,
+    record_id: &str,
+    before: &RecordFacts,
+    action: &OperationId,
+    retention_days: Option<u32>,
+) -> Option<String> {
+    if before.content.trim().is_empty()
+        || before.record_type.trim().is_empty()
+        || before.name.trim().is_empty()
+    {
+        return None;
+    }
+    let now = Utc::now();
+    let entry = RetainedRecord::new(RetentionReason::SUPERSEDED, zone_id, "")
+        .origin_record_id(record_id)
+        .operation_id(action.as_str())
+        .snapshot(RecordSnapshot {
+            record_type: before.record_type.clone(),
+            name: before.name.clone(),
+            content: before.content.clone(),
+            ttl: before.ttl,
+            priority: before.priority,
+            proxied: before.proxied,
+            comment: before.comment.clone(),
+        })
+        // The moment this state stopped being what Cloudflare held. The edit is
+        // about to happen rather than having happened, which is a sub-second
+        // difference and the safe direction: an expiry measured from here is
+        // never later than the change it belongs to.
+        .removed_at(now)
+        // An edit's snapshot expires on the same window as the recycle bin's,
+        // and never lives for ever. A `superseded` record is not gone — it is
+        // in the zone under new values — so holding its old state indefinitely
+        // would spend the store's budget on the one reason that does not need
+        // it. The window is clamped in `expiring_after`, so a mangled
+        // preference cannot produce a zero-day undo.
+        .expiring_after(
+            Some(retention_days.unwrap_or(retention::DEFAULT_RETENTION_DAYS)),
+            now,
+        );
+    let expires_at = entry.expires_at.map(|at| at.to_rfc3339());
+    let entry_limit = retention::clamp_entry_limit(retention::MAX_RETAINED_ENTRIES);
+    let outcome = storage
+        .retain_record(entry.into_value(), entry_limit, now)
+        .await;
+    match outcome {
+        Ok(RetainOutcome::Retained {
+            purged, evicted, ..
+        }) => {
+            // What this write cost the store, in the log. `evict_to_cap` gives
+            // every dropped entry back for this, and an eviction prefers a
+            // superseded snapshot over a deleted record — but "prefers" is not
+            // "only", so an edit can still be the thing that forgot a record
+            // nothing else holds a copy of.
+            trail::record_purged(storage, &purged);
+            for item in &evicted {
+                trail::record_evicted(storage, &item.entry, item.cause);
+            }
+            expires_at
+        }
+        Ok(RetainOutcome::StoreFull { purged, .. }) => {
+            trail::record_purged(storage, &purged);
+            None
+        }
+        Err(_) => None,
+    }
 }
 
 /// Delete one record, recording what it was.
@@ -1297,6 +1493,14 @@ async fn update_dns_record_impl(
 /// so an entry without it says only that *an* unidentifiable record went. The
 /// recycle-bin path (`commands::retention::retain_dns_record`) always has the
 /// record and always records it; this is the path that deletes outright.
+///
+/// Outright, which means **this path keeps no snapshot and its entries can
+/// never be undone.** That is not an oversight to be fixed here: a snapshot
+/// taken by a command whose whole purpose is to delete without keeping a copy
+/// would make "delete permanently" a lie. History lists these entries with
+/// `no-snapshot`, and the path that does keep a copy is
+/// `commands::retention::retain_dns_record`, which is what the UI's delete
+/// actually calls.
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn delete_dns_record(
@@ -1306,29 +1510,66 @@ pub async fn delete_dns_record(
     zone_id: String,
     record_id: String,
     previous: Option<Value>,
+    operation_id: Option<String>,
     notifications: State<'_, NotificationManager>,
+) -> Result<(), String> {
+    delete_dns_record_impl(
+        &storage,
+        api_key,
+        email,
+        zone_id.clone(),
+        record_id.clone(),
+        previous,
+        &OperationId::of(operation_id.as_deref()),
+    )
+    .await?;
+    notifications.ledger().note(&zone_id, &record_id, "delete");
+    Ok(())
+}
+
+pub(super) async fn delete_dns_record_impl(
+    storage: &Storage,
+    api_key: String,
+    email: Option<String>,
+    zone_id: String,
+    record_id: String,
+    previous: Option<Value>,
+    action: &OperationId,
 ) -> Result<(), String> {
     let removed = previous.as_ref().and_then(RecordFacts::of_claim);
     let client = CloudflareClient::new(&api_key, email.as_deref());
     if let Err(error) = client.delete_dns_record(&zone_id, &record_id).await {
         record_failed(
-            &storage,
+            storage,
             "dns:delete",
             &zone_id,
             Some(&record_id),
             &error,
             removed.as_ref(),
+            action,
         );
         return Err(error.to_string());
     }
     storage.record(describe(
-        record_entry("dns:delete", AuditOutcome::Succeeded, &zone_id).resource(&record_id),
+        record_entry("dns:delete", AuditOutcome::Succeeded, &zone_id, action).resource(&record_id),
         removed.as_ref(),
     ));
-    notifications.ledger().note(&zone_id, &record_id, "delete");
     Ok(())
 }
 
+/// Create many records in one call.
+///
+/// One trail entry, never one per record — see [`create_bulk_dns_records`]'s
+/// own note below and `commands::trail`'s header. The operation id is on that
+/// one entry, so a caller that runs a bulk create alongside other writes under
+/// a shared id still has them group.
+///
+/// The consequence for undo, which `commands::history` reports rather than
+/// hides: a summary entry holds no record ids, so there is nothing per-row to
+/// revert and the operation lists as not undoable. Per-record entries would
+/// buy per-row undo at the cost of the user's whole history — a 400-record
+/// import would evict every other entry in a log capped at a thousand.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn create_bulk_dns_records(
     storage: State<'_, Storage>,
@@ -1337,11 +1578,21 @@ pub async fn create_bulk_dns_records(
     zone_id: String,
     records: Vec<DNSRecordInput>,
     dryrun: Option<bool>,
+    operation_id: Option<String>,
+    retention_days: Option<u32>,
     notifications: State<'_, NotificationManager>,
 ) -> Result<serde_json::Value, String> {
-    let result =
-        create_bulk_dns_records_impl(&storage, api_key, email, zone_id.clone(), records, dryrun)
-            .await?;
+    let result = create_bulk_dns_records_impl(
+        &storage,
+        api_key,
+        email,
+        zone_id.clone(),
+        records,
+        dryrun,
+        &OperationId::of(operation_id.as_deref()),
+        retention_days,
+    )
+    .await?;
     if !dryrun.unwrap_or(false) {
         for id in result
             .get("created")
@@ -1378,13 +1629,15 @@ fn batch_entry(
     outcome: AuditOutcome,
     zone_id: &str,
     requested: usize,
+    action: &OperationId,
 ) -> AuditEntry {
-    trail::user_action(operation, outcome)
+    trail::stamp(trail::user_action(operation, outcome), action)
         .resource(zone_id)
         .detail("zone_id", zone_id)
         .detail("records", requested as u64)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn create_bulk_dns_records_impl(
     storage: &Storage,
     api_key: String,
@@ -1392,16 +1645,24 @@ async fn create_bulk_dns_records_impl(
     zone_id: String,
     records: Vec<DNSRecordInput>,
     dryrun: Option<bool>,
+    action: &OperationId,
+    retention_days: Option<u32>,
 ) -> Result<serde_json::Value, String> {
     let dry_run = dryrun.unwrap_or(false);
     let requested = records.len();
     let types = batch_types(&records);
     if let Err(refusal) = ensure_records_are_valid(&records) {
         storage.record(
-            batch_entry("dns:bulk_create", AuditOutcome::Denied, &zone_id, requested)
-                .detail("denied_by", trail::DENIED_BY_RECORD_VALIDATION)
-                .detail("dry_run", dry_run)
-                .detail("record_types", types.as_str()),
+            batch_entry(
+                "dns:bulk_create",
+                AuditOutcome::Denied,
+                &zone_id,
+                requested,
+                action,
+            )
+            .detail("denied_by", trail::DENIED_BY_RECORD_VALIDATION)
+            .detail("dry_run", dry_run)
+            .detail("record_types", types.as_str()),
         );
         return Err(refusal);
     }
@@ -1414,7 +1675,13 @@ async fn create_bulk_dns_records_impl(
         Err(error) => {
             storage.record(
                 trail::attach_failure(
-                    batch_entry("dns:bulk_create", AuditOutcome::Failed, &zone_id, requested),
+                    batch_entry(
+                        "dns:bulk_create",
+                        AuditOutcome::Failed,
+                        &zone_id,
+                        requested,
+                        action,
+                    ),
                     &error,
                 )
                 .detail("dry_run", dry_run)
@@ -1429,19 +1696,125 @@ async fn create_bulk_dns_records_impl(
             .and_then(|value| value.as_array())
             .map_or(0, Vec::len) as u64
     };
+    // A dry run created nothing, so there is nothing to undo and no manifest
+    // to write; a manifest for a dry run would offer to delete records that
+    // were never made.
+    let undo_expires_at = match dry_run {
+        true => None,
+        false => record_create_manifest(storage, &zone_id, &result, action, retention_days).await,
+    };
     storage.record(
         batch_entry(
             "dns:bulk_create",
             AuditOutcome::Succeeded,
             &zone_id,
             requested,
+            action,
         )
         .detail("dry_run", dry_run)
         .detail("created", counted("created"))
         .detail("skipped", counted("skipped"))
-        .detail("record_types", types.as_str()),
+        .detail("record_types", types.as_str())
+        .optional_detail(trail::UNDO_EXPIRES_AT_KEY, undo_expires_at),
     );
     Ok(result)
+}
+
+/// Keep the ids a bulk create produced, so the import can be undone.
+///
+/// The one entry this command writes to the trail is a summary — see
+/// [`create_bulk_dns_records`] — and a summary holds no record ids, so without
+/// this an import is a change the history list can describe and not reverse.
+/// The ids go to the retention store instead of the log, where one entry per
+/// operation fits inside a per-entry ceiling sized for record content rather
+/// than inside a log capped at a thousand entries total.
+///
+/// No record *state* is kept, only ids: undoing a create means deleting what it
+/// made, and a snapshot of each record would be weight inside the same ceiling
+/// the ids have to fit.
+///
+/// An import wider than one manifest holds is written as several —
+/// `manifests_for_created_records` does the splitting, and every part carries
+/// the operation's *total* count rather than its own slice's, which is what
+/// makes a lost part detectable instead of invisible. A part that cannot be
+/// stored is therefore not a quietly shorter list: the ids that remain stop
+/// accounting for the total, `CreatedRecords::is_complete` is false, and
+/// `commands::history` refuses the undo by name. Deleting 200 records of 412
+/// and reporting success is the one outcome worth all of this machinery to
+/// avoid.
+async fn record_create_manifest(
+    storage: &Storage,
+    zone_id: &str,
+    result: &Value,
+    action: &OperationId,
+    retention_days: Option<u32>,
+) -> Option<String> {
+    let created: Vec<String> = result
+        .get("created")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .map(|record| {
+            record
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string()
+        })
+        .collect();
+    if created.is_empty() {
+        return None;
+    }
+    let now = Utc::now();
+    let entry_limit = retention::clamp_entry_limit(retention::MAX_RETAINED_ENTRIES);
+    let parts = retention::manifests_for_created_records(
+        zone_id,
+        action.as_str(),
+        &created,
+        Some(retention_days.unwrap_or(retention::DEFAULT_RETENTION_DAYS)),
+        now,
+    );
+    // The earliest part's expiry, because that is the moment the set stops
+    // being a whole account of the import — the same rule `CreatedRecords`
+    // applies when it reads them back.
+    let mut expires_at: Option<String> = None;
+    let mut stored = 0_usize;
+    for part in parts {
+        let part_expiry = part.expires_at.map(|at| at.to_rfc3339());
+        match storage
+            .retain_record(part.into_value(), entry_limit, now)
+            .await
+        {
+            Ok(RetainOutcome::Retained {
+                purged, evicted, ..
+            }) => {
+                trail::record_purged(storage, &purged);
+                for item in &evicted {
+                    trail::record_evicted(storage, &item.entry, item.cause);
+                }
+                stored += 1;
+                expires_at = match (expires_at, part_expiry) {
+                    (Some(held), Some(candidate)) if candidate < held => Some(candidate),
+                    (None, candidate) => candidate,
+                    (held, _) => held,
+                };
+            }
+            // The import itself is done and correct; what is lost is the
+            // ability to reverse it. Never a reason to fail the write, exactly
+            // as for an edit's snapshot — see `retain_superseded`.
+            Ok(RetainOutcome::StoreFull { purged, .. }) => {
+                trail::record_purged(storage, &purged);
+            }
+            Err(_) => {}
+        }
+    }
+    // No part stored at all means nothing to expire and nothing to promise.
+    // A *partial* set still reports its expiry, because the read side is what
+    // detects the gap and it needs the date to say when the rest aged out.
+    match stored {
+        0 => None,
+        _ => expires_at,
+    }
 }
 
 /// Open a zone-level entry, naming the zone in both the fields a reader
@@ -1701,6 +2074,13 @@ pub async fn update_dnssec(
 /// the whole record and both records it *and* keeps a restorable copy. So the
 /// per-record detail a reader wants from a multi-record deletion exists — it
 /// is just written by the command that has the records.
+///
+/// Which is also where the undo for a multi-record deletion comes from. This
+/// command is handed ids, so it has nothing to snapshot and nothing to put
+/// back; the per-record path has the whole record and keeps a restorable copy
+/// of each one. Pass all of those calls the same `operation_id` and they undo
+/// as the one action they were.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn delete_bulk_dns_records(
     storage: State<'_, Storage>,
@@ -1708,15 +2088,23 @@ pub async fn delete_bulk_dns_records(
     email: Option<String>,
     zone_id: String,
     record_ids: Vec<String>,
+    operation_id: Option<String>,
     notifications: State<'_, NotificationManager>,
 ) -> Result<serde_json::Value, String> {
+    let action = OperationId::of(operation_id.as_deref());
     let requested = record_ids.len();
     let client = CloudflareClient::new(&api_key, email.as_deref());
     let result = match client.delete_bulk_dns_records(&zone_id, &record_ids).await {
         Ok(result) => result,
         Err(error) => {
             storage.record(trail::attach_failure(
-                batch_entry("dns:bulk_delete", AuditOutcome::Failed, &zone_id, requested),
+                batch_entry(
+                    "dns:bulk_delete",
+                    AuditOutcome::Failed,
+                    &zone_id,
+                    requested,
+                    &action,
+                ),
                 &error,
             ));
             return Err(error.to_string());
@@ -1728,6 +2116,7 @@ pub async fn delete_bulk_dns_records(
             AuditOutcome::Succeeded,
             &zone_id,
             requested,
+            &action,
         )
         // `count` is where this entry has always put the scale. `records`, from
         // `batch_entry`, is where every other bulk entry puts it; both are

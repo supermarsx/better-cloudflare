@@ -97,7 +97,18 @@ function registeredCommands(): Set<string> {
     "the generate_handler! list should be bracket-balanced",
   );
 
-  const block = main.slice(start, end);
+  // Comments stripped first. The regex below captures a bare identifier
+  // followed by a comma, and English prose supplies those freely: a comment
+  // inside the list reading "Two commands, not three" yielded `commands`, and
+  // "the renderer's own undo stack, which already knows" yielded `stack`, so
+  // both were reported as handler entries no `#[tauri::command]` defines.
+  // Rewording the comment would have fixed this run and not the next one.
+  // There are no string literals between these brackets, only paths and
+  // comments, so stripping is unambiguous here.
+  const block = main
+    .slice(start, end)
+    .replace(/\/\*[\s\S]*?\*\//g, " ")
+    .replace(/\/\/[^\n]*/g, " ");
   return new Set(
     [...block.matchAll(/(?:^|\s|,)(?:[a-z0-9_]+::)*([a-z0-9_]+)\s*,/g)].map(
       (match) => match[1],

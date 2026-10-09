@@ -17,10 +17,11 @@
 //! its retention rule live in [`audit`].
 //!
 //! [`retention`] holds records that are **gone from Cloudflare** and kept here
-//! so they can be created again: a disabled record and a recycle-bin entry are
-//! the same mechanism with different lifetimes. Read that module's header
-//! before touching it — Cloudflare has no dormant state for a DNS record, and
-//! everything there is named so nobody concludes otherwise.
+//! so they can be created again: a disabled record, a recycle-bin entry and the
+//! state an edited record held before the edit are the same mechanism with
+//! different lifetimes. Read that module's header before touching it —
+//! Cloudflare has no dormant state for a DNS record, and everything there is
+//! named so nobody concludes otherwise.
 
 use chrono::{DateTime, Utc};
 use keyring::Entry;
@@ -38,7 +39,7 @@ pub use bc_crypto::EncryptionConfig;
 pub use retention::{
     DestinationReport, Evicted, EvictionCause, ExistingRecord, RecordSnapshot, RestoreObstacle,
     RetainedRecord, RetentionReason, DEFAULT_RETENTION_DAYS, MAX_RETAINED_ENTRIES,
-    MAX_RETENTION_DAYS, MIN_RETAINED_ENTRY_LIMIT, MIN_RETENTION_DAYS,
+    MAX_RETAINED_READ_ENTRIES, MAX_RETENTION_DAYS, MIN_RETAINED_ENTRY_LIMIT, MIN_RETENTION_DAYS,
 };
 
 // ── Constants ───────────────────────────────────────────────────────────────

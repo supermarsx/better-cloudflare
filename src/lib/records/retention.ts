@@ -519,6 +519,13 @@ export interface RetainDnsRecordArgs {
   localTags?: string[];
   /** The configured entry cap; omitted means the native hard ceiling. */
   maxEntries?: number;
+  /**
+   * Groups every retain in one user action, so a 37-record selection undoes as
+   * one operation rather than 37. A UUID v4; omitted means this retain is its
+   * own operation of one. The command validates it and mints a replacement for
+   * anything malformed, so a bad id costs the grouping and never the write.
+   */
+  operationId?: string;
 }
 
 /**
@@ -547,6 +554,7 @@ export function createRecordRetentionClient(invoke: RetentionInvoke) {
         retentionDays: args.retentionDays ?? undefined,
         localTags: args.localTags ?? [],
         maxEntries: args.maxEntries ?? undefined,
+        operationId: args.operationId ?? undefined,
       });
     },
 

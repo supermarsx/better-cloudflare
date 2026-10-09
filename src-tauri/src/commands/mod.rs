@@ -5,6 +5,11 @@ use crate::storage::Storage;
 pub mod audit;
 pub mod auth;
 pub mod dns;
+/// A zone's change history and the undo it offers. Not glob-re-exported, so
+/// its wire types stay behind `commands::history::` the way `retention`'s do —
+/// they are named after the renderer's contract, not after this module, and
+/// `UndoResult` in the crate root would be anybody's.
+pub mod history;
 /// Records removed from Cloudflare and kept here — disables and the recycle
 /// bin. Not glob-re-exported, so its wire types stay behind
 /// `commands::retention::`.

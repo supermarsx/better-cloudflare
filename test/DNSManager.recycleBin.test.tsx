@@ -518,6 +518,11 @@ test("a binned delete retains the record instead of destroying it", async () => 
     // Read before the call, because the id they are keyed by dies in it.
     localTags: ["prod", "edge"],
     maxEntries: 250,
+    // No operation id: this is a single-row delete, which is its own operation
+    // of one, and the zone History subtab will list it as such. It is a bulk
+    // delete that needs a shared id — without one, binning a 37-row selection
+    // records 37 operations and offers 37 separate undos instead of one.
+    operationId: undefined,
   });
 
   // The whole point: the destructive commands are never reached. A path that

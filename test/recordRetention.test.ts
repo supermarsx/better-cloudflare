@@ -476,6 +476,11 @@ test("retain sends every argument the native command needs", async () => {
     retentionDays: undefined,
     localTags: ["infra"],
     maxEntries: undefined,
+    // Present and `undefined` because the caller above passed none: a retain
+    // with no operation id is its own operation of one, which is what a single
+    // disable or delete should be. It is sent rather than omitted so the
+    // payload shape does not depend on whether the caller grouped the write.
+    operationId: undefined,
   });
 });
 
