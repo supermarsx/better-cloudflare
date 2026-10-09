@@ -158,7 +158,12 @@ function mappedOperationLabel(verb: string, t: Translate): string | null {
     case "restore":
       return t("Restore", "Restore");
     case "retain":
-      return t("Park", "Park");
+      // Not "Park": this app already ships the sentence "a disabled
+      // record is not parked at Cloudflare, it is absent from it", so
+      // that label contradicted its own explanation two screens away.
+      // Every translator independently refused the literal and reached
+      // for the recycle bin's vocabulary instead, which is the tell.
+      return t("Recycle", "Recycle");
     case "import":
       return t("Import", "Import");
     case "undo":
@@ -258,10 +263,18 @@ export function formatOperationTime(at: string): {
   return { short, full: `${date.toLocaleString()} | ${date.toISOString()}` };
 }
 
-/** "3 March" — the date in an expiry sentence, not a timestamp. */
-function formatExpiryDate(value: string, t: Translate): string {
+/**
+ * "3 March" — the date in an expiry sentence, not a timestamp.
+ *
+ * `null` when the value will not parse, rather than a stand-in phrase. A
+ * caller that has to branch cannot accidentally drop "an unknown date" into a
+ * prepositional frame, which is grammatical in English and broken in any
+ * language whose preposition carries an article or a case.
+ */
+function formatExpiryDate(value: string, t: Translate): string | null {
+  void t;
   const parsed = Date.parse(value);
-  if (Number.isNaN(parsed)) return t("an unknown date", "an unknown date");
+  if (Number.isNaN(parsed)) return null;
   return new Date(parsed).toLocaleDateString(undefined, {
     day: "numeric",
     month: "long",
@@ -355,11 +368,27 @@ export function describeUndoAvailability(
   switch (undo.state) {
     case "available":
       return null;
-    case "expired":
+    case "expired": {
+      // Two sentences rather than one with a fallback noun phrase. The date is
+      // interpolated only when it parses; when it does not, a sentence that
+      // never mentions a date is used instead. Substituting "an unknown date"
+      // into "expired on {{expiredOn}}" reads in English and breaks in any
+      // language whose preposition carries an article or a case — German needs
+      // "am" (an dem), and "am ein unbekanntes Datum" is not a sentence.
+      // Reported by the agent translating de-DE, which is the only place this
+      // was visible.
+      const expiredOn = formatExpiryDate(undo.expiredAt, t);
+      if (expiredOn === null) {
+        return t(
+          "The saved copy expired, so this can no longer be undone.",
+          "The saved copy expired, so this can no longer be undone.",
+        );
+      }
       return t(
         "The saved copy expired on {{expiredOn}}, so this can no longer be undone.",
-        { expiredOn: formatExpiryDate(undo.expiredAt, t) },
+        { expiredOn },
       );
+    }
     case "evicted":
       return t(
         "The saved copy was dropped to keep the retention store inside its size limit, so this can no longer be undone.",

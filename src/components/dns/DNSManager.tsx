@@ -712,7 +712,7 @@ const ACTION_TABS: { id: ActionTab; label: string; hint: string }[] = [
   {
     id: "topology",
     label: "Topology",
-    hint: "Visualize DNS relationships, CNAME chains, and shared services",
+    hint: "Visualise DNS relationships, CNAME chains, and shared services",
   },
   {
     id: "analytics",

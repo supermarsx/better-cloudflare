@@ -462,9 +462,17 @@ export function UndoPreviewDialog({
             defaultValue: `Re-create ${name}`,
           });
         case "delete":
-          return t("Delete {{name}} again", {
+          // Not "again". `undoRowIntent` returns `delete` when the row's
+          // `target` is null *and* the record is still present — the change
+          // created it and this undo removes it for the first time. The
+          // already-deleted case is the separate `noop` branch with its own
+          // string. "again" was only true for an undo of an undo of a delete,
+          // which is not the case this label describes. Reported by the agent
+          // translating id-ID, which had to decide whether to render a claim
+          // the code does not support.
+          return t("Delete {{name}}", {
             name,
-            defaultValue: `Delete ${name} again`,
+            defaultValue: `Delete ${name}`,
           });
         case "noop":
           return t("{{name}} is already deleted", {
