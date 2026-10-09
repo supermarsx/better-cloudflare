@@ -202,7 +202,18 @@ import { AnalyticsPanel } from "@/components/analytics/AnalyticsPanel";
 import { FirewallPanel } from "@/components/firewall/FirewallPanel";
 import { WorkersPanel } from "@/components/workers/WorkersPanel";
 import { EmailRoutingPanel } from "@/components/email/EmailRoutingPanel";
+// Aliased: `@/lib/records/retention` already exports a different type under
+// the same name — that one keys the record type as `type`, this one as
+// `recordType` — and the two are not interchangeable.
+import type {
+  RetainedRecordSnapshot as HistoryRecordSnapshot,
+  UndoPlanRow,
+  UndoRefusalCode,
+  UndoResult,
+} from "@/lib/history/types";
+import type { UndoFailure } from "@/lib/history/undo";
 import { PropagationChecker } from "./PropagationChecker";
+import { ZoneHistoryTab, describeUndoRefusal } from "./ZoneHistoryTab";
 import { BulkEditBar } from "./BulkEditBar";
 import { ZoneCompare } from "./ZoneCompare";
 import { HotkeyHelpDialog } from "@/components/layout/HotkeyHelpDialog";
@@ -505,6 +516,7 @@ type ActionTab =
   | "email-routing"
   | "propagation"
   | "zone-compare"
+  | "history"
   | "reference";
 type TabKind =
   | "zone"
@@ -733,6 +745,11 @@ const ACTION_TABS: { id: ActionTab; label: string; hint: string }[] = [
     hint: "Compare DNS records between zones",
   },
   {
+    id: "history",
+    label: "History",
+    hint: "Every recorded change to this zone, and the undo it still offers",
+  },
+  {
     id: "reference",
     label: "Reference",
     hint: "What each record type is for, with formats, examples and RFCs",
@@ -781,7 +798,7 @@ interface RetainedHistoryItem {
  * stack the power to destroy a record with no copy — exactly the power
  * retention exists to take away from it.
  */
-type DNSOp =
+export type DNSLeafOp =
   | { kind: "create"; zoneId: string; record: DNSRecord }
   | { kind: "update"; zoneId: string; record: DNSRecord }
   | { kind: "delete"; zoneId: string; recordId: string; record: DNSRecord }
@@ -805,6 +822,24 @@ type DNSOp =
       reason: string;
       items: RetainedHistoryItem[];
     };
+
+/**
+ * Several leaf ops that undo and redo as one step.
+ *
+ * An undo applied from the History subtab is one user action but not one
+ * *kind* of write: reverting a bulk edit whose records have since drifted
+ * updates the ones still there, re-creates the ones that have gone, and
+ * deletes the ones the change had created. No single-kind op can say that, and
+ * pushing one stack entry per kind would make Ctrl+Z take three presses to
+ * undo one button — the same mistake `pushBulkCreateUndo` exists to avoid one
+ * level down.
+ *
+ * It cannot nest, by construction rather than by convention: `ops` holds
+ * {@link DNSLeafOp}, so the applier's loop is exhaustive and needs no
+ * defensive branch for a composite inside a composite.
+ */
+export type DNSOp =
+  DNSLeafOp | { kind: "composite"; zoneId: string; ops: DNSLeafOp[] };
 
 /** How many individual failures a bulk toast names before it summarises. */
 const BULK_FAILURE_DETAIL_LIMIT = 3;
@@ -865,11 +900,44 @@ function describeBulkUpdateFailures(
  * restore mints a record id its paired `retain` has to be told about. Both
  * arrive as the fresh pairing, so one branch serves both.
  */
-function repointPairedDnsOp(
+export function repointPairedDnsOp(
   paired: DNSOp,
   created: readonly DNSRecord[],
   retained: readonly RetainedHistoryItem[] = [],
 ): DNSOp | null {
+  if (paired.kind === "composite") {
+    /*
+     * Re-point the composite's deletes onto the records that were just
+     * created, matched in order.
+     *
+     * `applyUndoRows` builds `forward` and `reverse` as positional mirrors —
+     * one leaf op per confirmed row, same order, each a single record — so the
+     * nth `delete` in this paired op is the reverse of the nth `create` in the
+     * op that just ran, and `created` arrives in that same execution order.
+     * That is the invariant this branch relies on and the reason the leaves
+     * are never bulk ops; see `applyUndoRows`.
+     *
+     * Without this, a redo of an undo that re-created a record would delete by
+     * the dead pre-undo id: either a no-op or, once Cloudflare reissues an id,
+     * somebody else's record.
+     */
+    const queue = created.filter((record) => record?.id);
+    if (!queue.length) return null;
+    let changed = false;
+    const ops = paired.ops.map((inner) => {
+      if (inner.kind !== "delete") return inner;
+      const fresh = queue.shift();
+      if (!fresh || fresh.id === inner.recordId) return inner;
+      changed = true;
+      return {
+        kind: "delete" as const,
+        zoneId: inner.zoneId,
+        recordId: fresh.id,
+        record: fresh,
+      };
+    });
+    return changed ? { ...paired, ops } : null;
+  }
   if (paired.kind === "retain" || paired.kind === "restore") {
     // Only what actually happened: a step that put back two of three records
     // leaves a paired op naming those two, never the one still in the bin.
@@ -900,6 +968,279 @@ function repointPairedDnsOp(
     };
   }
   return null;
+}
+
+/** Compare DNS names the way Cloudflare stores them: lowercase, no root dot. */
+function sameRecordName(left: string, right: string): boolean {
+  const normalize = (value: string) =>
+    value.trim().toLowerCase().replace(/\.$/, "");
+  return normalize(left) === normalize(right);
+}
+
+/**
+ * A retained snapshot as a record the write path accepts.
+ *
+ * `tags` is the one field deliberately dropped: this app keeps record tags
+ * locally, keyed by Cloudflare record id, and `DNSRecord` has no field for
+ * them, so the `DNSOp` engine cannot write them. An undo therefore restores a
+ * record's DNS state and not its tags — worth knowing, and far better than a
+ * silent half-restore that claims otherwise.
+ */
+function snapshotToDnsRecord(
+  snapshot: HistoryRecordSnapshot,
+  zoneId: string,
+  zoneName: string,
+  recordId: string,
+): DNSRecord {
+  const record: DNSRecord = {
+    id: recordId,
+    type: snapshot.recordType,
+    name: snapshot.name,
+    content: snapshot.content,
+    // `null` is "this record has no explicit TTL", which is Cloudflare's
+    // automatic TTL; `normalizeTauriRecordInput` turns "auto" into 1.
+    ttl: snapshot.ttl ?? "auto",
+    zone_id: zoneId,
+    zone_name: zoneName,
+    created_on: "",
+    modified_on: "",
+  };
+  if (snapshot.comment !== null) record.comment = snapshot.comment;
+  if (snapshot.priority !== null) record.priority = snapshot.priority;
+  if (snapshot.proxied !== null) record.proxied = snapshot.proxied;
+  return record;
+}
+
+/**
+ * The record one undo row would write over, out of what the zone has loaded.
+ *
+ * A `conflict` row resolves by the id the preview named rather than by name
+ * and type. The two land on the same record — that is precisely what makes it
+ * a conflict — but saying so explicitly is the difference between overwriting
+ * somebody else's record on purpose, which is what the user confirmed, and
+ * doing it because a name lookup happened to match.
+ *
+ * An `absent` row resolves to nothing even when this zone's loaded list still
+ * shows the record. The preview asked Cloudflare; the loaded list is a cache,
+ * and writing to an id Cloudflare has already destroyed is the worse error.
+ */
+function resolveUndoTargetRecord(
+  row: UndoPlanRow,
+  records: readonly DNSRecord[],
+): DNSRecord | null {
+  if (row.drift.state === "absent") return null;
+  if (row.drift.state === "conflict") {
+    const id = row.drift.conflictingRecordId;
+    return records.find((record) => record.id === id) ?? null;
+  }
+  return (
+    records.find(
+      (record) =>
+        record.type === row.recordType &&
+        sameRecordName(record.name, row.recordName),
+    ) ?? null
+  );
+}
+
+/** One confirmed row, as the write that undoes it and the write that redoes it. */
+interface PlannedUndoRow {
+  row: UndoPlanRow;
+  forward: DNSLeafOp;
+  reverse: DNSLeafOp;
+}
+
+export interface UndoRowPlan {
+  planned: PlannedUndoRow[];
+  /** Rows with nothing left to write. Reported as skipped, not as failures. */
+  skipped: UndoPlanRow[];
+  /**
+   * Rows that cannot be written at all.
+   *
+   * A **code**, not prose, because this refusal is ours rather than upstream:
+   * `src/lib/history/types.ts` reserves `UndoResult.failed[].message` for a
+   * provider's own words and requires everything this app decides to travel as
+   * a {@link UndoRefusalCode} that a renderer turns into a literal `t()` call.
+   * Keeping the planner free of wording is also what lets it be tested without
+   * a locale.
+   */
+  refused: {
+    entryId: string;
+    recordName: string;
+    code: UndoRefusalCode;
+  }[];
+}
+
+/**
+ * Turn the rows a user confirmed into leaf ops the existing applier executes.
+ *
+ * Every row becomes **one single-record op**, never a bulk one, and `forward`
+ * and `reverse` are positional mirrors of each other. That is not a stylistic
+ * choice: `repointPairedDnsOp`'s composite branch matches the nth `delete` in
+ * the op it is re-pointing to the nth `create` in the op that just ran, and
+ * that correspondence only holds while each op covers exactly one record and
+ * the two lists stay in step.
+ *
+ * The three shapes, and why each reverse is what it is:
+ *
+ *  - **`target` is null** — the change being undone created the record, so the
+ *    undo deletes it and the redo creates it again.
+ *  - **`target` is set and the record is still there** — update it back, and
+ *    reverse by updating to the state it held a moment ago. That pre-undo
+ *    state comes from the loaded record rather than from `drift`, because only
+ *    the loaded record carries the id the reverse has to write to.
+ *  - **`target` is set and the record is gone** — re-create it, and reverse by
+ *    deleting it. The reverse carries no id, because the id does not exist
+ *    until the create runs; `repointPairedDnsOp` fills it in afterwards.
+ *
+ * A row whose record cannot be found is refused rather than guessed at. The
+ * alternatives are both worse: creating a second copy of a record that is
+ * really still there, or writing a record with no id.
+ */
+export function planUndoRows(
+  zoneId: string,
+  zoneName: string,
+  rows: readonly UndoPlanRow[],
+  records: readonly DNSRecord[],
+): UndoRowPlan {
+  const plan: UndoRowPlan = { planned: [], skipped: [], refused: [] };
+
+  for (const row of rows) {
+    const live = resolveUndoTargetRecord(row, records);
+
+    if (row.target === null) {
+      // Nothing to delete: whoever or whatever removed it got there first, and
+      // the undo's intended end state already holds.
+      if (!live) {
+        plan.skipped.push(row);
+        continue;
+      }
+      plan.planned.push({
+        row,
+        forward: {
+          kind: "delete",
+          zoneId,
+          recordId: live.id,
+          record: live,
+        },
+        reverse: { kind: "create", zoneId, record: live },
+      });
+      continue;
+    }
+
+    if (live) {
+      plan.planned.push({
+        row,
+        forward: {
+          kind: "update",
+          zoneId,
+          record: snapshotToDnsRecord(row.target, zoneId, zoneName, live.id),
+        },
+        reverse: { kind: "update", zoneId, record: live },
+      });
+      continue;
+    }
+
+    if (row.drift.state === "absent") {
+      const recreated = snapshotToDnsRecord(row.target, zoneId, zoneName, "");
+      plan.planned.push({
+        row,
+        forward: { kind: "create", zoneId, record: recreated },
+        reverse: {
+          kind: "delete",
+          zoneId,
+          recordId: "",
+          record: recreated,
+        },
+      });
+      continue;
+    }
+
+    // Cloudflare says the record is there and this zone's loaded list does
+    // not have it, which means the list is stale rather than the record gone.
+    // Refusing names a fix the user can act on; guessing does not.
+    plan.refused.push({
+      entryId: row.entryId,
+      recordName: row.recordName,
+      code: "stale-record-list",
+    });
+  }
+
+  return plan;
+}
+
+/** What one run of a plan did, and the ops that are safe to put on the stack. */
+export interface UndoPlanRun {
+  applied: number;
+  skipped: number;
+  /**
+   * **Upstream** failures only, with the provider's own message.
+   *
+   * Mutable while the run accumulates; `UndoResult.failed` is the readonly
+   * view of the same shape, which is why this cannot simply be typed as that.
+   */
+  failed: UndoFailure[];
+  /** Rows the plan refused, carried through as codes for a renderer to word. */
+  refused: UndoRowPlan["refused"];
+  /** Only the ops that actually landed, in the order they landed. */
+  landedForward: DNSLeafOp[];
+  /** Their positional mirrors, so the pair stays in step. */
+  landedReverse: DNSLeafOp[];
+  /** Records the run created, in execution order, for re-pointing. */
+  created: DNSRecord[];
+}
+
+/**
+ * Execute a plan row by row and account for each row separately.
+ *
+ * Row by row rather than through one bulk op, deliberately: a bulk op throws
+ * on its first failure and can only name that one record, and saying which
+ * rows did not land and why is the whole of what the preview dialog shows on
+ * the way back. A rejection therefore stops that row and nothing else.
+ *
+ * `landedForward`/`landedReverse` hold **what landed**, not what was planned.
+ * A Ctrl+Z after a partial undo must not try to reverse rows that were never
+ * written — it would delete a record that is still in its original state, or
+ * re-create one that never went away.
+ *
+ * Separated from the component so this accounting is testable without a
+ * screen: it is the part that decides what the undo stack believes happened,
+ * and a wrong answer here is silently destructive later.
+ */
+export async function runUndoPlan(
+  plan: UndoRowPlan,
+  applyOne: (
+    op: DNSLeafOp,
+    onCreated: (record: DNSRecord) => void,
+  ) => Promise<void>,
+): Promise<UndoPlanRun> {
+  const run: UndoPlanRun = {
+    applied: 0,
+    skipped: plan.skipped.length,
+    failed: [],
+    refused: [...plan.refused],
+    landedForward: [],
+    landedReverse: [],
+    created: [],
+  };
+
+  for (const step of plan.planned) {
+    try {
+      await applyOne(step.forward, (record) => {
+        run.created.push(record);
+      });
+      run.applied += 1;
+      run.landedForward.push(step.forward);
+      run.landedReverse.push(step.reverse);
+    } catch (error) {
+      run.failed.push({
+        entryId: step.row.entryId,
+        recordName: step.row.recordName,
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  return run;
 }
 
 const CACHE_LEVEL_DETAILS: Record<string, string> = {
@@ -2750,6 +3091,37 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     [],
   );
 
+  /**
+   * The open tabs, readable from a callback that must not depend on them.
+   *
+   * Assigned during render, the way `useUndoRedo` keeps its own options ref.
+   * `applySingleDnsOp` needs to read a record without listing `tabs` in its
+   * dependency array: it is the dependency of `applyDnsOp`, `runHistoryOp` and
+   * the undo/redo hook in turn, and re-creating that chain on every tab change
+   * would churn for no benefit.
+   */
+  const tabsRef = useRef(tabs);
+  tabsRef.current = tabs;
+
+  /**
+   * The record this app currently believes is live, for a write's `previous`.
+   *
+   * This is the before-state the backend snapshots so the write can be undone
+   * later. The loaded list is a cache and can be stale, which is why it is only
+   * ever used for this: a stale snapshot costs that one edit its undo, where a
+   * stale *write* would corrupt a record. `undoSnapshotOf` in
+   * `server-client.ts` degrades an unusable one to `no-snapshot` rather than
+   * failing the edit, so passing what we have is always better than passing
+   * nothing.
+   */
+  const loadedRecord = useCallback(
+    (zoneId: string, recordId: string): DNSRecord | null =>
+      tabsRef.current
+        .find((tab) => tab.zoneId === zoneId)
+        ?.records.find((record) => record.id === recordId) ?? null,
+    [],
+  );
+
   /* ── The recycle bin's primitives ─────────────────────────────────────
    *
    * Above the undo applier rather than beside the rest of the bin, because
@@ -3059,9 +3431,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   );
 
   /* ── Undo / Redo ────────────────────────────────────── */
-  const applyDnsOp = useCallback(
+  const applySingleDnsOp = useCallback(
     async (
-      op: DNSOp,
+      op: DNSLeafOp,
       onCreated?: (record: DNSRecord) => void,
       onRetained?: (items: RetainedHistoryItem[]) => void,
     ) => {
@@ -3076,7 +3448,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
           break;
         }
         case "delete": {
-          await deleteDNSRecord(op.zoneId, op.recordId);
+          // The op carries the record it is removing, which *is* the
+          // before-state — it is what the paired `create` would put back.
+          await deleteDNSRecord(op.zoneId, op.recordId, op.record);
           updateTabByZone(op.zoneId, (prev) => ({
             ...prev,
             records: prev.records.filter((r) => r.id !== op.recordId),
@@ -3084,10 +3458,14 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
           break;
         }
         case "update": {
+          // An update op carries what to *write*; its before-state is whatever
+          // is live now, which for a replayed undo or redo is not the paired
+          // op's record either. So it is read rather than carried.
           const updated = await updateDNSRecord(
             op.zoneId,
             op.record.id,
             op.record,
+            loadedRecord(op.zoneId, op.record.id),
           );
           updateTabByZone(op.zoneId, (prev) => ({
             ...prev,
@@ -3101,7 +3479,14 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
           const updated: DNSRecord[] = [];
           try {
             for (const record of op.records) {
-              updated.push(await updateDNSRecord(op.zoneId, record.id, record));
+              updated.push(
+                await updateDNSRecord(
+                  op.zoneId,
+                  record.id,
+                  record,
+                  loadedRecord(op.zoneId, record.id),
+                ),
+              );
             }
           } finally {
             // Whatever landed before a rejection is already live at
@@ -3138,7 +3523,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
           const removed = new Set<string>();
           try {
             for (const record of op.records) {
-              await deleteDNSRecord(op.zoneId, record.id);
+              // As in the single `delete`: the op's records are the
+              // before-states its paired `bulk-create` would put back.
+              await deleteDNSRecord(op.zoneId, record.id, record);
               removed.add(record.id);
             }
           } finally {
@@ -3233,10 +3620,37 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       createDNSRecord,
       deleteDNSRecord,
       email,
+      loadedRecord,
       retainRecordsToStore,
       updateDNSRecord,
       updateTabByZone,
     ],
+  );
+
+  /**
+   * Apply one op, whatever shape it is.
+   *
+   * A composite runs its leaves in order and forwards both callbacks verbatim,
+   * so a create inside one still reports the record it minted and the paired
+   * op is still re-pointed. Sequential rather than concurrent: these are
+   * writes against one zone, and a half-applied batch is easier to reason
+   * about when the order it stopped at is the order it was given in.
+   */
+  const applyDnsOp = useCallback(
+    async (
+      op: DNSOp,
+      onCreated?: (record: DNSRecord) => void,
+      onRetained?: (items: RetainedHistoryItem[]) => void,
+    ) => {
+      if (op.kind !== "composite") {
+        await applySingleDnsOp(op, onCreated, onRetained);
+        return;
+      }
+      for (const leaf of op.ops) {
+        await applySingleDnsOp(leaf, onCreated, onRetained);
+      }
+    },
+    [applySingleDnsOp],
   );
 
   /**
@@ -3283,6 +3697,98 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     onUndo: (reverse, entry) => runHistoryOp(reverse, "forward", entry),
     onRedo: (forward, entry) => runHistoryOp(forward, "reverse", entry),
   });
+
+  /**
+   * Apply an undo the user confirmed in the History subtab's preview.
+   *
+   * This is the only place a planned undo is written, and it writes through
+   * `applySingleDnsOp` — the same applier Ctrl/⌘+Z uses — rather than a second
+   * one beside it. Three things follow from that, and all three are the reason
+   * for it:
+   *
+   *  1. The undo goes on the in-memory stack as **one** entry, so it is
+   *     immediately redoable with Ctrl/⌘+Y and undoable again after that.
+   *  2. The writes are ordinary record writes, so the backend logs them and
+   *     the undo turns up in the history list with no extra plumbing.
+   *  3. The table updates as each row lands, because that is what the leaf ops
+   *     already do.
+   *
+   * The planning and the per-row accounting are both pure and both tested
+   * directly — see `planUndoRows` and `runUndoPlan`. What is left here is the
+   * wiring: find the zone, run the plan through the real applier, and put one
+   * entry on the stack for what landed.
+   */
+  const applyUndoRows = useCallback(
+    async (
+      zoneId: string,
+      rows: readonly UndoPlanRow[],
+    ): Promise<UndoResult> => {
+      const zone = tabs.find(
+        (tab) => tab.kind === "zone" && tab.zoneId === zoneId,
+      );
+      const plan = planUndoRows(
+        zoneId,
+        zone?.zoneName ?? "",
+        rows,
+        zone?.records ?? [],
+      );
+      const run = await runUndoPlan(plan, (op, onCreated) =>
+        applySingleDnsOp(op, onCreated),
+      );
+
+      if (run.landedForward.length > 0) {
+        const forward: DNSOp = {
+          kind: "composite",
+          zoneId,
+          ops: run.landedForward,
+        };
+        const reverse: DNSOp = {
+          kind: "composite",
+          zoneId,
+          ops: run.landedReverse,
+        };
+        // The reverse's deletes still carry the placeholder id a create had
+        // not minted yet. Re-pointing here rather than waiting for the first
+        // Ctrl+Z is what makes the entry correct the moment it is pushed.
+        const repointed = repointPairedDnsOp(reverse, run.created);
+        pushUndo({
+          description: `Undo ${run.landedForward.length} record change(s)`,
+          forward,
+          reverse: repointed ?? reverse,
+        });
+      }
+
+      return {
+        /*
+         * Locally minted, and not a trail operation id — which is what
+         * `src/lib/history/types.ts` now says this field is. The writes go
+         * through the ordinary record commands, which each stamp their own id,
+         * so there is no single one for this undo to report, and nothing reads
+         * it.
+         */
+        operationId:
+          globalThis.crypto?.randomUUID?.() ?? `local-undo-${Date.now()}`,
+        applied: run.applied,
+        skipped: run.skipped,
+        /*
+         * Our refusals are worded here, where `t` is in scope, and placed
+         * before the upstream failures: a row that was never attempted is a
+         * different kind of answer from one Cloudflare rejected, and reading
+         * the un-attempted ones first is what tells the user to refresh and
+         * try again rather than to go looking at the provider.
+         */
+        failed: [
+          ...run.refused.map((refusal) => ({
+            entryId: refusal.entryId,
+            recordName: refusal.recordName,
+            message: describeUndoRefusal(refusal.code, t),
+          })),
+          ...run.failed,
+        ],
+      };
+    },
+    [applySingleDnsOp, pushUndo, t, tabs],
+  );
 
   /**
    * Record a bulk creation (paste or import) as one undoable step, so a single
@@ -8377,6 +8883,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
         activeTab.zoneId,
         record.id,
         record,
+        // The row being edited, which is exactly the before-state an undo of
+        // this edit restores. Already in hand for the tag move below.
+        oldRecord,
       );
       const nextRecordId = updatedRecord.id || record.id;
       if (nextRecordId !== record.id) {
@@ -8437,10 +8946,14 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const handleToggleProxy = async (record: DNSRecord, proxied: boolean) => {
     if (!activeTab) return;
     try {
-      const updatedRecord = await updateDNSRecord(activeTab.zoneId, record.id, {
-        ...record,
-        proxied,
-      });
+      const updatedRecord = await updateDNSRecord(
+        activeTab.zoneId,
+        record.id,
+        { ...record, proxied },
+        // `record` is the state before the toggle; the write is that plus the
+        // new `proxied`.
+        record,
+      );
       const nextRecordId = updatedRecord.id || record.id;
       if (nextRecordId !== record.id) {
         storageManager.moveRecordTags(
@@ -8782,7 +9295,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       const failures: Array<{ record: DNSRecord; error: string }> = [];
       for (const record of records) {
         try {
-          await deleteDNSRecord(zoneId, record.id);
+          // No copy is kept *here* — that is this function's whole point —
+          // but the trail still snapshots the before-state so the deletion
+          // shows in zone history as something undo can reason about.
+          await deleteDNSRecord(zoneId, record.id, record);
           storageManager.clearRecordTags(zoneId, record.id);
           deleted.push(record.id);
         } catch (error) {
@@ -8973,7 +9489,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     }
 
     try {
-      await deleteDNSRecord(activeTab.zoneId, recordId);
+      // `deletedRecord` may be undefined if the row has already gone from the
+      // loaded list; passing it anyway is right, because the snapshot degrades
+      // to `no-snapshot` rather than failing the delete.
+      await deleteDNSRecord(activeTab.zoneId, recordId, deletedRecord);
       storageManager.clearRecordTags(activeTab.zoneId, recordId);
       updateTab(activeTab.id, (prev) => ({
         ...prev,
@@ -9148,10 +9667,14 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
 
     for (const rec of targeted) {
       try {
-        const updated = await updateDNSRecord(zoneId, rec.id, {
-          ...rec,
-          ...patch,
-        });
+        const updated = await updateDNSRecord(
+          zoneId,
+          rec.id,
+          { ...rec, ...patch },
+          // `rec` is the record before the patch, which is what `before`
+          // below already relies on for the undo entry.
+          rec,
+        );
         // Trust the server echo when it comes back usable; fall back to the
         // patch we know was accepted rather than inventing a record.
         const next = updated?.id
@@ -12668,6 +13191,16 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                   getDNSRecords={getDNSRecords}
                   onCopyRecords={handleCopyComparedRecords}
                   columns={zoneCompareColumns}
+                />
+              )}
+
+              {activeTab.kind === "zone" && actionTab === "history" && (
+                <ZoneHistoryTab
+                  zoneId={activeTab.zoneId}
+                  zoneName={activeTab.zoneName}
+                  apiKey={apiKey}
+                  email={email}
+                  applyUndoRows={applyUndoRows}
                 />
               )}
 

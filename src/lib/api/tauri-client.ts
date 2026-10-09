@@ -19,11 +19,7 @@ import {
   type NotificationSettings,
 } from "@/lib/notifications/notification-settings";
 import { HISTORY_COMMANDS, ZONE_HISTORY_PAGE_SIZE } from "@/lib/history/types";
-import type {
-  UndoPreview,
-  UndoResult,
-  ZoneHistoryOperation,
-} from "@/lib/history/types";
+import type { UndoPreview, ZoneHistoryOperation } from "@/lib/history/types";
 import type {
   AgentConfig,
   AgentEvent,
@@ -976,29 +972,6 @@ export class TauriClient {
       apiKey,
       email: email ?? null,
       entryIds: entryIds ? [...entryIds] : null,
-    });
-  }
-
-  /**
-   * Apply an undo to the rows the user confirmed.
-   *
-   * `entryIds` is required rather than defaulted: applying "everything in the
-   * operation" is a different intent from applying what a preview showed, and
-   * a drifted row must not be written because the caller omitted an argument.
-   */
-  static async applyUndoOperation(
-    zoneId: string,
-    operationId: string,
-    entryIds: readonly string[],
-    apiKey: string,
-    email?: string,
-  ): Promise<UndoResult> {
-    return invoke(HISTORY_COMMANDS.apply, {
-      zoneId,
-      operationId,
-      entryIds: [...entryIds],
-      apiKey,
-      email: email ?? null,
     });
   }
 
