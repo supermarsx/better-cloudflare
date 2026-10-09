@@ -11026,81 +11026,88 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                           </SelectItem>
                         </SelectContent>
                       </Select>
-                      <div className="flex flex-wrap items-center gap-2 justify-start md:justify-end">
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          className="h-8 px-2 text-xs"
-                          onClick={() => void loadRecords(activeTab)}
-                          disabled={activeTab.isLoading}
-                          title={t(
-                            "Force refresh from Cloudflare",
-                            "Force refresh from Cloudflare",
-                          )}
-                          // `title` is a hover-only hint; the icon carries no
-                          // text, so the button needs a name of its own.
-                          aria-label={t(
-                            "Refresh records from Cloudflare",
-                            "Refresh records from Cloudflare",
-                          )}
-                        >
-                          <RefreshCw
-                            className={cn(
-                              "h-3.5 w-3.5",
-                              activeTab.isLoading && "animate-spin",
-                            )}
-                          />
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() =>
-                            updateTab(activeTab.id, (prev) => ({
-                              ...prev,
-                              searchTerm: "",
-                              typeFilter: "",
-                              page: 1,
-                            }))
-                          }
-                        >
-                          <X className="h-3 w-3 mr-1" />
-                          {t("Clear", "Clear")}
-                        </Button>
-                        <div className="inline-flex items-center gap-2 rounded-md border border-border/50 bg-muted/30 px-3 py-2 text-xs">
-                          <Filter className="h-3 w-3" />
-                          {t("Page {{page}}", {
-                            page: activeTab.page,
-                            defaultValue: `Page ${activeTab.page}`,
-                          })}
-                        </div>
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() =>
-                            updateTab(activeTab.id, (prev) => ({
-                              ...prev,
-                              page: Math.max(1, prev.page - 1),
-                            }))
-                          }
-                          disabled={activeTab.page <= 1}
-                        >
-                          {t("Prev", "Prev")}
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() =>
-                            updateTab(activeTab.id, (prev) => ({
-                              ...prev,
-                              page: prev.page + 1,
-                            }))
-                          }
-                        >
-                          {t("Next", "Next")}
-                        </Button>
-                      </div>
+                      {/* Only the filter-clearing control shares the filter
+                          row. Refresh, the page indicator and the pager moved
+                          to the action row below: they act on the list rather
+                          than narrow it, and crowding five of them into this
+                          grid's last column is what wrapped the bar onto two
+                          lines at ordinary window widths. */}
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-8 px-2 text-xs justify-self-start md:justify-self-end"
+                        onClick={() =>
+                          updateTab(activeTab.id, (prev) => ({
+                            ...prev,
+                            searchTerm: "",
+                            typeFilter: "",
+                            page: 1,
+                          }))
+                        }
+                      >
+                        <X className="h-3 w-3 mr-1" />
+                        {t("Clear", "Clear")}
+                      </Button>
                     </div>
-                    <div className="flex flex-wrap items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-8 px-2 text-xs"
+                        onClick={() => void loadRecords(activeTab)}
+                        disabled={activeTab.isLoading}
+                        title={t(
+                          "Force refresh from Cloudflare",
+                          "Force refresh from Cloudflare",
+                        )}
+                        // `title` is a hover-only hint; the icon carries no
+                        // text, so the button needs a name of its own.
+                        aria-label={t(
+                          "Refresh records from Cloudflare",
+                          "Refresh records from Cloudflare",
+                        )}
+                      >
+                        <RefreshCw
+                          className={cn(
+                            "h-3.5 w-3.5",
+                            activeTab.isLoading && "animate-spin",
+                          )}
+                        />
+                      </Button>
+                      <div className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border/50 bg-muted/30 px-2 text-xs">
+                        <Filter className="h-3 w-3" />
+                        {t("Page {{page}}", {
+                          page: activeTab.page,
+                          defaultValue: `Page ${activeTab.page}`,
+                        })}
+                      </div>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-8 px-2 text-xs"
+                        onClick={() =>
+                          updateTab(activeTab.id, (prev) => ({
+                            ...prev,
+                            page: Math.max(1, prev.page - 1),
+                          }))
+                        }
+                        disabled={activeTab.page <= 1}
+                      >
+                        {t("Prev", "Prev")}
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-8 px-2 text-xs"
+                        onClick={() =>
+                          updateTab(activeTab.id, (prev) => ({
+                            ...prev,
+                            page: prev.page + 1,
+                          }))
+                        }
+                      >
+                        {t("Next", "Next")}
+                      </Button>
                       <AddRecordDialog
                         open={activeTab.showAddRecord}
                         onOpenChange={(open) =>
@@ -11127,10 +11134,11 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                       <Button
                         size="sm"
                         variant="outline"
+                        className="h-8 px-2 text-xs"
                         onClick={handleCopySelected}
                         disabled={!activeTab.selectedIds.length}
                       >
-                        <Copy className="h-4 w-4 mr-2" />
+                        <Copy className="h-3.5 w-3.5 mr-1" />
                         {t("Copy selected", "Copy selected")}
                       </Button>
                       {/* Disabling is retention, so it exists only where the
@@ -11142,6 +11150,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                         <Button
                           size="sm"
                           variant="outline"
+                          className="h-8 px-2 text-xs"
                           onClick={() =>
                             requestDisableRecords(
                               activeTab.zoneId,
@@ -11153,17 +11162,18 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                           }
                           disabled={!activeTab.selectedIds.length}
                         >
-                          <PowerOff className="h-4 w-4 mr-2" />
+                          <PowerOff className="h-3.5 w-3.5 mr-1" />
                           {t("Disable", "Disable")}
                         </Button>
                       )}
                       <Button
                         size="sm"
                         variant="outline"
+                        className="h-8 px-2 text-xs"
                         onClick={() => void handlePasteRecords()}
                         disabled={!copyBuffer}
                       >
-                        <ClipboardPaste className="h-4 w-4 mr-2" />
+                        <ClipboardPaste className="h-3.5 w-3.5 mr-1" />
                         {t("Paste", "Paste")}{" "}
                         {copyBuffer ? `${copyBuffer.records.length}` : ""}
                       </Button>
