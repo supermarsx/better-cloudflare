@@ -43,6 +43,26 @@ const SOURCE_DIRS = [join(ROOT, "src")];
  */
 const REGISTRY_FILES = [
   join(ROOT, "src", "components", "dns", "settings-search.ts"),
+  // `DNSManager.tsx` is the third sighting of the shape this file keeps
+  // documenting, and it was the widest: `ACTION_TABS` holds the fifteen zone
+  // subtabs as `{ id, label, hint }` data and the tablist renders
+  // `t(tab.label, tab.label)`, so six labels and thirteen hints — every zone
+  // subtab's name and its one-line description — were uncatalogued while the
+  // report read green. Twelve variable-label `t()` call sites in that file are
+  // invisible to `extractFromSource` for the same reason, which also covers
+  // the topology port list and the diagram export formats.
+  //
+  // Those last two catalogue strings like "SSH (22)" and "PNG", which no
+  // locale is likely to change. That is not a reason to leave them out: they
+  // reach `t()`, so they are keys whether or not a translator moves them, and
+  // a key whose value equals the key is already the common case here. The
+  // alternative — scanning only part of a file — buys nothing and hides the
+  // next one.
+  //
+  // Found by the agent adding the History subtab, which is exactly how the
+  // `group` omission below was found: by someone adding a row and asking
+  // whether their own string would ever be translated.
+  join(ROOT, "src", "components", "dns", "DNSManager.tsx"),
 ];
 
 /**

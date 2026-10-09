@@ -73,6 +73,24 @@ export type RetainedRecordSnapshot = {
   readonly priority: number | null;
   readonly proxied: boolean | null;
   readonly comment: string | null;
+  /**
+   * App-local tags, which the retention store keeps and **an undo does not
+   * put back**.
+   *
+   * They are here because the store carries them — `local_tags` in
+   * `bc_storage::retention`, so the recycle bin's restore can return a record
+   * with its tags intact. The undo path cannot: `DNSRecord` in
+   * `src/types/dns.ts` has no `tags` field, and `snapshotToDnsRecord` maps
+   * content, ttl, comment, priority and proxied only.
+   *
+   * So a row must never *claim* to restore a tag.
+   * `SNAPSHOT_UNRESTORABLE_FIELDS` in `src/lib/history/undo.ts` excludes it
+   * from what the dialog promises, and a plan touching a tagged record says
+   * so explicitly instead. Listing it as restorable was a real defect — a row
+   * read "Puts back Content … · Tags prod" and the apply silently dropped the
+   * third, which is the one kind of inaccuracy a confirmation dialog cannot
+   * contain, because the decision is made on it.
+   */
   readonly tags: readonly string[];
 };
 
@@ -82,6 +100,49 @@ export type HistoryFieldChange = {
   readonly from: string | null;
   readonly to: string | null;
 };
+
+/**
+ * Why something cannot be undone, as a code rather than a sentence.
+ *
+ * Codes, because of where these are produced. `planUndoRows` is a pure
+ * function outside the component and has no `t()`; the backend has no locale
+ * at all. A sentence authored in either place is a sentence that ships in
+ * English in twelve locales — and it cannot even be *caught*, because
+ * `t(reason, reason)` passes a variable and `scripts/i18n-coverage.mjs` only
+ * sees literals. That is the same blind spot that left six zone-subtab labels
+ * untranslated behind a green coverage report.
+ *
+ * So the rule for this feature: **a reason this application decides is a
+ * code, and the renderer turns it into a literal `t()` call.** The one
+ * exception is {@link UndoResult.failed}, which carries an upstream error
+ * message verbatim — a Cloudflare API error is not ours to author and
+ * paraphrasing it into a code would lose the only detail that explains the
+ * failure.
+ */
+export type UndoRefusalCode =
+  /**
+   * Cloudflare says the record exists; this zone's loaded list disagrees. The
+   * list is stale, not the record gone, and refusing names a fix the user can
+   * act on where guessing does not.
+   */
+  | "stale-record-list"
+  /** A zone setting, not a record write. */
+  | "zone-setting"
+  /** A cache purge: nothing to put back. */
+  | "cache-purge"
+  /** A DNSSEC change. */
+  | "dnssec"
+  /**
+   * A bulk create whose manifest could not hold every id it created, so some
+   * of the records are unidentifiable and a partial delete would be worse
+   * than none.
+   */
+  | "manifest-truncated"
+  /**
+   * A bulk operation the trail recorded as one summary entry carrying no
+   * record ids at all, which is deliberate — see `trail.rs`.
+   */
+  | "summary-entry-only";
 
 /** Why an entry cannot be undone, or that it can. */
 export type UndoAvailability =
@@ -94,8 +155,8 @@ export type UndoAvailability =
   | { readonly state: "no-snapshot" }
   /** Undoing this would recreate a record the user has since deleted again. */
   | { readonly state: "superseded-by-delete" }
-  /** Not a record write — a zone setting, a cache purge, a DNSSEC change. */
-  | { readonly state: "not-undoable"; readonly reason: string };
+  /** Not something this feature can reverse. See {@link UndoRefusalCode}. */
+  | { readonly state: "not-undoable"; readonly reason: UndoRefusalCode };
 
 /** One row in the history list: a single record, within an operation. */
 export type ZoneHistoryEntry = {
@@ -160,14 +221,43 @@ export type UndoPreview = {
     readonly recordName: string;
     readonly undo: UndoAvailability;
   }[];
+  /**
+   * Rows the planner will not write, by code. Distinct from `unavailable`:
+   * those have no undo material at all, while these have it and the current
+   * state of the zone is what blocks the write.
+   */
+  readonly refused?: readonly {
+    readonly entryId: string;
+    readonly recordName: string;
+    readonly reason: UndoRefusalCode;
+  }[];
 };
 
-/** What `undo_apply` returns. An undo is itself a logged operation. */
+/**
+ * What an undo reports back.
+ *
+ * Not the return of one backend command any more. This was specified when a
+ * single `apply_undo_operation` performed the whole undo and could stamp one
+ * trail id on it; the writes now go through the ordinary record commands,
+ * which each stamp their own. An undo is still a logged operation — several of
+ * them — and still re-undoable, because the renderer pushes the whole set onto
+ * the existing `DNSOp` stack as one composite entry.
+ */
 export type UndoResult = {
-  /** The new operation id, so the undo appears in history and is re-undoable. */
+  /**
+   * Locally minted, and deliberately **not** a trail operation id: there is no
+   * single one to report. Nothing reads this field; it is kept because a
+   * result with no identity at all is awkward to log, and an id pretending to
+   * be a trail id would be worse than one that says it is not.
+   */
   readonly operationId: OperationId;
   readonly applied: number;
   readonly skipped: number;
+  /**
+   * Upstream failures, with the provider's own message. The one place prose
+   * rather than a code is right: a Cloudflare error is not ours to author, and
+   * the renderer shows it verbatim beside a translated frame.
+   */
   readonly failed: readonly {
     readonly entryId: string;
     readonly recordName: string;
@@ -185,7 +275,14 @@ export const HISTORY_COMMANDS = {
   list: "list_zone_history",
   /** Plan an undo and classify drift. Reads Cloudflare; writes nothing. */
   preview: "preview_undo_operation",
-  /** Apply a planned undo. Takes the entry ids the user confirmed. */
+  /**
+   * Reserved, and intentionally unimplemented. An undo applies through the
+   * renderer's existing `DNSOp` engine rather than a command of its own,
+   * because that engine is the only thing that knows how to re-point a record
+   * id the write just destroyed and to route a binned deletion through
+   * retention's restore. A second applier beside it would be a second set of
+   * those bugs. Kept named so nobody adds it back without reading this.
+   */
   apply: "apply_undo_operation",
 } as const satisfies Record<string, string>;
 
