@@ -548,12 +548,19 @@ export class ServerClient {
   ): Promise<DNSRecord> {
     const normalizedRecord = normalizeTauriRecordInput(record);
     if (isDesktop()) {
+      // `previous` is left unset here deliberately. This path is the
+      // browser-context client, which has no record cache to read a
+      // before-state from; the desktop UI passes one from the row it is
+      // editing. The backend treats an absent `previous` as "no snapshot",
+      // which lists the edit in the zone history as unundoable rather than
+      // restoring something wrong. See `src/lib/history/types.ts`.
       return TauriClient.updateDNSRecord(
         this.apiKey,
         this.email,
         zoneId,
         recordId,
         normalizedRecord,
+        null,
         signal,
       ) as Promise<DNSRecord>;
     }
@@ -587,11 +594,13 @@ export class ServerClient {
     signal?: AbortSignal,
   ): Promise<void> {
     if (isDesktop()) {
+      // `previous` unset for the same reason as `updateDNSRecord` above.
       return TauriClient.deleteDNSRecord(
         this.apiKey,
         this.email,
         zoneId,
         recordId,
+        null,
         signal,
       );
     }

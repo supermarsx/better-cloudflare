@@ -18,6 +18,12 @@ import {
   clampNotificationSettings,
   type NotificationSettings,
 } from "@/lib/notifications/notification-settings";
+import { HISTORY_COMMANDS, ZONE_HISTORY_PAGE_SIZE } from "@/lib/history/types";
+import type {
+  UndoPreview,
+  UndoResult,
+  ZoneHistoryOperation,
+} from "@/lib/history/types";
 import type {
   AgentConfig,
   AgentEvent,
@@ -578,12 +584,20 @@ export class TauriClient {
     );
   }
 
+  /**
+   * `previous` is the record's state before this write, and omitting it is not
+   * free: the backend snapshots it so the change can be undone later, and with
+   * nothing to snapshot an edit lists in the zone history as unundoable. It
+   * wants a *complete* record — a partial one is refused rather than used to
+   * restore a record with an empty `content`. See `src/lib/history/types.ts`.
+   */
   static async updateDNSRecord(
     apiKey: string,
     email: string | undefined,
     zoneId: string,
     recordId: string,
     record: TauriDNSRecordInput,
+    previous?: TauriDNSRecord | TauriDNSRecordInput | null,
     signal?: AbortSignal,
   ): Promise<TauriDNSRecord> {
     return invoke(
@@ -594,6 +608,7 @@ export class TauriClient {
         zoneId,
         recordId,
         record,
+        previous: previous ?? null,
       },
       { signal },
     );
@@ -604,11 +619,12 @@ export class TauriClient {
     email: string | undefined,
     zoneId: string,
     recordId: string,
+    previous?: TauriDNSRecord | TauriDNSRecordInput | null,
     signal?: AbortSignal,
   ): Promise<void> {
     return invoke(
       "delete_dns_record",
-      { apiKey, email, zoneId, recordId },
+      { apiKey, email, zoneId, recordId, previous: previous ?? null },
       { signal },
     );
   }
@@ -922,6 +938,68 @@ export class TauriClient {
 
   static async clearAuditEntries(): Promise<void> {
     return invoke("clear_audit_entries");
+  }
+
+  // Zone history and undo
+  //
+  // Three calls, two stores: the list comes from the audit trail and is a log,
+  // while the preview and the apply work from the retention store's exact
+  // snapshots. `src/lib/history/types.ts` explains why that distinction
+  // matters and why history reaches further back than undo does.
+
+  /** One zone's trail, grouped into operations, newest first. */
+  static async listZoneHistory(
+    zoneId: string,
+    options: { before?: string; limit?: number } = {},
+  ): Promise<ZoneHistoryOperation[]> {
+    return invoke(HISTORY_COMMANDS.list, {
+      zoneId,
+      before: options.before ?? null,
+      limit: options.limit ?? ZONE_HISTORY_PAGE_SIZE,
+    });
+  }
+
+  /**
+   * Plan an undo. Reads the current records from Cloudflare to classify drift
+   * and writes nothing, so it is safe to call on every dialog open.
+   */
+  static async previewUndoOperation(
+    zoneId: string,
+    operationId: string,
+    apiKey: string,
+    email?: string,
+    entryIds?: readonly string[],
+  ): Promise<UndoPreview> {
+    return invoke(HISTORY_COMMANDS.preview, {
+      zoneId,
+      operationId,
+      apiKey,
+      email: email ?? null,
+      entryIds: entryIds ? [...entryIds] : null,
+    });
+  }
+
+  /**
+   * Apply an undo to the rows the user confirmed.
+   *
+   * `entryIds` is required rather than defaulted: applying "everything in the
+   * operation" is a different intent from applying what a preview showed, and
+   * a drifted row must not be written because the caller omitted an argument.
+   */
+  static async applyUndoOperation(
+    zoneId: string,
+    operationId: string,
+    entryIds: readonly string[],
+    apiKey: string,
+    email?: string,
+  ): Promise<UndoResult> {
+    return invoke(HISTORY_COMMANDS.apply, {
+      zoneId,
+      operationId,
+      entryIds: [...entryIds],
+      apiKey,
+      email: email ?? null,
+    });
   }
 
   // SPF
