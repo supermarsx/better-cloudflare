@@ -969,7 +969,6 @@
   "Made over MCP": "Made over MCP",
   "Make {{label}} the default": "Make {{label}} the default",
   "Manage Cloudflare Worker routes for this zone": "Manage Cloudflare Worker routes for this zone",
-  "Manage encryption and HTTPS behavior": "Manage encryption and HTTPS behavior",
   "Manage Key": "Manage Key",
   "Manage Passkeys": "Manage Passkeys",
   "Manage your Cloudflare DNS records": "Manage your Cloudflare DNS records",
@@ -1771,9 +1770,7 @@
   "These tools still need confirming, so they are not enabled yet: {{subjects}}": "These tools still need confirming, so they are not enabled yet: {{subjects}}",
   "This build cannot run tools, so this call cannot be approved. Stop the run to clear it.": "This build cannot run tools, so this call cannot be approved. Stop the run to clear it.",
   "This build carries no release tag, so there is nothing to compare it with. Builds made from a checkout always report this.": "This build carries no release tag, so there is nothing to compare it with. Builds made from a checkout always report this.",
-  "This can no longer be undone, for a reason this version does not recognise.": "This can no longer be undone, for a reason this version does not recognise.",
   "This cannot be undone, and this version does not recognise the reason given.": "This cannot be undone, and this version does not recognise the reason given.",
-  "This cannot be undone, for a reason this version does not recognise.": "This cannot be undone, for a reason this version does not recognise.",
   "This cannot be undone.": "This cannot be undone.",
   "This change failed": "This change failed",
   "This change was recorded before undo kept copies of records, so there is nothing to restore it from.": "This change was recorded before undo kept copies of records, so there is nothing to restore it from.",
@@ -1786,7 +1783,6 @@
   "This device reports no network connection, so the Cloudflare API was not contacted.": "This device reports no network connection, so the Cloudflare API was not contacted.",
   "This entry is missing {{missing}}, so it cannot be re-created. It is still in the recycle bin, but a record this incomplete can only be entered again by hand.": "This entry is missing {{missing}}, so it cannot be re-created. It is still in the recycle bin, but a record this incomplete can only be entered again by hand.",
   "This entry is missing fields a create needs, so it cannot be put back automatically. Copy it out before forgetting it.": "This entry is missing fields a create needs, so it cannot be put back automatically. Copy it out before forgetting it.",
-  "This is not a record change, so there is nothing to undo: {{reason}}.": "This is not a record change, so there is nothing to undo: {{reason}}.",
   "This purged the cache rather than changing a record, so there is nothing to put back.": "This purged the cache rather than changing a record, so there is nothing to put back.",
   "This purges cached content for the active zone. It can temporarily increase origin load.": "This purges cached content for the active zone. It can temporarily increase origin load.",
   "This removes the selected key from local storage. This cannot be undone.": "This removes the selected key from local storage. This cannot be undone.",
@@ -1991,5 +1987,6 @@
   "Zone will show unsupported record types in Add Record.": "Zone will show unsupported record types in Add Record.",
   "Zone: {{name}}": "Zone: {{name}}",
   "Zones": "Zones",
-  "Zones tracked": "Zones tracked"
+  "Zones tracked": "Zones tracked",
+  "Manage encryption and HTTPS behaviour": "Manage encryption and HTTPS behaviour"
 }

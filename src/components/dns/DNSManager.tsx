@@ -697,7 +697,7 @@ const ACTION_TABS: { id: ActionTab; label: string; hint: string }[] = [
   {
     id: "ssl-tls",
     label: "SSL/TLS",
-    hint: "Manage encryption and HTTPS behavior",
+    hint: "Manage encryption and HTTPS behaviour",
   },
   {
     id: "domain-audit",
