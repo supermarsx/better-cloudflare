@@ -1,7 +1,13 @@
 /**
- * Small building blocks shared by the notification settings sub-sections:
+ * Small building blocks for a settings panel that hosts its own sections:
  * a labelled row, a debounced number field with clamp feedback, and a
  * confirmation dialog. Kept apart from the sections so each stays readable.
+ *
+ * Named for the notification panel because that is where they started, and
+ * still where most of them are used — but `SyncSettings.tsx` reuses `SettingRow`
+ * and `SettingsSection` too, which is why the description above is no longer
+ * phrased as "the notification settings sub-sections". A second copy of a
+ * labelled row would have been the alternative, and two of those drift.
  */
 import {
   useCallback,

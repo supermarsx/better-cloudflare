@@ -272,10 +272,20 @@ export type SyncConflict = {
   readonly expectedGeneration: number;
 };
 
-/** The outcome of a push or a pull. Exactly one of these shapes. */
+/**
+ * The outcome of a push or a pull. Exactly one of these shapes.
+ *
+ * **`unchanged` is a pull's answer only.** A push cannot produce it: sealing
+ * is salted, so one unchanged vault seals to a different envelope — and a
+ * different checksum — on every attempt, and there is nothing a push can
+ * compare to conclude that nothing moved. Waiting for `unchanged` from a push
+ * is waiting for a state that cannot arrive. ("Has this device changed since
+ * its last push?" is answerable, but by a stored fingerprint of the key list
+ * rather than by the envelope; that is what guards a pull.)
+ */
 export type SyncOutcome =
   | { readonly state: "ok"; readonly manifest: SyncManifest }
-  /** Both sides already agree; nothing was transferred. */
+  /** Both sides already agree; nothing was transferred. Pull only — see above. */
   | { readonly state: "unchanged"; readonly manifest: SyncManifest }
   | { readonly state: "conflict"; readonly conflict: SyncConflict }
   | {
@@ -285,10 +295,47 @@ export type SyncOutcome =
       readonly message: string | null;
     };
 
+/**
+ * The outcome of a connection test.
+ *
+ * Narrower than {@link SyncOutcome}, and it has to be. `probe` documents an
+ * absent blob as a **successful** probe — a working credential on an account
+ * nothing has been pushed to yet — so the `ok` arm's manifest is optional
+ * here where {@link SyncOutcome}'s is not. Reporting that case as `failed`
+ * with `no-remote-blob` would tell the user the opposite of what the probe
+ * established, and widening `SyncOutcome.ok` to make it fit would weaken
+ * every other caller's guarantee to accommodate this one.
+ *
+ * There is also no `conflict` arm, because a connection test writes nothing
+ * and so cannot be refused by a guard. {@link SyncOutcome} being the whole
+ * union everywhere is the looseness this type exists to correct.
+ *
+ * The optional manifest doubles as the only *free* way to read the provider's
+ * present state: {@link SyncStatus.lastKnown} is this device's own history,
+ * and the only other way to see what the provider holds now is
+ * {@link SYNC_COMMANDS.previewPull}, which opens the envelope.
+ */
+export type SyncProbeOutcome =
+  | { readonly state: "ok"; readonly manifest?: SyncManifest }
+  | {
+      readonly state: "failed";
+      readonly code: SyncFailureCode;
+      readonly message: string | null;
+    };
+
 /** What the settings screen shows without touching the network. */
 export type SyncStatus = {
   readonly settings: SyncSettings;
-  /** The last manifest this device pushed or pulled, if any. */
+  /**
+   * The last manifest this device pushed or pulled, if any.
+   *
+   * **This device's history, not the provider's present state.** Nothing can
+   * be said about what the provider holds *now* without reaching it, so a
+   * screen rendering this field must word it in the past tense — "the last
+   * copy this device saw" — or it will claim knowledge it does not have. For a
+   * live reading, {@link SYNC_COMMANDS.test}'s {@link SyncProbeOutcome}
+   * carries the remote manifest and touches nothing.
+   */
   readonly lastKnown: SyncManifest | null;
   /** This install's id and label, so the UI can say "this device". */
   readonly deviceId: string;
@@ -358,7 +405,16 @@ export type ConflictResolution = "keep-local" | "keep-remote";
 export const SYNC_COMMANDS = {
   /** Read settings and the last known manifest. No network. */
   status: "get_sync_status",
-  /** Write settings; stores or clears the keyring secrets. */
+  /**
+   * Write settings; stores or clears the keyring secrets.
+   *
+   * Returns the resulting {@link SyncStatus}, but a caller is free to ignore
+   * it and re-read {@link SYNC_COMMANDS.status} instead — that re-read is
+   * deliberate, not a redundancy to optimise away. It costs one local call
+   * with no network and it is what makes the screen show what was *stored*
+   * rather than what was asked for, which is the only way a clamped cadence
+   * becomes visible: ask for one minute and the stored value is fifteen.
+   */
   configure: "configure_sync",
   /** Reach the endpoint and report whether the credential works. */
   test: "test_sync_connection",
@@ -403,6 +459,14 @@ export type SyncCommandArgs = {
  * refuses with `too-large` rather than chunking: splitting a credential store
  * across provider objects multiplies the ways a partial restore can happen,
  * and a partially restored key vault is worse than a refused one.
+ *
+ * In practice this bound is **unreachable from a push**: the 64 KiB plaintext
+ * cap always trips first, so a vault too big to sync is refused before it is
+ * ever sealed. It is kept as belt-and-braces for the *download* direction,
+ * where the bytes come from a store this app does not control and no earlier
+ * check applies. Being unreachable one way also makes it the one bound here
+ * that cannot be proven by a mutation on the push path — worth knowing before
+ * reading its absence from a mutation table as an oversight.
  */
 export const MAX_SYNC_ENVELOPE_BYTES = 96 * 1024;
 
