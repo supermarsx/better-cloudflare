@@ -135,49 +135,58 @@ export function SettingsSearch({
       <Label htmlFor={inputId} className="sr-only">
         {t("Find a setting", "Find a setting")}
       </Label>
-      <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-      <Input
-        id={inputId}
-        ref={inputRef}
-        type="text"
-        role="combobox"
-        autoComplete="off"
-        aria-expanded={open}
-        aria-controls={listboxId}
-        aria-autocomplete="list"
-        aria-activedescendant={
-          open ? optionId(results[activeIndex]?.entry.id ?? "") : undefined
-        }
-        placeholder={t("Find a setting by name", "Find a setting by name")}
-        value={query}
-        onChange={(event) => {
-          onQueryChange(event.target.value);
-          setRequestedIndex(0);
-        }}
-        onKeyDown={onKeyDown}
-        className="h-9 pl-9 pr-9 text-sm"
-      />
-      {hasQuery ? (
-        <Button
-          type="button"
-          size="sm"
-          variant="ghost"
-          className="absolute right-1 top-1/2 h-7 w-7 -translate-y-1/2 p-0"
-          aria-label={t("Clear settings search", "Clear settings search")}
-          onClick={() => {
-            onQueryChange("");
-            inputRef.current?.focus();
+      {/* The field and its two overlays get their own positioning context.
+          They used to be absolute against the outer `relative`, which also
+          contains things that grow: the "no settings match" paragraph below is
+          in normal flow, so a search with no results made the container taller
+          and `top-1/2` put the icon and the clear button halfway down the
+          *whole box* instead of halfway down the input. Scoping the context to
+          the field means nothing added below can move them again. */}
+      <div className="relative">
+        <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+        <Input
+          id={inputId}
+          ref={inputRef}
+          type="text"
+          role="combobox"
+          autoComplete="off"
+          aria-expanded={open}
+          aria-controls={listboxId}
+          aria-autocomplete="list"
+          aria-activedescendant={
+            open ? optionId(results[activeIndex]?.entry.id ?? "") : undefined
+          }
+          placeholder={t("Find a setting by name", "Find a setting by name")}
+          value={query}
+          onChange={(event) => {
+            onQueryChange(event.target.value);
+            setRequestedIndex(0);
           }}
-        >
-          <X className="h-4 w-4" />
-        </Button>
-      ) : null}
+          onKeyDown={onKeyDown}
+          className="h-9 pl-9 pr-9 text-sm"
+        />
+        {hasQuery ? (
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            className="absolute right-1 top-1/2 h-7 w-7 -translate-y-1/2 p-0"
+            aria-label={t("Clear settings search", "Clear settings search")}
+            onClick={() => {
+              onQueryChange("");
+              inputRef.current?.focus();
+            }}
+          >
+            <X className="h-4 w-4" />
+          </Button>
+        ) : null}
+      </div>
       <div role="status" aria-live="polite" className="sr-only">
         {announcement}
       </div>
       {hasQuery && results.length === 0 ? (
         <p
-          className="mt-2 rounded-lg border border-border/60 bg-card/80 px-3 py-2 text-xs text-muted-foreground"
+          className="glass-surface mt-2 rounded-lg bg-card/70 px-3 py-2 text-xs text-muted-foreground"
           data-testid="settings-search-empty"
         >
           {t(
@@ -193,7 +202,16 @@ export function SettingsSearch({
         aria-label={t("Matching settings", "Matching settings")}
         data-testid="settings-search-results"
         hidden={!open}
-        className="absolute left-0 right-0 top-full z-20 mt-1 max-h-72 scrollbar-themed overflow-auto rounded-xl border border-border/60 bg-popover/95 p-1 shadow-lg"
+        // `glass-surface glass-fade` rather than a hand-rolled border and
+        // background. `docs/design-system.md` calls a menu a `surface-2`,
+        // which is `bg-popover/90..95` **with `backdrop-blur-xl`** — and this
+        // list had the translucent background without the blur, so it read as
+        // transparent over whatever settings panel was behind it. The utility
+        // carries the blur, the highlight and the border together, which is
+        // why `SelectContent` uses it; matching that recipe is also what makes
+        // this list look like every other menu in the app rather than a
+        // near-miss.
+        className="glass-surface glass-fade absolute left-0 right-0 top-full z-20 mt-1 max-h-72 scrollbar-themed overflow-auto rounded-xl bg-popover/70 p-1 shadow-[0_18px_46px_hsl(0_0%_0%_/_0.26)]"
       >
         {results.map((result, index) => (
           <li

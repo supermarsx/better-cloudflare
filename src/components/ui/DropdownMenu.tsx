@@ -4,6 +4,13 @@ import { Check, ChevronRight, Circle } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 
+/*
+ * The check gutter is `pl-7` with the indicator at `left-1.5`. See the note in
+ * `select.tsx`: the three menu primitives share this idiom and move together,
+ * because a gutter that differs between them is more noticeable than one that
+ * is slightly wide.
+ */
+
 const DropdownMenu = DropdownMenuPrimitive.Root;
 
 const DropdownMenuTrigger = DropdownMenuPrimitive.Trigger;
@@ -26,7 +33,7 @@ const DropdownMenuSubTrigger = React.forwardRef<
     ref={ref}
     className={cn(
       "ui-entry flex cursor-default select-none items-center text-sm outline-none data-[state=open]:bg-accent/70 data-[state=open]:text-accent-foreground",
-      inset && "pl-8",
+      inset && "pl-7",
       className,
     )}
     {...props}
@@ -117,7 +124,7 @@ const DropdownMenuItem = React.forwardRef<
     ref={ref}
     className={cn(
       "ui-entry relative flex cursor-default select-none items-center text-sm outline-none data-[disabled]:pointer-events-none",
-      inset && "pl-8",
+      inset && "pl-7",
       className,
     )}
     {...props}
@@ -132,13 +139,13 @@ const DropdownMenuCheckboxItem = React.forwardRef<
   <DropdownMenuPrimitive.CheckboxItem
     ref={ref}
     className={cn(
-      "ui-entry relative flex cursor-default select-none items-center pl-8 pr-2 text-sm outline-none data-[disabled]:pointer-events-none",
+      "ui-entry relative flex cursor-default select-none items-center pl-7 pr-2 text-sm outline-none data-[disabled]:pointer-events-none",
       className,
     )}
     checked={checked}
     {...props}
   >
-    <span className="absolute left-2 flex h-3.5 w-3.5 items-center justify-center">
+    <span className="absolute left-1.5 flex h-3.5 w-3.5 items-center justify-center">
       <DropdownMenuPrimitive.ItemIndicator>
         <Check className="h-4 w-4" />
       </DropdownMenuPrimitive.ItemIndicator>
@@ -156,12 +163,12 @@ const DropdownMenuRadioItem = React.forwardRef<
   <DropdownMenuPrimitive.RadioItem
     ref={ref}
     className={cn(
-      "ui-entry relative flex cursor-default select-none items-center pl-8 pr-2 text-sm outline-none data-[disabled]:pointer-events-none",
+      "ui-entry relative flex cursor-default select-none items-center pl-7 pr-2 text-sm outline-none data-[disabled]:pointer-events-none",
       className,
     )}
     {...props}
   >
-    <span className="absolute left-2 flex h-3.5 w-3.5 items-center justify-center">
+    <span className="absolute left-1.5 flex h-3.5 w-3.5 items-center justify-center">
       <DropdownMenuPrimitive.ItemIndicator>
         <Circle className="h-2 w-2 fill-current" />
       </DropdownMenuPrimitive.ItemIndicator>
@@ -181,7 +188,7 @@ const DropdownMenuLabel = React.forwardRef<
     ref={ref}
     className={cn(
       "px-2 py-1.5 text-sm font-semibold",
-      inset && "pl-8",
+      inset && "pl-7",
       className,
     )}
     {...props}

@@ -7,6 +7,22 @@ import { Check, ChevronDown, ChevronUp } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 
+/*
+ * The check gutter is `pl-7` with the indicator at `left-1.5`, not `pl-8` /
+ * `left-2`.
+ *
+ * The gutter exists so a label does not shift sideways when its checkmark
+ * appears, which is worth keeping. But 32px of it is conspicuous in a menu of
+ * short labels — the records-per-page select reads "25", "50", "100", and the
+ * numbers sat a third of an inch right of the panel edge while the trigger
+ * showed them at 12px. 28px still clears the 14px indicator at `left-1.5`
+ * with room to spare, so nothing overlaps and nothing shifts.
+ *
+ * Changed across select, dropdown-menu and context-menu together: these are
+ * the same visual idiom and a gutter that differs between them is more
+ * noticeable than one that is slightly wide.
+ */
+
 /**
  * A set of select components and primitives that wrap Radix UI primitives
  * providing a consistent styled select used across the app.
@@ -128,7 +144,7 @@ const SelectLabel = React.forwardRef<
 >(({ className, ...props }, ref) => (
   <SelectPrimitive.Label
     ref={ref}
-    className={cn("py-1.5 pl-8 pr-2 text-sm font-semibold", className)}
+    className={cn("py-1.5 pl-7 pr-2 text-sm font-semibold", className)}
     {...props}
   />
 ));
@@ -141,12 +157,12 @@ const SelectItem = React.forwardRef<
   <SelectPrimitive.Item
     ref={ref}
     className={cn(
-      "ui-entry relative flex w-full cursor-default select-none items-center pl-8 pr-2 text-sm outline-none data-[disabled]:pointer-events-none data-[disabled]:opacity-50",
+      "ui-entry relative flex w-full cursor-default select-none items-center pl-7 pr-2 text-sm outline-none data-[disabled]:pointer-events-none data-[disabled]:opacity-50",
       className,
     )}
     {...props}
   >
-    <span className="absolute left-2 flex h-3.5 w-3.5 items-center justify-center">
+    <span className="absolute left-1.5 flex h-3.5 w-3.5 items-center justify-center">
       <SelectPrimitive.ItemIndicator>
         <Check className="h-4 w-4" />
       </SelectPrimitive.ItemIndicator>

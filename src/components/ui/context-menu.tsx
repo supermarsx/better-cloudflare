@@ -7,6 +7,22 @@ import { Check, ChevronRight } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 
+/*
+ * The check gutter is `pl-7` with the indicator at `left-1.5`, not `pl-8` /
+ * `left-2`.
+ *
+ * The gutter exists so a label does not shift sideways when its checkmark
+ * appears, which is worth keeping. But 32px of it is conspicuous in a menu of
+ * short labels — the records-per-page select reads "25", "50", "100", and the
+ * numbers sat a third of an inch right of the panel edge while the trigger
+ * showed them at 12px. 28px still clears the 14px indicator at `left-1.5`
+ * with room to spare, so nothing overlaps and nothing shifts.
+ *
+ * Changed across select, dropdown-menu and context-menu together: these are
+ * the same visual idiom and a gutter that differs between them is more
+ * noticeable than one that is slightly wide.
+ */
+
 const ContextMenu = ContextMenuPrimitive.Root;
 const ContextMenuTrigger = ContextMenuPrimitive.Trigger;
 const ContextMenuGroup = ContextMenuPrimitive.Group;
@@ -24,7 +40,7 @@ const ContextMenuSubTrigger = React.forwardRef<
     ref={ref}
     className={cn(
       "ui-entry flex cursor-default select-none items-center rounded-md px-2 py-1.5 text-sm outline-none data-[state=open]:bg-accent/45 data-[state=open]:text-foreground",
-      inset && "pl-8",
+      inset && "pl-7",
       className,
     )}
     {...props}
@@ -78,7 +94,7 @@ const ContextMenuItem = React.forwardRef<
     ref={ref}
     className={cn(
       "ui-entry relative flex cursor-default select-none items-center rounded-md px-2 py-1.5 text-sm outline-none focus:bg-accent/45 focus:text-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50",
-      inset && "pl-8",
+      inset && "pl-7",
       className,
     )}
     {...props}
@@ -94,12 +110,12 @@ const ContextMenuCheckboxItem = React.forwardRef<
     ref={ref}
     checked={checked}
     className={cn(
-      "ui-entry relative flex cursor-default select-none items-center rounded-md py-1.5 pl-8 pr-2 text-sm outline-none focus:bg-accent/45 focus:text-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50",
+      "ui-entry relative flex cursor-default select-none items-center rounded-md py-1.5 pl-7 pr-2 text-sm outline-none focus:bg-accent/45 focus:text-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50",
       className,
     )}
     {...props}
   >
-    <span className="absolute left-2 flex h-3.5 w-3.5 items-center justify-center">
+    <span className="absolute left-1.5 flex h-3.5 w-3.5 items-center justify-center">
       <ContextMenuPrimitive.ItemIndicator>
         <Check className="h-4 w-4" />
       </ContextMenuPrimitive.ItemIndicator>
@@ -117,12 +133,12 @@ const ContextMenuRadioItem = React.forwardRef<
   <ContextMenuPrimitive.RadioItem
     ref={ref}
     className={cn(
-      "ui-entry relative flex cursor-default select-none items-center rounded-md py-1.5 pl-8 pr-2 text-sm outline-none focus:bg-accent/45 focus:text-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50",
+      "ui-entry relative flex cursor-default select-none items-center rounded-md py-1.5 pl-7 pr-2 text-sm outline-none focus:bg-accent/45 focus:text-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50",
       className,
     )}
     {...props}
   >
-    <span className="absolute left-2 flex h-3.5 w-3.5 items-center justify-center">
+    <span className="absolute left-1.5 flex h-3.5 w-3.5 items-center justify-center">
       <ContextMenuPrimitive.ItemIndicator>
         <Check className="h-4 w-4" />
       </ContextMenuPrimitive.ItemIndicator>
@@ -142,7 +158,7 @@ const ContextMenuLabel = React.forwardRef<
     ref={ref}
     className={cn(
       "px-2 py-1.5 text-sm font-semibold text-foreground/90",
-      inset && "pl-8",
+      inset && "pl-7",
       className,
     )}
     {...props}

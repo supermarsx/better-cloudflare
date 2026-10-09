@@ -30,6 +30,7 @@ import {
 } from "@testing-library/react";
 
 import { DNSManager } from "../src/components/dns/DNSManager";
+import { SettingsSearch } from "../src/components/dns/SettingsSearch";
 import {
   SETTINGS_SUBTABS,
   findSettingsEntry,
@@ -545,5 +546,51 @@ test("every rendered settings row is in the registry, with its own label", async
   assert.ok(
     checked >= 30,
     `only ${checked} settings rows were rendered across every subtab`,
+  );
+});
+
+test("the search icon's positioning context holds the field and nothing that grows", () => {
+  // A layout bug that jsdom cannot measure, pinned structurally instead.
+  //
+  // The icon and the clear button are `absolute … top-1/2`, so they centre on
+  // whichever ancestor establishes the positioning context. That used to be
+  // the component's outer `relative`, which also contains the "no settings
+  // match" paragraph — and that paragraph is in normal flow, so a search with
+  // no results made the box taller and dropped both overlays to the middle of
+  // the whole thing instead of the middle of the input.
+  //
+  // So the invariant is not "the icon is centred" but "the thing it centres on
+  // cannot change height": the nearest positioned ancestor must contain the
+  // input and must not contain the results list or the empty-state message.
+  render(
+    <SettingsSearch
+      query=""
+      onQueryChange={() => {}}
+      onPick={() => {}}
+      desktop
+    />,
+  );
+
+  const root = screen.getByTestId("settings-search");
+  const icon = root.querySelector("svg");
+  assert.ok(icon, "the search field should render its icon");
+
+  let context: HTMLElement | null = icon.parentElement;
+  while (context && !context.className.includes("relative")) {
+    context = context.parentElement;
+  }
+  assert.ok(context, "the icon should have a positioned ancestor");
+
+  assert.ok(
+    context.querySelector("input"),
+    "the icon's positioning context must contain the input it sits in",
+  );
+  assert.ok(
+    context.querySelector('[data-testid="settings-search-results"]') === null,
+    "the results list must sit outside the icon's positioning context",
+  );
+  assert.ok(
+    context !== root,
+    "the outer container also holds the empty-state message, which grows; the field needs its own context",
   );
 });
