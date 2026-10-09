@@ -15,10 +15,10 @@
  * passes to `t()` for its label, which `settingsSubtab === "..."` block it sits
  * in, and which conditions guard it. The registry has to agree with all four.
  *
- * The two subtabs that re-host a panel from another file — Assistant and
- * Notifications — are checked a second way, because their rows are not in the
- * source this parses: their entries have to match the panel's own exported
- * section list, id for id and label for label, in order.
+ * The three subtabs that re-host a panel from another file — Assistant,
+ * Notifications and Sync — are checked a second way, because their rows are
+ * not in the source this parses: their entries have to match the panel's own
+ * exported section list, id for id and label for label, in order.
  *
  * What that catches, which nothing else would:
  *
@@ -50,6 +50,7 @@ import {
   type SettingsSearchEntry,
   type SettingsSubtab,
 } from "../src/components/dns/settings-search";
+import { SYNC_SETTINGS_SECTIONS } from "../src/components/dns/SyncSettings";
 import { TABLE_COLUMN_GROUPS } from "../src/lib/tables/table-columns";
 
 const SOURCE_URL = new URL(
@@ -552,18 +553,44 @@ test("the Notifications entries are the panel's own sections", () => {
   );
 });
 
+test("the Sync entries are the panel's own sections", () => {
+  // The third re-hosted panel, checked like the other two. `SyncSettings`
+  // renders its four sections' rows in its own file — it has to, because a
+  // settings row inside the `settingsSubtab === "sync"` block would be a row
+  // this suite demands a `data-setting-id` for, and the panel's rows are
+  // provider fields and secret affordances rather than preference toggles. So
+  // a section is the finest thing the index can name, and the panel's own list
+  // is what it has to agree with.
+  const expected = SYNC_SETTINGS_SECTIONS.map((section) => ({
+    id: section.id,
+    label: section.label,
+  }));
+  const actual = SETTINGS_SEARCH_ENTRIES.filter(
+    (entry) => entry.subtab === "sync",
+  ).map((entry) => ({
+    id: entry.anchor.kind === "syncSection" ? entry.anchor.section : "",
+    label: entry.label,
+  }));
+  assert.deepEqual(
+    actual,
+    expected,
+    "the Sync index must list exactly SYNC_SETTINGS_SECTIONS, with their labels",
+  );
+});
+
 test("an anchorless entry's label is a string its subtab renders", () => {
   const blocks = findSubtabBlocks();
   for (const entry of SETTINGS_SEARCH_ENTRIES) {
     if (entry.anchor.kind === "row" || entry.anchor.kind === "columnToggle") {
       continue;
     }
-    // Both of these re-host a panel from another file, so their labels are not
-    // strings `DNSManager.tsx` renders. They are checked against their panel's
-    // own exported section list instead, by the two tests above — which is a
-    // stricter check than this one, not an exemption from it.
+    // All three of these re-host a panel from another file, so their labels are
+    // not strings `DNSManager.tsx` renders. They are checked against their
+    // panel's own exported section list instead, by the three tests above —
+    // which is a stricter check than this one, not an exemption from it.
     if (entry.subtab === "assistant") continue;
     if (entry.subtab === "notifications") continue;
+    if (entry.subtab === "sync") continue;
     const block = blocks.get(entry.subtab);
     assert.ok(block, `no ${entry.subtab} subtab block`);
     assert.ok(

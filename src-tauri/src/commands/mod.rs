@@ -15,6 +15,11 @@ pub mod history;
 /// `commands::retention::`.
 pub mod retention;
 pub mod services;
+/// Cloud sync for the API key vault. Not glob-re-exported, so its wire types
+/// stay behind `commands::sync::` — `SyncStatus` and `SyncOutcome` in the crate
+/// root would be anybody's, and this module's are named after the renderer's
+/// contract rather than after it.
+pub mod sync;
 /// How a person's action is described for the audit trail. Not
 /// glob-re-exported: it holds no commands, only the vocabulary the commands
 /// record through.

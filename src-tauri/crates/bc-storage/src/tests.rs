@@ -2393,3 +2393,160 @@ async fn a_store_written_by_a_newer_build_survives_a_read_and_a_write_here() {
         RetentionReason::Unknown
     );
 }
+
+// ── Sync ───────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn sync_secrets_are_prefixed_into_a_namespace_of_their_own() {
+    let storage = Storage::new(false);
+    storage
+        .store_sync_secret("nextcloud", "app-password")
+        .await
+        .expect("store a provider credential");
+    storage
+        .store_sync_secret("passphrase", "correct-horse")
+        .await
+        .expect("store the sync passphrase");
+
+    assert_secret(
+        &storage.get_sync_secret("nextcloud").await.expect("read"),
+        "app-password",
+        "the stored credential changed on the way back",
+    );
+    assert_secret(
+        &storage.get_sync_secret("passphrase").await.expect("read"),
+        "correct-horse",
+        "the stored passphrase changed on the way back",
+    );
+
+    // The prefix is the point. A vault secret is keyed by API key id, so a
+    // credential also readable as `vault:nextcloud` would be handed out by
+    // `get_vault_secret` to anything that knows a key id — and a key whose id
+    // happened to be `nextcloud` would overwrite it.
+    assert!(matches!(
+        storage.get_vault_secret("nextcloud").await,
+        Err(StorageError::NotFound)
+    ));
+    storage
+        .store_vault_secret("nextcloud", "an-api-key-password")
+        .await
+        .expect("store a vault secret under the same bare name");
+    assert_secret(
+        &storage.get_sync_secret("nextcloud").await.expect("read"),
+        "app-password",
+        "a vault secret of the same bare name overwrote the sync one",
+    );
+
+    // Deleting one slot leaves the other: the passphrase outlives a provider
+    // switch on purpose, because it is what opens the blobs pushed from either.
+    storage
+        .delete_sync_secret("nextcloud")
+        .await
+        .expect("delete the credential");
+    assert!(matches!(
+        storage.get_sync_secret("nextcloud").await,
+        Err(StorageError::NotFound)
+    ));
+    assert_secret(
+        &storage.get_sync_secret("passphrase").await.expect("read"),
+        "correct-horse",
+        "deleting a credential took the passphrase with it",
+    );
+}
+
+#[tokio::test]
+async fn replacing_the_key_list_keeps_the_ids_it_was_handed() {
+    let storage = Storage::new(false);
+    let seeded = storage
+        .add_api_key(
+            "Local only".to_string(),
+            "c2VhbGVk".to_string(),
+            Some("ops@example.test".to_string()),
+            EncryptionConfig::default(),
+        )
+        .await
+        .expect("seed a key");
+
+    storage
+        .replace_api_keys(vec![ApiKey {
+            id: "key_from-the-bundle".to_string(),
+            label: "Production".to_string(),
+            email: None,
+            encrypted_key: "YnVuZGxlZA==".to_string(),
+            iterations: 200_000,
+            key_length: 32,
+            algorithm: "AES-GCM".to_string(),
+        }])
+        .await
+        .expect("install a pulled bundle");
+
+    let keys = storage.get_api_keys().await.expect("read the list back");
+    assert_eq!(
+        keys.len(),
+        1,
+        "installing a bundle is wholesale, not a merge"
+    );
+    assert_ne!(keys[0].id, seeded, "and what was there is gone");
+    assert_eq!(
+        keys[0].id, "key_from-the-bundle",
+        "a restored key under a freshly minted id is a key that every \
+         vault:<id> secret on this machine has lost"
+    );
+    assert_eq!(
+        keys[0].iterations, 200_000,
+        "each key keeps the parameters it was sealed under, not this build's"
+    );
+}
+
+#[tokio::test]
+async fn the_sync_preferences_round_trip_as_one_nested_object() {
+    let storage = Storage::new(false);
+    let prefs = Preferences {
+        sync: Some(bc_sync::SyncSettings {
+            enabled: true,
+            provider: Some(bc_sync::SyncProvider::Nextcloud),
+            webdav_url: Some("https://cloud.example.test/dav".to_string()),
+            webdav_username: Some("alice".to_string()),
+            auto_push_minutes: Some(60),
+            ..bc_sync::SyncSettings::default()
+        }),
+        sync_device_id: Some("3f2504e0-4f89-41d3-9a0c-0305e82c3301".to_string()),
+        sync_last_manifest: Some(bc_sync::SyncManifest {
+            generation: 4,
+            checksum: bc_sync::checksum_hex(b"sealed"),
+            bytes: 6,
+            written_at: "2026-01-01T00:00:00+00:00".to_string(),
+            device_id: "3f2504e0-4f89-41d3-9a0c-0305e82c3301".to_string(),
+            device_label: "Windows 11".to_string(),
+            payload_version: 1,
+            iterations: 120_000,
+            key_length: 32,
+            algorithm: "AES-GCM".to_string(),
+        }),
+        sync_vault_fingerprint: Some(bc_sync::checksum_hex(b"entries")),
+        ..Preferences::default()
+    };
+
+    storage
+        .set_preferences(&prefs)
+        .await
+        .expect("write preferences");
+    assert_eq!(
+        storage.get_preferences().await.expect("read preferences"),
+        prefs,
+        "a sync setting that does not survive the preference file is a setting \
+         the next launch has lost"
+    );
+
+    let stored: Value = serde_json::from_str(&serialize_json(&prefs).expect("serialise"))
+        .expect("preferences are an object");
+    assert!(
+        stored["sync"]["webdavUrl"].is_string(),
+        "the nested object keeps its own camelCase wire names: {stored}"
+    );
+    assert!(
+        stored["sync"].get("credentialPresent").is_none()
+            && stored["sync"].get("passphrasePresent").is_none(),
+        "a persisted presence flag is a flag that can disagree with the keyring"
+    );
+}

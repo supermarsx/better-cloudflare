@@ -315,6 +315,19 @@ fn main() {
             // retention. See `commands::history::COMMAND_NAMES`.
             commands::history::list_zone_history,
             commands::history::preview_undo_operation,
+            // Cloud sync for the API key vault. Seven commands, every one of
+            // them desktop-only by construction: they read the OS keyring and
+            // talk to a provider the web build cannot reach. A pull takes two
+            // of them — it replaces the whole key list, so the step that shows
+            // what it would replace cannot be the step that does it. See
+            // `commands::sync::COMMAND_NAMES`.
+            commands::sync::get_sync_status,
+            commands::sync::configure_sync,
+            commands::sync::test_sync_connection,
+            commands::sync::push_sync,
+            commands::sync::preview_sync_pull,
+            commands::sync::pull_sync,
+            commands::sync::resolve_sync_conflict,
             commands::retention::retain_dns_record,
             commands::retention::list_retained_records,
             commands::retention::restore_retained_record,
@@ -618,6 +631,24 @@ mod tests {
         for command in commands::history::COMMAND_NAMES {
             assert!(
                 production.contains(&format!("commands::history::{command},")),
+                "{command} must be registered in the invoke handler"
+            );
+        }
+    }
+
+    /// The same pinning as for zone history, for the same reason: a sync
+    /// command the renderer invokes and the handler does not list fails at the
+    /// moment someone presses Save, and nothing before that point notices.
+    #[test]
+    fn every_sync_command_is_registered() {
+        let source = include_str!("main.rs");
+        let production = source
+            .split_once("#[cfg(test)]")
+            .map(|(production, _)| production)
+            .expect("main.rs should retain a separate test module");
+        for command in commands::sync::COMMAND_NAMES {
+            assert!(
+                production.contains(&format!("commands::sync::{command},")),
                 "{command} must be registered in the invoke handler"
             );
         }

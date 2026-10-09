@@ -51,6 +51,7 @@ bc-ai-tools = { path = "crates/bc-ai-tools" }
 bc-ai-agent = { path = "crates/bc-ai-agent" }
 bc-notify = { path = "crates/bc-notify" }
 bc-update = { path = "crates/bc-update" }
+bc-sync = { path = "crates/bc-sync" }
 
 # Windows-only: reach the raw WebView2 `ICoreWebView2` to observe failed
 # top-level navigations (src/startup_guard.rs). Both crates are already in the
@@ -60,6 +61,10 @@ webview2-com = "0.39"
 windows = { version = "0.62", features = ["Win32_Foundation"] }
 
 [dev-dependencies]
+# For the in-memory `SyncEngine` that `commands::sync`'s tests drive instead of
+# a provider. Already in the tree through `bc-sync`, which declares the trait;
+# no new package, and nothing in a release build.
+async-trait = "0.1"
 tauri = { version = "2", features = ["test"] }
 tokio = { version = "1", features = ["sync", "macros", "rt", "time", "test-util"] }
 

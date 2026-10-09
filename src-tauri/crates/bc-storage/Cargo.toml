@@ -7,6 +7,11 @@ description = "Secure keyring/memory storage layer for Better Cloudflare"
 [dependencies]
 bc-crypto = { path = "../bc-crypto" }
 bc-notify = { path = "../bc-notify" }
+# For `Preferences::sync` and `Preferences::sync_last_manifest` only, the same
+# way `bc-notify` is here for `Preferences::notifications`. `bc-sync` does not
+# depend on this crate: it holds no keyring access by design, and the command
+# layer passes it the secrets it needs.
+bc-sync = { path = "../bc-sync" }
 chrono = "0.4"
 keyring = "4"
 serde = { version = "1", features = ["derive"] }

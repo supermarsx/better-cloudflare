@@ -92,6 +92,11 @@ import {
   type NotificationsSettingsSection,
 } from "./NotificationsSettings";
 import { NotificationsSettingsHost } from "./NotificationsSettingsHost";
+import {
+  SyncSettings,
+  SYNC_SETTINGS_SECTIONS,
+  type SyncSettingsSection,
+} from "./SyncSettings";
 import { AboutAppInfoCard } from "@/components/about/AboutAppInfoCard";
 import { DiagnosticsReportView } from "@/components/diagnostics/DiagnosticsReportView";
 import {
@@ -2566,6 +2571,9 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
    */
   const [notificationsSettingsSection, setNotificationsSettingsSection] =
     useState<NotificationsSettingsSection>("service");
+  /** Which section the sync settings show. Hoisted for the same reason. */
+  const [syncSettingsSection, setSyncSettingsSection] =
+    useState<SyncSettingsSection>("provider");
   // ── Update checking (About subtab) ──────────────────────────────────────
   const [updateCheckEnabled, setUpdateCheckEnabled] = useState(() =>
     storageManager.getUpdateCheckEnabled(),
@@ -5088,6 +5096,12 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
         (s) => s.id === target,
       );
       if (section) setNotificationsSettingsSection(section.id);
+    }
+    if (entry.anchor.kind === "syncSection") {
+      // And again, against the sync panel's own list.
+      const target = entry.anchor.section;
+      const section = SYNC_SETTINGS_SECTIONS.find((s) => s.id === target);
+      if (section) setSyncSettingsSection(section.id);
     }
     setSettingsSubtab(entry.subtab);
     setRevealedSettingId(entry.id);
@@ -16967,6 +16981,21 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
                           </div>
                         </div>
                       </div>
+                    )}
+                    {/* Cloud sync of the API key vault, hosted exactly as the
+                        notification settings are: the panel owns its own hook
+                        and its four sections' rows, so a *section* is what
+                        `settings-search.ts` indexes and what the registry test
+                        checks against `SYNC_SETTINGS_SECTIONS`. Desktop only,
+                        and not as a scoping decision — the store it syncs is
+                        the OS keyring, which the web build does not have. The
+                        open section is held here so it survives a trip to
+                        another subtab. */}
+                    {settingsSubtab === "sync" && isDesktop() && (
+                      <SyncSettings
+                        section={syncSettingsSection}
+                        onSectionChange={setSyncSettingsSection}
+                      />
                     )}
                     {/* About: what this build is, and whether a newer one
                         exists. Update checking lives here rather than in

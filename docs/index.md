@@ -20,7 +20,7 @@ Generated API reference is written separately to `docs/api/`, so `npm run docs` 
 | Guide                                  | What it covers                                                  |
 | -------------------------------------- | --------------------------------------------------------------- |
 | **[Screens and features](screens.md)** | All 26 screens with screenshots and what you do on each         |
-| [Architecture](architecture.md)        | The desktop shell, the 19 Rust crates, key frontend modules, CI |
+| [Architecture](architecture.md)        | The desktop shell, the 20 Rust crates, key frontend modules, CI |
 | [Security model](security.md)          | Encryption, keyring storage, and the current limits             |
 
 ## Reference

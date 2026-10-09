@@ -384,6 +384,47 @@ pub struct Preferences {
     /// see `bc_notify::NotificationSettings::normalize`).
     #[serde(default)]
     pub notifications: Option<bc_notify::NotificationSettings>,
+    /// Cloud sync settings for the API key vault (one nested, versioned
+    /// object; see `bc_sync::SyncSettings::normalize`), following
+    /// `notifications` rather than adding five more fields to this struct.
+    ///
+    /// **Nothing in it is secret.** The provider credential and the sync
+    /// passphrase are in the keyring under `sync:` — see
+    /// [`Storage::store_sync_secret`] — and the two `*Present` booleans the
+    /// settings screen reads are computed from the keyring per call rather
+    /// than persisted here, so they cannot disagree with it.
+    #[serde(default)]
+    pub sync: Option<bc_sync::SyncSettings>,
+    /// A stable id for this install, generated once and then reused.
+    ///
+    /// Not secret, and deliberately not derived from anything: a random
+    /// opaque id says nothing about the machine, where a hostname is
+    /// frequently a person's name. It is what makes "which of my devices
+    /// wrote this" answerable when two installs sync to one account, so it has
+    /// to outlive a process — which is why it is persisted rather than
+    /// generated per run.
+    #[serde(default)]
+    pub sync_device_id: Option<String>,
+    /// The manifest of the last blob this device pushed or pulled.
+    ///
+    /// Persisted because it is the generation a push guards against: a device
+    /// that forgot what it last saw would either refuse every write or
+    /// clobber another device's. It holds exactly what already sits
+    /// unencrypted in the provider's own storage, so keeping a copy here
+    /// discloses nothing new.
+    #[serde(default)]
+    pub sync_last_manifest: Option<bc_sync::SyncManifest>,
+    /// A fingerprint of the vault as it stood at the end of the last
+    /// successful sync.
+    ///
+    /// What makes "this device has unsynced changes" answerable, which is the
+    /// question a pull must ask before it replaces the key list. The
+    /// manifest's checksum cannot answer it: that is the checksum of a
+    /// *sealed* envelope, and sealing is salted, so one unchanged vault seals
+    /// to a different checksum every time. A hash of the stored entries can,
+    /// and discloses nothing — its preimage is a list of ciphertext.
+    #[serde(default)]
+    pub sync_vault_fingerprint: Option<String>,
     pub audit_export_folder_preset: Option<String>,
     pub audit_export_custom_path: Option<String>,
     pub audit_export_skip_destination_confirm: Option<bool>,
@@ -971,6 +1012,25 @@ impl Storage {
         })
     }
 
+    /// Replace the whole API key list with `keys`.
+    ///
+    /// For a sync pull, which installs a bundle rather than adding a key.
+    /// [`Self::add_api_key`] mints a fresh id per call, and a restored key
+    /// that came back under a new id is a key that every `vault:<id>` secret,
+    /// audit entry and saved session on this machine no longer points at — so
+    /// the ids travel with the bundle and are written back as they arrived.
+    ///
+    /// Wholesale rather than a merge, deliberately: the stored bundle *is* the
+    /// vault (see `src/lib/sync/types.ts` — conflicts are refused rather than
+    /// reconciled), and the caller refuses the pull before it reaches here if
+    /// this device's vault has changed since its last sync.
+    pub async fn replace_api_keys(&self, keys: Vec<ApiKey>) -> Result<(), StorageError> {
+        self.mutate_json_list("api_keys_list", false, move |stored: &mut Vec<ApiKey>| {
+            *stored = keys;
+            Ok(())
+        })
+    }
+
     pub async fn delete_api_key(&self, id: String) -> Result<(), StorageError> {
         self.mutate_json_list("api_keys_list", false, move |keys: &mut Vec<ApiKey>| {
             keys.retain(|key| key.id != id);
@@ -992,6 +1052,32 @@ impl Storage {
 
     pub async fn delete_vault_secret(&self, id: &str) -> Result<(), StorageError> {
         let key = format!("vault:{}", id);
+        self.delete_secret(&key).await
+    }
+
+    // ── Sync secrets ────────────────────────────────────────────────────
+    //
+    // The provider credential and the sync passphrase, under a namespace of
+    // their own rather than inside `vault:`. A vault secret is keyed by API
+    // key id, and these are not: `vault:nextcloud` would be indistinguishable
+    // from the secret of a key whose id happened to be `nextcloud`.
+    //
+    // `slot` is the bare slot the caller was given — `SyncProvider::
+    // credential_slot()` or `bc_sync::PASSPHRASE_SLOT` — and the prefix is
+    // added here, exactly as the `vault:` trio above adds its own.
+
+    pub async fn store_sync_secret(&self, slot: &str, secret: &str) -> Result<(), StorageError> {
+        let key = format!("sync:{}", slot);
+        self.store_secret(&key, secret).await
+    }
+
+    pub async fn get_sync_secret(&self, slot: &str) -> Result<String, StorageError> {
+        let key = format!("sync:{}", slot);
+        self.get_secret(&key).await
+    }
+
+    pub async fn delete_sync_secret(&self, slot: &str) -> Result<(), StorageError> {
+        let key = format!("sync:{}", slot);
         self.delete_secret(&key).await
     }
 

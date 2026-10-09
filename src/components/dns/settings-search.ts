@@ -1,7 +1,7 @@
 /**
  * The searchable index of Session settings.
  *
- * Settings live in ten subtabs of one 13,000-line component, and a user who
+ * Settings live in eleven subtabs of one 17,000-line component, and a user who
  * wants one has to know which subtab holds it. This module is the index a
  * search box reads: one entry per setting, with the subtab that owns it and
  * enough text to find it by.
@@ -19,13 +19,14 @@
  *
  * The subtabs whose contents are not rows of this shape are handled by
  * construction instead: the Columns entries are generated from
- * {@link TABLE_COLUMN_GROUPS}, and the Assistant and Notifications entries are
- * checked against `AI_SETTINGS_SECTIONS` and
- * `NOTIFICATION_SETTINGS_SECTIONS` by the same test. Both of those subtabs
- * re-host a panel whose rows live in their own files, so a *section* is the
- * finest thing the index can name and the finest thing a jump can land on;
- * checking the sections against the panel's own list is what stops a renamed
- * section leaving search matching a word nobody can see.
+ * {@link TABLE_COLUMN_GROUPS}, and the Assistant, Notifications and Sync
+ * entries are checked against `AI_SETTINGS_SECTIONS`,
+ * `NOTIFICATION_SETTINGS_SECTIONS` and `SYNC_SETTINGS_SECTIONS` by the same
+ * test. All three of those subtabs re-host a panel whose rows live in their
+ * own files, so a *section* is the finest thing the index can name and the
+ * finest thing a jump can land on; checking the sections against the panel's
+ * own list is what stops a renamed section leaving search matching a word
+ * nobody can see.
  *
  * About and Diagnostics index their settings rows, and only those. Their
  * informational content — build facts, dependency lists, a collected report —
@@ -57,6 +58,7 @@ export type SettingsSubtab =
   | "mcp"
   | "assistant"
   | "profiles"
+  | "sync"
   | "about"
   | "diagnostics";
 
@@ -87,6 +89,14 @@ export const SETTINGS_SUBTABS: readonly SettingsSubtabDescriptor[] = [
   { id: "mcp", label: "MCP" },
   { id: "assistant", label: "Assistant", desktopOnly: true },
   { id: "profiles", label: "Profiles" },
+  // Next to Profiles because the two are the same question with different
+  // answers: Profiles moves configuration between machines as a file you
+  // carry, Sync moves the key vault between them through a provider. Desktop
+  // only, and not as a scoping decision — a browser cannot talk WebDAV to a
+  // Nextcloud instance that has published no CORS headers for this origin, and
+  // the credential store this syncs is the OS keyring, which the web build
+  // does not have.
+  { id: "sync", label: "Sync", desktopOnly: true },
   // Last two, and in this order: both answer "what am I running" rather than
   // "how should it behave", and a diagnostics report is the more niche of the
   // two.
@@ -117,6 +127,7 @@ export type SettingsAnchor =
     }
   | { readonly kind: "assistantSection"; readonly section: string }
   | { readonly kind: "notificationsSection"; readonly section: string }
+  | { readonly kind: "syncSection"; readonly section: string }
   | { readonly kind: "subtab" };
 
 /** One searchable setting. */
@@ -983,6 +994,97 @@ const ANCHORLESS_ENTRIES: readonly SettingsSearchEntry[] = [
     desktopOnly: true,
     anchor: { kind: "notificationsSection", section: "retention" },
   },
+  // The sync panel's four sections, policed the same way: its rows live in
+  // `SyncSettings.tsx`, so the registry test checks these against
+  // `SYNC_SETTINGS_SECTIONS` rather than against anything `DNSManager.tsx`
+  // renders.
+  //
+  // The keywords carry more weight here than elsewhere, because almost nobody
+  // looking for this feature knows it is called "sync". They search for the
+  // provider they have ("nextcloud", "google drive"), for what they want to
+  // happen ("backup", "restore", "another computer"), or for the thing they
+  // have lost ("passphrase").
+  {
+    id: "sync-provider",
+    subtab: "sync",
+    label: "Provider",
+    keywords: [
+      "sync",
+      "cloud",
+      "nextcloud",
+      "webdav",
+      "google drive",
+      "app password",
+      "access token",
+      "credential",
+      "url",
+      "username",
+      "test connection",
+      "backup",
+      "another computer",
+      "another machine",
+    ],
+    desktopOnly: true,
+    anchor: { kind: "syncSection", section: "provider" },
+  },
+  {
+    id: "sync-encryption",
+    subtab: "sync",
+    label: "Encryption",
+    keywords: [
+      "sync",
+      "passphrase",
+      "password",
+      "encrypt",
+      "seal",
+      "envelope",
+      "restore",
+      "keyring",
+      "lost",
+      "forgot",
+    ],
+    desktopOnly: true,
+    anchor: { kind: "syncSection", section: "encryption" },
+  },
+  {
+    id: "sync-schedule",
+    subtab: "sync",
+    label: "Schedule",
+    keywords: [
+      "sync",
+      "automatic",
+      "manual",
+      "cadence",
+      "interval",
+      "minutes",
+      "how often",
+      "enable",
+      "turn off",
+      "upload",
+    ],
+    desktopOnly: true,
+    anchor: { kind: "syncSection", section: "schedule" },
+  },
+  {
+    id: "sync-status",
+    subtab: "sync",
+    label: "Sync status",
+    keywords: [
+      "sync",
+      "push",
+      "pull",
+      "last sync",
+      "conflict",
+      "diverged",
+      "generation",
+      "device",
+      "archive",
+      "keep local",
+      "keep remote",
+    ],
+    desktopOnly: true,
+    anchor: { kind: "syncSection", section: "status" },
+  },
   {
     id: "profiles-export",
     subtab: "profiles",
@@ -1042,6 +1144,8 @@ export function settingsAnchorSelector(
       return `[data-testid="assistant-settings-host"]`;
     case "notificationsSection":
       return `[data-testid="notifications-settings-host"]`;
+    case "syncSection":
+      return `[data-testid="sync-settings-host"]`;
     case "subtab":
       return null;
   }
