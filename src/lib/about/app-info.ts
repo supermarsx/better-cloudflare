@@ -45,7 +45,7 @@ export const PROJECT_LINKS = {
 /** The project's own licence, as `license.md` states it. */
 export const PROJECT_LICENSE = {
   spdx: "MIT",
-  holder: "Mariana M",
+  holder: "Mariana Mota",
   file: "license.md",
 } as const;
 

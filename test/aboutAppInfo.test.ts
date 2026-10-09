@@ -74,10 +74,33 @@ test("the project licence matches license.md", () => {
 
   assert.ok(license.startsWith("MIT License"));
   assert.equal(PROJECT_LICENSE.spdx, "MIT");
-  assert.ok(
-    license.includes(PROJECT_LICENSE.holder),
-    `license.md does not name ${PROJECT_LICENSE.holder}`,
+
+  // Matched against the copyright line and to its end, not with `includes`
+  // anywhere in the file. A bare substring check passes when the two have
+  // drifted to a shorter prefix — "Mariana M" is `includes`-equal to a
+  // `license.md` naming "Mariana Mota" — so the About screen could show a
+  // stale holder while this test stayed green. Three places state the holder
+  // (here, `license.md`, and `tauri.conf.json`'s bundle copyright) and they
+  // have to agree exactly.
+  const copyright = license
+    .split("\n")
+    .find((line) => line.startsWith("Copyright (c) "));
+  assert.ok(copyright, "license.md should carry a `Copyright (c)` line");
+  assert.match(
+    copyright,
+    new RegExp(`^Copyright \\(c\\) \\d{4} ${PROJECT_LICENSE.holder}$`),
+    `license.md's copyright line is ${JSON.stringify(copyright)}, which does not name exactly ${PROJECT_LICENSE.holder}`,
   );
+
+  const tauri = JSON.parse(readRepositoryFile("src-tauri/tauri.conf.json")) as {
+    bundle?: { copyright?: string };
+  };
+  assert.equal(
+    tauri.bundle?.copyright,
+    copyright,
+    "the bundle copyright is what ships in the installer metadata, so it must match license.md exactly",
+  );
+
   assert.ok(fs.existsSync(path.join(repositoryRoot, PROJECT_LICENSE.file)));
 });
 
