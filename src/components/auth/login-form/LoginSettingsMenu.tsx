@@ -16,7 +16,14 @@
  * frame. `e2e/login-key-management.spec.ts` pins exactly this.
  */
 import { useEffect, useRef, useState } from "react";
-import { KeyRound, Plus, Settings2, Sliders, Trash2 } from "lucide-react";
+import {
+  CloudDownload,
+  KeyRound,
+  Plus,
+  Settings2,
+  Sliders,
+  Trash2,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Tooltip } from "@/components/ui/tooltip";
 import {
@@ -36,6 +43,16 @@ import type { ApiKey } from "@/types/dns";
 interface LoginSettingsMenuProps {
   onAddKey: () => void;
   onSettings: () => void;
+  /**
+   * Opens cloud sync. Omitted on the web build, where the item is not shown.
+   *
+   * A callback rather than a `boolean` beside one, so there is no way to be
+   * told the item is available and then have nothing to call — and so this
+   * menu needs to know nothing about why it is unavailable. Sync is
+   * desktop-only (it speaks WebDAV and keeps secrets in the OS keyring), and
+   * the caller is the one that knows which build this is.
+   */
+  onCloudSync?: () => void;
   hasKeys: boolean;
   selectedKey: ApiKey | null;
   onEditKey: (key: ApiKey) => void;
@@ -47,6 +64,7 @@ interface LoginSettingsMenuProps {
 export function LoginSettingsMenu({
   onAddKey,
   onSettings,
+  onCloudSync,
   hasKeys,
   selectedKey,
   onEditKey,
@@ -56,10 +74,21 @@ export function LoginSettingsMenu({
   const { t } = useI18n();
   // i18n resolves asynchronously, and `t` returns an empty string until it
   // does. On an icon-only button that leaves the control with no accessible
-  // name at all for the first paint, so the literal is kept as the floor —
-  // the same guard `LoginKeySelector` uses for the key label.
-  const label = (text: string) => t(text, text) || text;
-  const menuLabel = label("Keys and settings");
+  // name at all for the first paint, so each call keeps the literal as a
+  // floor — the same guard `LoginKeySelector` uses for the key label.
+  //
+  // Written out as a bare `t(…) || "…"` at every call site rather than routed
+  // through a one-argument helper, which is what this file used to do. The
+  // helper read better and hid every string in this menu from
+  // `scripts/i18n-coverage.mjs`: that scanner finds literal `t(` call sites
+  // and deliberately rejects any with an identifier character in front, so an
+  // aliased call matched nothing. "Keys and settings" — this menu's
+  // accessible name — was therefore uncatalogued and shipped in English in
+  // all twelve locales while the coverage report read `0 uncatalogued
+  // strings`. The other six survived only by being catalogued from other
+  // files, which is luck rather than a mechanism.
+  const menuLabel =
+    t("Keys and settings", "Keys and settings") || "Keys and settings";
   const canManage = Boolean(selectedKey && hasKeys);
   const [menuOpen, setMenuOpen] = useState(false);
   const pendingAction = useRef<(() => void) | null>(null);
@@ -125,7 +154,7 @@ export function LoginSettingsMenu({
           className="cursor-pointer focus:bg-primary/10"
         >
           <Plus className="mr-2 h-3.5 w-3.5" />
-          {label("Add New Key")}
+          {t("Add New Key", "Add New Key") || "Add New Key"}
         </DropdownMenuItem>
 
         <DropdownMenuSub>
@@ -134,7 +163,7 @@ export function LoginSettingsMenu({
             className="cursor-pointer px-2 py-1.5 focus:bg-primary/10 data-[disabled]:pointer-events-none data-[disabled]:opacity-50"
           >
             <KeyRound className="mr-2 h-3.5 w-3.5" />
-            {label("Manage Key")}
+            {t("Manage Key", "Manage Key") || "Manage Key"}
           </DropdownMenuSubTrigger>
           <DropdownMenuPortal>
             <DropdownMenuSubContent className="bg-popover/70 text-foreground">
@@ -146,7 +175,7 @@ export function LoginSettingsMenu({
                 className="cursor-pointer focus:bg-primary/10"
               >
                 <Sliders className="mr-2 h-3.5 w-3.5" />
-                {label("Edit")}
+                {t("Edit", "Edit") || "Edit"}
               </DropdownMenuItem>
               <DropdownMenuItem
                 onSelect={(event) => {
@@ -156,7 +185,7 @@ export function LoginSettingsMenu({
                 className="cursor-pointer text-red-500/90 focus:bg-red-500/10 hover:bg-red-500/5"
               >
                 <Trash2 className="mr-2 h-3.5 w-3.5" />
-                {label("Delete")}
+                {t("Delete", "Delete") || "Delete"}
               </DropdownMenuItem>
             </DropdownMenuSubContent>
           </DropdownMenuPortal>
@@ -164,12 +193,28 @@ export function LoginSettingsMenu({
 
         <DropdownMenuSeparator />
 
+        {/* Above Settings rather than below it: on a machine with no keys
+            this is the only item that leads anywhere useful, and it is what
+            someone restoring an install is looking for. Queued through
+            `queueAction` like every other item here — see the file header on
+            why opening a dialog straight from `onSelect` loses focus. */}
+        {onCloudSync ? (
+          <DropdownMenuItem
+            onSelect={(event) => queueAction(event, onCloudSync)}
+            className="cursor-pointer focus:bg-primary/10"
+            data-testid="login-menu-cloud-sync"
+          >
+            <CloudDownload className="mr-2 h-3.5 w-3.5" />
+            {t("Cloud sync", "Cloud sync") || "Cloud sync"}
+          </DropdownMenuItem>
+        ) : null}
+
         <DropdownMenuItem
           onSelect={(event) => queueAction(event, onSettings)}
           className="cursor-pointer focus:bg-primary/10"
         >
           <Settings2 className="mr-2 h-3.5 w-3.5" />
-          {label("Settings")}
+          {t("Settings", "Settings") || "Settings"}
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>

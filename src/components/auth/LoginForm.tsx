@@ -124,6 +124,13 @@ export function LoginForm({ onLogin, desktop }: LoginFormProps) {
   const [deleteTarget, setDeleteTarget] = useState<typeof selectedKey>(null);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [settingsMenuOpen, setSettingsMenuOpen] = useState(false);
+  /**
+   * Cloud sync, which is the one dialog here that is useful with no keys at
+   * all — a fresh install reaches its provider settings and its pull from
+   * nowhere else, because every other settings screen lives behind the
+   * authenticated shell. See `CloudSyncDialog`.
+   */
+  const [showCloudSync, setShowCloudSync] = useState(false);
   // Every maintenance action in the settings dialog decrypts the selected key
   // first, so both halves are the precondition for offering them.
   const canUseSelectedKey = Boolean(selectedKeyId && password);
@@ -150,6 +157,10 @@ export function LoginForm({ onLogin, desktop }: LoginFormProps) {
         <LoginSettingsMenu
           onAddKey={() => setShowAddKey(true)}
           onSettings={() => setShowSettings(true)}
+          // Sync speaks WebDAV and keeps its secrets in the OS keyring, so
+          // the web build has no such feature and gets no such item. Passing
+          // the callback only on desktop is what hides it.
+          onCloudSync={desktop ? () => setShowCloudSync(true) : undefined}
           hasKeys={apiKeys.length > 0}
           selectedKey={selectedKey}
           onEditKey={handleEditKeyInit}
@@ -226,6 +237,8 @@ export function LoginForm({ onLogin, desktop }: LoginFormProps) {
             handleRemoveVaultSecret={handleRemoveVaultSecret}
             handleManagePasskeys={handleManagePasskeys}
             canUseSelectedKey={canUseSelectedKey}
+            showCloudSync={desktop ? showCloudSync : undefined}
+            setShowCloudSync={desktop ? setShowCloudSync : undefined}
             showManagePasskeys={showManagePasskeys}
             setShowManagePasskeys={setShowManagePasskeys}
             selectedKeyId={selectedKeyId}

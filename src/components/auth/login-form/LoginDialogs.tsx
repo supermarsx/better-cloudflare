@@ -1,6 +1,7 @@
 import { AddKeyDialog } from "../AddKeyDialog";
 import { EncryptionSettingsDialog } from "../EncryptionSettingsDialog";
 import PasskeyManagerDialog from "../PasskeyManagerDialog";
+import { CloudSyncDialog } from "../CloudSyncDialog";
 import type { PasskeyStatusState } from "@/lib/auth/passkey-status";
 import { EditKeyDialog } from "../EditKeyDialog";
 import type { EncryptionConfig } from "@/types/dns";
@@ -31,6 +32,13 @@ interface LoginDialogsProps {
   handleRemoveVaultSecret: () => void;
   handleManagePasskeys: () => void;
   canUseSelectedKey: boolean;
+
+  /**
+   * Cloud sync. Both omitted on the web build, where sync does not exist and
+   * the menu shows no item for it.
+   */
+  showCloudSync?: boolean;
+  setShowCloudSync?: (open: boolean) => void;
 
   showManagePasskeys: boolean;
   setShowManagePasskeys: (open: boolean) => void;
@@ -79,6 +87,9 @@ export function LoginDialogs({
   handleRemoveVaultSecret,
   handleManagePasskeys,
   canUseSelectedKey,
+
+  showCloudSync,
+  setShowCloudSync,
 
   showManagePasskeys,
   setShowManagePasskeys,
@@ -154,6 +165,13 @@ export function LoginDialogs({
         )}
         canUseSelectedKey={canUseSelectedKey}
       />
+
+      {setShowCloudSync ? (
+        <CloudSyncDialog
+          open={Boolean(showCloudSync)}
+          onOpenChange={setShowCloudSync}
+        />
+      ) : null}
 
       <PasskeyManagerDialog
         open={showManagePasskeys}
