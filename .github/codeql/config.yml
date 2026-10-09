@@ -17,9 +17,14 @@
 # The timeout itself had a different cause. Of those 35 queries, nine completed
 # inside 3m45s and all nine were purely syntactic; the other twenty-six all
 # started and none finished in the following 71m52s. Those twenty-six share one
-# global type-inference and dataflow computation, which does not converge on a
-# 698-crate graph under rust-queries 0.1.43 — and since every security query is
-# one of them, no exclusion can keep the coverage and skip the cost.
+# global type-inference and dataflow computation, and since every security query
+# is one of them, no exclusion can keep the coverage and skip the cost.
+#
+# That shared stage takes about 79m30s — measured once it was given room, in
+# dispatched run 37811232065, where all 35 queries completed and the twenty-six
+# reported within twelve seconds of each other. The job needed 91m17s against a
+# 90-minute cap, so it was failing by about a minute rather than failing to
+# terminate.
 #
 # What the four cost, measured on run 37775289710 before they were excluded.
 # Note the `[n/39 eval]` index counts *completions*, not starts — the security

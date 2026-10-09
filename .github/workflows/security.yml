@@ -101,22 +101,30 @@ jobs:
     # — every security query, plus `DataFlowConsistencyCounts`, the summary
     # statistics and the telemetry queries.
     #
-    # What those twenty-six share is global dataflow. They consume one shared
-    # type-inference and dataflow computation, so none of them can report until
-    # it converges, and on a 698-crate graph under rust-queries 0.1.43 it does
-    # not converge inside ninety minutes. That stage is not overhead around the
-    # security queries; it is what they are. So there is no exclusion that
-    # keeps Rust security coverage and avoids the cost, and raising a per-push
-    # cap to fit an unbounded computation would just buy a slower identical
-    # failure on every commit.
+    # What those twenty-six share is global dataflow: one type-inference and
+    # dataflow computation that none of them can report until it finishes. That
+    # stage is not overhead around the security queries, it is what they are, so
+    # no exclusion keeps Rust security coverage and avoids the cost.
     #
-    # Hence: weekly instead of per-push, with room to actually finish. Weekly
-    # Rust coverage that produces a SARIF is strictly more than the per-push
-    # coverage this job has delivered to date, which is none. The concurrency
-    # group above already protects a long scheduled run from being cancelled by
-    # a push. If a scheduled run still cannot finish in 330 minutes, the
-    # conclusion is about rust-queries 0.1.43 rather than about this workflow,
-    # and the next lever is upstream.
+    # It does finish, and the first run given room proved it — dispatched run
+    # 37811232065 completed all 35 queries and uploaded this repository's first
+    # Rust SARIF. The shared stage took about 79m30s, after which all twenty-six
+    # reported within twelve seconds of each other; `Analyze` took 87m09s and
+    # the job 91m17s in total.
+    #
+    # So the 90-minute cap was missing by roughly one minute, and an earlier
+    # version of this comment was wrong to say the computation does not
+    # converge. It is a cost problem, not an impossibility: ~91 minutes of
+    # runner time for every push to main, on a repository where most changes do
+    # not touch Rust at all. Weekly plus dispatch buys the coverage for a small
+    # fraction of that, and 330 minutes leaves 3.6x headroom over the one
+    # measurement we have.
+    #
+    # If per-commit Rust coverage is wanted later, the change is this
+    # expression and a cap of about 120 minutes — not more exclusions, and not
+    # a reduced query suite. Note that the concurrency group above deliberately
+    # does not cancel superseded pushes, so several pushes in quick succession
+    # would queue several 91-minute jobs rather than replace one another.
     timeout-minutes: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 330 || 30 }}
     env:
       TAURI_CONFIG: '{"build":{"frontendDist":"../app"}}'
