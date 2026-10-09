@@ -478,6 +478,11 @@
     min-height: 32px;
     padding: 0.25rem 0.5rem;
     color: hsl(var(--foreground) / 0.88);
+    /* A menu row is a control, so its label never highlights. Each Radix
+       consumer — `DropdownMenu`, `context-menu`, `select` — already passed
+       `select-none` in its own class list, which worked but meant the next one
+       added had to remember. Here it comes with the surface. */
+    user-select: none;
     transition:
       background-color var(--motion-quick) ease,
       color var(--motion-quick) ease,
@@ -878,6 +883,11 @@
     position: relative;
     flex: 0 0 auto;
     cursor: pointer;
+    /* Matches `.ui-tab`, which has always had this. A segmented strip is the
+       worst case for a stray selection: the segments sit a few pixels apart,
+       so a slightly dragged click paints across two labels, and the group
+       scrolls horizontally — dragging to scroll it selected the whole row. */
+    user-select: none;
     border-radius: 0.75rem;
     padding: 0.4rem 0.7rem;
     font-size: 0.75rem;

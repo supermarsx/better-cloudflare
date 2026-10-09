@@ -20,7 +20,9 @@ const Switch = React.forwardRef<
 >(({ className, size = "md", ...props }, ref) => (
   <SwitchPrimitives.Root
     className={cn(
-      "ui-focus switch-toggle glass-surface glass-surface-hover peer inline-flex shrink-0 cursor-pointer items-center rounded-full bg-muted/20 transition-colors focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50 data-[state=checked]:border-primary/60 data-[state=checked]:bg-primary/15 data-[state=checked]:shadow-[0_0_14px_hsl(var(--primary)_/_0.18)]",
+      // `select-none` so that a double-click to toggle twice does not drag a
+      // selection out across whatever text sits beside the switch.
+      "ui-focus switch-toggle glass-surface glass-surface-hover peer inline-flex shrink-0 cursor-pointer select-none items-center rounded-full bg-muted/20 transition-colors focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50 data-[state=checked]:border-primary/60 data-[state=checked]:bg-primary/15 data-[state=checked]:shadow-[0_0_14px_hsl(var(--primary)_/_0.18)]",
       size === "xs" ? "h-4 w-7" : size === "sm" ? "h-6 w-10" : "h-7 w-12",
       className,
     )}

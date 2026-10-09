@@ -10,7 +10,18 @@ import { cva, type VariantProps } from "class-variance-authority";
 import { cn } from "@/lib/utils";
 
 const buttonVariants = cva(
-  "ui-focus inline-flex cursor-pointer items-center justify-center whitespace-nowrap rounded-md text-sm font-medium transition-[color,background-color,border-color,box-shadow,opacity,translate,filter] focus-visible:outline-none disabled:cursor-not-allowed disabled:pointer-events-none disabled:opacity-50 active:translate-y-[1px]",
+  // `select-none` because a button's label is a control, not content. Without
+  // it a double-click highlights the word, a drag across a toolbar paints a
+  // selection over several buttons, and a double-click on a repeat action
+  // leaves the text selected underneath — all of which read as "this is a web
+  // page" in a desktop window. Every native toolkit suppresses it, and the
+  // menu primitives here already did so individually.
+  //
+  // Scoped to the primitive rather than applied globally on purpose: content
+  // the user may want to copy — record values, checksums, device ids, error
+  // messages, export output — stays selectable, and a chip or a tag is a label
+  // to read rather than a control to click.
+  "ui-focus inline-flex cursor-pointer select-none items-center justify-center whitespace-nowrap rounded-md text-sm font-medium transition-[color,background-color,border-color,box-shadow,opacity,translate,filter] focus-visible:outline-none disabled:cursor-not-allowed disabled:pointer-events-none disabled:opacity-50 active:translate-y-[1px]",
   {
     variants: {
       variant: {

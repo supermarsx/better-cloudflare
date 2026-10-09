@@ -9,7 +9,11 @@ import { cva, type VariantProps } from "class-variance-authority";
 import { cn } from "@/lib/utils";
 
 const labelVariants = cva(
-  "text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70",
+  // `select-none` because a label is part of the control it names: clicking it
+  // focuses or toggles that control, so a double-click — which is two clicks —
+  // would toggle a switch twice and leave the word highlighted. Nobody
+  // double-clicks a field label to read it.
+  "select-none text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70",
 );
 
 /**
