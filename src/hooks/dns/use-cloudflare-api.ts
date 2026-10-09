@@ -75,23 +75,36 @@ export function useCloudflareAPI(apiKey?: string, email?: string) {
     [api],
   );
 
+  /**
+   * `previous` is the row as it stood before the edit, and it is what makes
+   * the write undoable from the zone's History subtab. Optional, because not
+   * every caller has it; an edit that omits it is recorded but cannot be
+   * reverted. See `src/lib/history/types.ts`.
+   */
   const updateDNSRecord = useCallback(
     (
       zoneId: string,
       recordId: string,
       record: Partial<DNSRecord>,
+      previous?: DNSRecord | null,
       signal?: AbortSignal,
     ): Promise<DNSRecord> => {
       if (!api) return Promise.reject(new Error("API key not provided"));
-      return api.updateDNSRecord(zoneId, recordId, record, signal);
+      return api.updateDNSRecord(zoneId, recordId, record, previous, signal);
     },
     [api],
   );
 
+  /** `previous` as in {@link updateDNSRecord}: the copy an undo restores. */
   const deleteDNSRecord = useCallback(
-    (zoneId: string, recordId: string, signal?: AbortSignal): Promise<void> => {
+    (
+      zoneId: string,
+      recordId: string,
+      previous?: DNSRecord | null,
+      signal?: AbortSignal,
+    ): Promise<void> => {
       if (!api) return Promise.reject(new Error("API key not provided"));
-      return api.deleteDNSRecord(zoneId, recordId, signal);
+      return api.deleteDNSRecord(zoneId, recordId, previous, signal);
     },
     [api],
   );

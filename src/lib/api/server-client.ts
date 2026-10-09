@@ -122,6 +122,29 @@ function joinRequestUrl(baseUrl: string, endpoint: string): string {
   return `${baseUrl.replace(/\/+$/, "")}/${endpoint.replace(/^\/+/, "")}`;
 }
 
+/**
+ * The before-state to send for undo, or `null` when it cannot be described
+ * completely.
+ *
+ * `normalizeTauriRecordInput` throws on a record missing a type, a name or
+ * content. That is the right answer for the record being *written* and the
+ * wrong one for the copy kept beside it: an incomplete before-state must cost
+ * the write its undo, never the write itself. The backend refuses a partial
+ * `previous` for the same reason — a snapshot with an empty `content` would
+ * restore a broken record — so this is the renderer agreeing with it rather
+ * than inventing a second policy.
+ */
+function undoSnapshotOf(
+  previous: DNSRecord | null | undefined,
+): TauriDNSRecordInput | null {
+  if (!previous) return null;
+  try {
+    return normalizeTauriRecordInput(previous);
+  } catch {
+    return null;
+  }
+}
+
 function normalizeTauriRecordInput(
   record: Partial<DNSRecord>,
 ): TauriDNSRecordInput {
@@ -537,30 +560,39 @@ export class ServerClient {
    * @param zoneId - id of the zone containing the record
    * @param recordId - id of the record to update
    * @param record - partial record fields to update
+   * @param previous - the record's state before this write, for undo
    * @param signal - optional AbortSignal
    * @returns the updated DNSRecord
+   *
+   * `previous` is the record as it stood before this write. It is optional and
+   * costs nothing to omit, but omitting it has a consequence: the backend
+   * snapshots it so the change can be undone from the zone's History subtab,
+   * and with nothing to snapshot the edit lists there as unundoable. Pass a
+   * complete record or none — a partial one is refused rather than used to
+   * restore a record with an empty `content`.
+   *
    */
   async updateDNSRecord(
     zoneId: string,
     recordId: string,
     record: Partial<DNSRecord>,
+    previous?: DNSRecord | null,
     signal?: AbortSignal,
   ): Promise<DNSRecord> {
     const normalizedRecord = normalizeTauriRecordInput(record);
     if (isDesktop()) {
-      // `previous` is left unset here deliberately. This path is the
-      // browser-context client, which has no record cache to read a
-      // before-state from; the desktop UI passes one from the row it is
-      // editing. The backend treats an absent `previous` as "no snapshot",
-      // which lists the edit in the zone history as unundoable rather than
-      // restoring something wrong. See `src/lib/history/types.ts`.
+      // Forwarded rather than dropped. An earlier version of this comment
+      // claimed the desktop UI already passed one, which was wrong: nothing
+      // between here and `DNSManager` had a parameter to carry it, so every
+      // edit reached the backend with no before-state and listed as
+      // unundoable. See `src/lib/history/types.ts`.
       return TauriClient.updateDNSRecord(
         this.apiKey,
         this.email,
         zoneId,
         recordId,
         normalizedRecord,
-        null,
+        undoSnapshotOf(previous),
         signal,
       ) as Promise<DNSRecord>;
     }
@@ -591,16 +623,17 @@ export class ServerClient {
   async deleteDNSRecord(
     zoneId: string,
     recordId: string,
+    previous?: DNSRecord | null,
     signal?: AbortSignal,
   ): Promise<void> {
     if (isDesktop()) {
-      // `previous` unset for the same reason as `updateDNSRecord` above.
+      // Forwarded, for the same reason as `updateDNSRecord` above.
       return TauriClient.deleteDNSRecord(
         this.apiKey,
         this.email,
         zoneId,
         recordId,
-        null,
+        undoSnapshotOf(previous),
         signal,
       );
     }
