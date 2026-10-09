@@ -25,15 +25,15 @@
 //! so it cannot overwrite a record that exists now; the pre-flight scan is
 //! there to avoid creating a *duplicate* and to name what is in the way.
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::State;
 
 use bc_cloudflare_api::CloudflareError;
 use bc_storage::retention::{
-    self, DestinationReport, EvictionCause, ExistingRecord, RecordSnapshot, RestoreObstacle,
-    RetainedRecord, RetentionReason,
+    self, DestinationReport, ExistingRecord, RecordSnapshot, RestoreObstacle, RetainedRecord,
+    RetentionReason,
 };
 use bc_storage::{AuditActor, AuditEntry, AuditOutcome, AuditTrail, RetainOutcome};
 
@@ -270,6 +270,16 @@ pub enum RestoreOutcome {
 /// `local_tags` are this application's own tags for the record. They are keyed
 /// by the Cloudflare id that is about to die, so the caller reads them before
 /// calling, passes them here, and clears them locally afterwards.
+///
+/// `operation_id` groups this deletion with the rest of the user action it
+/// belongs to, and it is the whole reason a multi-record deletion can be undone
+/// as one thing. **This is the command the UI deletes a selection through, one
+/// record at a time** — `commands::dns::delete_bulk_dns_records` is handed ids
+/// and keeps no copy, so it cannot be undone at all. Thirty-seven calls to this
+/// command with one shared id are one undoable operation; thirty-seven calls
+/// without it are thirty-seven. Omit it and each deletion is an operation of
+/// one, with an id minted here; see [`trail::OperationId`] for why a supplied
+/// id is validated rather than trusted.
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn retain_dns_record(
@@ -285,8 +295,10 @@ pub async fn retain_dns_record(
     retention_days: Option<u32>,
     local_tags: Option<Vec<String>>,
     max_entries: Option<u32>,
+    operation_id: Option<String>,
 ) -> Result<RetainDecision, String> {
     let now = Utc::now();
+    let action = trail::OperationId::of(operation_id.as_deref());
     let entry_limit = retention::clamp_entry_limit(
         max_entries.map_or(retention::MAX_RETAINED_ENTRIES, |limit| limit as usize),
     );
@@ -296,19 +308,17 @@ pub async fn retain_dns_record(
     // the store, and after a purge or an eviction not even there.
     let facts = RecordFacts::of_snapshot(&snapshot);
     let reason_kind = RetentionReason::of(&reason);
-    // A disable has no expiry whatever the caller passed: the bin's retention
-    // window is not a deadline on a record the user parked.
-    let days = match reason_kind {
-        RetentionReason::Deleted => retention_days.or(Some(retention::DEFAULT_RETENTION_DAYS)),
-        _ => None,
-    };
-
-    let entry = RetainedRecord::new(&reason, &zone_id, zone_name.as_deref().unwrap_or_default())
-        .origin_record_id(&record_id)
-        .snapshot(snapshot)
-        .local_tags(local_tags.as_deref().unwrap_or_default())
-        .removed_at(now)
-        .expiring_after(days, now);
+    let entry = retained_entry(
+        &reason,
+        &zone_id,
+        zone_name.as_deref().unwrap_or_default(),
+        &record_id,
+        snapshot,
+        local_tags.as_deref().unwrap_or_default(),
+        &action,
+        retention_days,
+        now,
+    );
     let expires_at = entry.expires_at.map(|at| at.to_rfc3339());
 
     // Retain first. See the module header: the destructive step must not be
@@ -324,6 +334,7 @@ pub async fn retain_dns_record(
                 &record_id,
                 Some(&facts),
                 &error.to_string(),
+                &action,
             );
             format!("The record was not removed, because it could not be kept first: {error}")
         })?;
@@ -344,12 +355,15 @@ pub async fn retain_dns_record(
             protected,
             bytes_held,
         } => {
-            record_purged(&storage, &purged);
+            trail::record_purged(&*storage, &purged);
             storage.record(trail::describe_record(
-                AuditEntry::new(
-                    AuditActor::User,
-                    retain_operation(reason_kind),
-                    AuditOutcome::Denied,
+                trail::stamp(
+                    AuditEntry::new(
+                        AuditActor::User,
+                        retain_operation(reason_kind),
+                        AuditOutcome::Denied,
+                    ),
+                    &action,
                 )
                 .resource(&record_id)
                 .detail("zone_id", zone_id.as_str())
@@ -387,6 +401,7 @@ pub async fn retain_dns_record(
             &record_id,
             Some(&facts),
             &message,
+            &action,
         );
         return Err(message);
     }
@@ -394,10 +409,13 @@ pub async fn retain_dns_record(
     notifications.ledger().note(&zone_id, &record_id, "delete");
 
     storage.record(trail::describe_record(
-        AuditEntry::new(
-            AuditActor::User,
-            retain_operation(reason_kind),
-            AuditOutcome::Succeeded,
+        trail::stamp(
+            AuditEntry::new(
+                AuditActor::User,
+                retain_operation(reason_kind),
+                AuditOutcome::Succeeded,
+            ),
+            &action,
         )
         .resource(&record_id)
         .detail("zone_id", zone_id.as_str())
@@ -406,9 +424,9 @@ pub async fn retain_dns_record(
         .optional_detail("retained_until", expires_at.clone()),
         &facts,
     ));
-    record_purged(&storage, &purged);
+    trail::record_purged(&*storage, &purged);
     for item in &evicted {
-        record_evicted(&storage, &item.entry, item.cause);
+        trail::record_evicted(&*storage, &item.entry, item.cause);
     }
 
     Ok(RetainDecision::Retained {
@@ -438,8 +456,29 @@ pub async fn list_retained_records(
         .map(|raw| raw.len())
         .unwrap_or(0);
     let total_held = held.len();
+    // Only what the bin can put back. The store is shared: since the zone
+    // History subtab landed it also holds `superseded` snapshots — the state a
+    // record held before an edit, where the record itself is still at the
+    // provider — and `operation_manifest` entries, which carry record ids and
+    // no record at all. Listing either here would offer a restore that
+    // `restore_retained_record` then refuses as `already_present`, so the bin
+    // would fill with "deleted records" that were never deleted. This field is
+    // documented as entries that can still be restored, and a reason filter is
+    // what makes that true rather than aspirational.
+    //
+    // The counters below stay store-wide on purpose. `total_held` and
+    // `bytes_held` are rendered as "N of 1000 entries, X KB of Y KB", which is
+    // a statement about capacity, and the bin really does compete for those
+    // slots with undo material. Filtering them would show "12 of 1000" while
+    // evictions happened, which would misexplain why a bin entry vanished.
     let (entries, expired): (Vec<Value>, Vec<Value>) = held
         .into_iter()
+        .filter(|entry| {
+            matches!(
+                retention::reason_of(entry),
+                retention::RetentionReason::Disabled | retention::RetentionReason::Deleted
+            )
+        })
         .partition(|entry| !retention::is_expired(entry, now));
 
     Ok(RetainedStoreView {
@@ -593,7 +632,7 @@ pub async fn purge_retained_records(storage: State<'_, Storage>) -> Result<Purge
         .purge_retained_records(Utc::now())
         .await
         .map_err(|error| error.to_string())?;
-    record_purged(&storage, &purged);
+    trail::record_purged(&*storage, &purged);
     let remaining = storage
         .get_retained_records()
         .await
@@ -673,12 +712,96 @@ pub async fn clear_retained_records(storage: State<'_, Storage>) -> Result<Purge
 /// The trail name for a retain, derived from the reason so a reader looking for
 /// deletions finds binned ones under `dns:delete` and a parked record under its
 /// own name.
+/// `superseded` and `operation_manifest` are grouped with `unknown` rather than
+/// given names of their own, because this command never produces either: the
+/// state an edit replaced is retained by `commands::dns::update_dns_record`,
+/// which still holds the record it is about to change, and a manifest is
+/// written by `commands::dns::create_bulk_dns_records`, which deleted nothing
+/// at all. Both arriving *here* would mean a caller asked to delete a record
+/// and file the copy as something other than a deletion, which is a caller
+/// error and not an operation worth a name of its own.
+///
+/// Matched exhaustively on purpose. A wildcard would compile silently the next
+/// time a reason is added, and the whole point of this function is that someone
+/// decides what the new one is called.
 fn retain_operation(reason: RetentionReason) -> &'static str {
     match reason {
         RetentionReason::Disabled => "dns:disable",
         RetentionReason::Deleted => "dns:delete",
-        RetentionReason::Unknown => "dns:retain",
+        RetentionReason::Superseded | RetentionReason::Manifest | RetentionReason::Unknown => {
+            "dns:retain"
+        }
     }
+}
+
+/// How long an entry is kept, from the reason it is kept for.
+///
+/// A named function rather than a `match` inside the command, because the
+/// decision is worth a test of its own and a test that re-implements the match
+/// cannot dissent from it. That is not hypothetical: the previous version of
+/// this rule lived inline, the test beside it carried its own copy of the
+/// match, and the copy agreed with the bug.
+///
+/// * **A disable is indefinite.** Not because it is precious in the abstract,
+///   but because the record exists nowhere else and the user parked it meaning
+///   to put it back — an expiry would be this application deleting their record
+///   while they were not looking. The configured window is a *bin* window and
+///   not a deadline on that.
+/// * **An unknown reason is indefinite too**, for the same reason read the
+///   other way: over-retaining something this build cannot classify is the safe
+///   direction, because it may be the only copy.
+/// * **Everything that is undo material expires on the window.** A binned
+///   record, the state an edit replaced, and the ids an import created are all
+///   things whose loss costs a revert and never the data. `Superseded` used to
+///   fall through to "indefinite" here, which was not a leak — eviction gives
+///   superseded entries up first — but it was worse than one: those entries
+///   left by eviction rather than by age, so they accumulated silently and then
+///   vanished in a burst once the store filled, and the reason the history list
+///   showed for a missing undo was `evicted` when the honest answer was
+///   `expired`.
+///
+/// Matched without a wildcard, so the next reason added has to be decided about
+/// rather than silently kept for ever.
+fn retention_window(reason: RetentionReason, configured: Option<u32>) -> Option<u32> {
+    match reason {
+        RetentionReason::Deleted | RetentionReason::Superseded | RetentionReason::Manifest => {
+            configured.or(Some(retention::DEFAULT_RETENTION_DAYS))
+        }
+        RetentionReason::Disabled | RetentionReason::Unknown => None,
+    }
+}
+
+/// The store entry one retain writes.
+///
+/// Assembled here rather than inline in the command for the same reason
+/// [`retention_window`] is a function: the two things most worth asserting
+/// about a retain are that it carries the operation id — without which the
+/// deletion can never be undone as part of the action it belongs to — and that
+/// it carries the right expiry. Neither is reachable from a test of the command
+/// itself, which needs managed Tauri state and a provider.
+#[allow(clippy::too_many_arguments)]
+fn retained_entry(
+    reason: &str,
+    zone_id: &str,
+    zone_name: &str,
+    record_id: &str,
+    snapshot: RecordSnapshot,
+    local_tags: &[String],
+    action: &trail::OperationId,
+    retention_days: Option<u32>,
+    now: DateTime<Utc>,
+) -> RetainedRecord {
+    RetainedRecord::new(reason, zone_id, zone_name)
+        .origin_record_id(record_id)
+        .operation_id(action.as_str())
+        .snapshot(snapshot)
+        .local_tags(local_tags)
+        .removed_at(now)
+        // After `removed_at`, which the window is measured from.
+        .expiring_after(
+            retention_window(RetentionReason::of(reason), retention_days),
+            now,
+        )
 }
 
 /// What an entry is missing before it can be restored, in words a UI can show.
@@ -747,6 +870,7 @@ fn is_zone_unavailable(error: &CloudflareError) -> bool {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn record_retain_failure(
     storage: &Storage,
     reason: &str,
@@ -754,11 +878,15 @@ fn record_retain_failure(
     record_id: &str,
     facts: Option<&RecordFacts>,
     message: &str,
+    action: &trail::OperationId,
 ) {
-    let entry = AuditEntry::new(
-        AuditActor::User,
-        retain_operation(RetentionReason::of(reason)),
-        AuditOutcome::Failed,
+    let entry = trail::stamp(
+        AuditEntry::new(
+            AuditActor::User,
+            retain_operation(RetentionReason::of(reason)),
+            AuditOutcome::Failed,
+        ),
+        action,
     )
     .resource(record_id)
     .detail("zone_id", zone_id)
@@ -783,58 +911,13 @@ fn record_restore_failure(storage: &Storage, entry: &RetainedRecord, kind: &str,
     ));
 }
 
-/// One summary entry per purge run, not one per record.
-///
-/// A purge of five hundred expired entries would otherwise fill half the audit
-/// log with events the user was already shown a date for. Eviction is the
-/// opposite case and gets an entry each.
-fn record_purged(storage: &Storage, purged: &[Value]) {
-    if purged.is_empty() {
-        return;
-    }
-    storage.record(
-        AuditEntry::new(AuditActor::User, "retention:purge", AuditOutcome::Succeeded)
-            .detail("entries", purged.len() as u64)
-            .optional_detail(
-                "record_name",
-                purged
-                    .first()
-                    .and_then(|entry| entry.get("name"))
-                    .and_then(Value::as_str)
-                    .map(ToString::to_string),
-            ),
-    );
-}
-
-/// One entry per evicted record.
-///
-/// An eviction means the application forgot something the user could still have
-/// restored, and for a disabled record that is the only copy there was. It must
-/// never be a thing that happened silently.
-fn record_evicted(storage: &Storage, entry: &Value, cause: EvictionCause) {
-    let parsed = RetainedRecord::of(entry);
-    let (zone_id, reason) = parsed
-        .as_ref()
-        .map(|entry| (entry.zone_id.clone(), entry.reason.clone()))
-        .unwrap_or_default();
-    let facts = parsed
-        .as_ref()
-        .map(|entry| RecordFacts::of_snapshot(&entry.snapshot))
-        .unwrap_or_default();
-    storage.record(trail::describe_record(
-        AuditEntry::new(AuditActor::User, "retention:evict", AuditOutcome::Succeeded)
-            .resource(
-                parsed
-                    .as_ref()
-                    .and_then(|entry| entry.origin_record_id.as_deref())
-                    .unwrap_or_default(),
-            )
-            .detail("cause", cause.as_str())
-            .detail("zone_id", zone_id.as_str())
-            .detail("reason", reason.as_str()),
-        &facts,
-    ));
-}
+// `record_purged` and `record_evicted` used to live here. They are in
+// `commands::trail` now, because this is no longer the only caller of
+// `Storage::retain_record`: `commands::dns` retains the state an edit
+// supersedes and the ids a bulk create produced, and every caller owes the log
+// the same account of what its write cost the store. The trail-module versions
+// also stamp the operation id, which these could not, and take the trail rather
+// than the store so what they write can be asserted without standing one up.
 
 #[cfg(test)]
 mod tests {
@@ -911,18 +994,119 @@ mod tests {
     fn a_disable_never_gets_an_expiry_however_the_caller_was_configured() {
         let now = Utc::now();
         for reason in [RetentionReason::DISABLED, "quarantined"] {
-            let days = match RetentionReason::of(reason) {
-                RetentionReason::Deleted => Some(30),
-                _ => None,
-            };
             let entry = RetainedRecord::new(reason, "zone-1", "example.com")
                 .removed_at(now)
-                .expiring_after(days, now);
+                .expiring_after(retention_window(RetentionReason::of(reason), Some(30)), now);
             assert_eq!(
                 entry.expires_at, None,
                 "{reason} is indefinite; an expiry here would delete a parked record"
             );
         }
+    }
+
+    #[test]
+    fn every_kind_of_undo_material_expires_rather_than_waiting_to_be_evicted() {
+        // The bug this exists for: `superseded` fell through to "indefinite",
+        // so an edit's undo material was never purged by age. It still left the
+        // store, by eviction — which means it accumulated quietly and then went
+        // in a burst, and the history list said `evicted` where the truthful
+        // answer was `expired`.
+        for reason in [
+            RetentionReason::DELETED,
+            RetentionReason::SUPERSEDED,
+            RetentionReason::MANIFEST,
+        ] {
+            assert_eq!(
+                retention_window(RetentionReason::of(reason), Some(7)),
+                Some(7),
+                "{reason} is undo material and takes the configured window"
+            );
+            assert_eq!(
+                retention_window(RetentionReason::of(reason), None),
+                Some(retention::DEFAULT_RETENTION_DAYS),
+                "{reason} must never end up indefinite because nothing was configured"
+            );
+        }
+    }
+
+    #[test]
+    fn a_retained_deletion_carries_the_action_it_belongs_to() {
+        // Without this the entry cannot be found by operation id, so a
+        // thirty-seven-record deletion is thirty-seven separate undos and the
+        // zone history list cannot group it. It is one builder call, and it is
+        // the whole mechanism.
+        let action = trail::OperationId::mint();
+        let entry = retained_entry(
+            RetentionReason::DELETED,
+            "zone-1",
+            "example.com",
+            "record-1",
+            RecordSnapshot {
+                record_type: "A".to_string(),
+                name: "www.example.com".to_string(),
+                content: "203.0.113.1".to_string(),
+                ttl: Some(300),
+                priority: None,
+                proxied: Some(false),
+                comment: None,
+            },
+            &["billing".to_string()],
+            &action,
+            Some(7),
+            Utc::now(),
+        );
+
+        assert_eq!(entry.operation_id.as_deref(), Some(action.as_str()));
+        assert_eq!(entry.origin_record_id.as_deref(), Some("record-1"));
+        assert!(
+            entry.expires_at.is_some(),
+            "a binned record takes the configured window"
+        );
+        assert_eq!(
+            entry.local_tags,
+            vec!["billing".to_string()],
+            "the tags are keyed by the id that is about to die, so a restore needs them"
+        );
+        // And the id survives the round trip through the store's wire form,
+        // which is where it would silently be spent out of the byte budget.
+        let stored = entry.into_value();
+        assert_eq!(
+            retention::operation_id_of(&stored),
+            Some(action.as_str()),
+            "an operation id that does not survive serialisation is an undo that cannot \
+             be found"
+        );
+    }
+
+    #[test]
+    fn a_disabled_record_is_still_grouped_even_though_it_never_expires() {
+        let action = trail::OperationId::mint();
+        let entry = retained_entry(
+            RetentionReason::DISABLED,
+            "zone-1",
+            "example.com",
+            "record-1",
+            RecordSnapshot::default(),
+            &[],
+            &action,
+            Some(7),
+            Utc::now(),
+        );
+        assert_eq!(entry.operation_id.as_deref(), Some(action.as_str()));
+        assert_eq!(
+            entry.expires_at, None,
+            "grouping and lifetime are separate decisions"
+        );
+    }
+
+    #[test]
+    fn a_reason_this_build_cannot_classify_is_kept_rather_than_aged_out() {
+        assert_eq!(
+            retention_window(RetentionReason::of("something-from-a-newer-build"), Some(7)),
+            None,
+            "over-retaining what cannot be classified is the safe direction: it may be \
+             the only copy"
+        );
     }
 
     #[test]
