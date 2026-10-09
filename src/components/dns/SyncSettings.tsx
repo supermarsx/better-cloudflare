@@ -272,7 +272,11 @@ function SecretField({
               disabled={disabled}
               onClick={() => onChange(SYNC_SECRET_KEEP)}
             >
-              {t("Keep the stored one", "Keep the stored one")}
+              {/* Not "Keep the stored one": in this mode the secret is already
+                  marked for removal, so the act is undoing that rather than
+                  choosing between stored and typed. One label for both jobs
+                  elided a difference that does not survive translation. */}
+              {t("Cancel the removal", "Cancel the removal")}
             </Button>
           </div>
         ) : (
@@ -409,10 +413,10 @@ function ConflictPanel({
           </p>
           <p className="text-xs text-muted-foreground">
             {t(
-              "This device expected generation {{expected}} and the provider now holds generation {{remote}}. Nothing was written.",
+              "This device expected generation {{expected}} and the provider now holds generation {{remoteGeneration}}. Nothing was written.",
               {
                 expected: conflict.expectedGeneration,
-                remote: conflict.remote.generation,
+                remoteGeneration: conflict.remote.generation,
                 defaultValue: `This device expected generation ${conflict.expectedGeneration} and the provider now holds generation ${conflict.remote.generation}. Nothing was written.`,
               },
             )}
@@ -559,8 +563,8 @@ function useFailureText(): (code: SyncFailureCode) => string {
           );
         case "too-large":
           return t(
-            "The sealed bundle is larger than this format carries. It is refused rather than split, because a partly restored key vault is worse than a refused one.",
-            "The sealed bundle is larger than this format carries. It is refused rather than split, because a partly restored key vault is worse than a refused one.",
+            "The sealed bundle is larger than this app will move in one piece. It is refused rather than split, because a partly restored key vault is worse than a refused one.",
+            "The sealed bundle is larger than this app will move in one piece. It is refused rather than split, because a partly restored key vault is worse than a refused one.",
           );
       }
     },
@@ -1067,8 +1071,8 @@ export function SyncSettings({
     return (
       <p className="rounded-xl border border-border/60 bg-card/60 px-4 py-6 text-sm text-muted-foreground">
         {t(
-          "Cloud sync is only available in the desktop app: it talks WebDAV to the provider and keeps its secrets in the operating system's keyring.",
-          "Cloud sync is only available in the desktop app: it talks WebDAV to the provider and keeps its secrets in the operating system's keyring.",
+          "Cloud sync is only available in the desktop app: it reaches the provider directly, which a browser cannot do, and keeps its secrets in the operating system's keyring.",
+          "Cloud sync is only available in the desktop app: it reaches the provider directly, which a browser cannot do, and keeps its secrets in the operating system's keyring.",
         )}
       </p>
     );
@@ -1477,8 +1481,8 @@ export function SyncSettings({
             present={settings.passphrasePresent}
             presentText={t("Set on this device", "Set on this device")}
             absentText={t(
-              "No passphrase is set, so there is nothing to seal the bundle with.",
-              "No passphrase is set, so there is nothing to seal the bundle with.",
+              "No sync passphrase is set, so there is nothing to seal the bundle with.",
+              "No sync passphrase is set, so there is nothing to seal the bundle with.",
             )}
             draft={passphrase}
             onChange={setPassphrase}
@@ -1603,8 +1607,8 @@ export function SyncSettings({
               htmlFor={fieldId("cadence")}
               label={t("Minutes between pushes", "Minutes between pushes")}
               description={t(
-                "A cadence outside the allowed range is stored as the nearest one that is allowed. What you see here after saving is what was stored.",
-                "A cadence outside the allowed range is stored as the nearest one that is allowed. What you see here after saving is what was stored.",
+                "An interval outside the allowed range is stored as the nearest one that is allowed. What you see here after saving is what was stored.",
+                "An interval outside the allowed range is stored as the nearest one that is allowed. What you see here after saving is what was stored.",
               )}
             >
               <div className="flex flex-col items-end gap-1">
