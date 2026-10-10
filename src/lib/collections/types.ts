@@ -43,8 +43,27 @@
  * A key belongs to at most one collection. Allowing several would mean a
  * passphrase rotation has to reach into every envelope the key appears in,
  * and it makes "which collection is this key in" unanswerable in a list. One
- * collection per key, and `collectionId` on the key record is the single
- * source of truth.
+ * collection per key.
+ *
+ * **Where membership lives — corrected by the implementation.** This said
+ * `collectionId` on the key record is the single source of truth. It is not,
+ * and should not be: `commands/collections.rs` derives membership from the
+ * **envelope**, rebuilding `memberIds` from what was actually sealed on every
+ * re-seal, and computes `unassignedKeyIds` as the stored keys minus every
+ * member.
+ *
+ * That is more robust than a field, for a reason I did not anticipate.
+ * `commands::sync`'s `api_key(entry: VaultEntry) -> ApiKey` constructs a fresh
+ * record from exactly seven fields, and `VaultEntry` has no eighth — so a
+ * `collectionId` on `ApiKey` would be **silently dropped on every sync pull**,
+ * losing every collection's membership, with nothing to report it. Carrying it
+ * would mean changing the sync payload format, which is a separate decision
+ * from this feature. And a second copy of membership can drift from the
+ * envelope in a way a derived one cannot.
+ *
+ * So there is one source and it is the sealed plaintext. A key's membership is
+ * a fact about which envelope holds its secret, which is also the only
+ * definition that cannot disagree with reality.
  *
  * ## Adding a key needs its plaintext
  *
@@ -289,10 +308,13 @@ export interface CollectionCommandArgs {
   [COLLECTION_COMMANDS.create]: { label: string; passphrase: string };
   [COLLECTION_COMMANDS.rename]: { id: string; label: string };
   /**
-   * Deleting a collection destroys its envelope and clears `collectionId` on
-   * every member. **No key is lost**, because every key still has its own
-   * envelope — that is what the header's recoverability argument buys, and it
-   * is why this command does not need the collection unlocked.
+   * Deleting a collection destroys its envelope, and that is what un-members
+   * every key in it: membership *is* the envelope, so there is no second
+   * record to clear. See the header on where membership lives.
+   *
+   * **No key is lost**, because every key still has its own envelope — that is
+   * what the header's recoverability argument buys, and it is why this command
+   * does not need the collection unlocked.
    */
   [COLLECTION_COMMANDS.delete]: { id: string };
   [COLLECTION_COMMANDS.unlock]: { id: string; passphrase: string };

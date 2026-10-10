@@ -268,9 +268,25 @@ function useFailureText(): (
           // needs. It says what the backend was trying to do, because "could
           // not open the key" on its own reads as a fault rather than as a
           // step that is missing its password.
+          //
+          // "the key's own password is needed here" used to end it, which
+          // reads as *absent* — and this one code covers two cases. The
+          // backend raises it both when no password was supplied and no OS
+          // vault entry exists, and when a supplied password fails the tag
+          // check: `key_secret` in `commands/collections.rs` has a branch and
+          // a test for each. Found from the sentence by the fr-FR translator,
+          // tracing all thirteen codes to what can raise them, and from the
+          // code by the agent who wrote that branch, independently.
+          //
+          // Reworded rather than split into a fourteenth code, because the
+          // user acts identically on both: supply the key's password and
+          // retry. A second code would cost a contract change, a crate change
+          // and a sentence in twelve locales to express a distinction nobody
+          // does anything different about. "wrong or missing" is the whole
+          // fix, and the backend's two branches stay as they are.
           return t(
-            "That key could not be opened, so there was no secret to seal into this collection. A collection has to read a key's secret in order to wrap it, so the key's own password is needed here.",
-            "That key could not be opened, so there was no secret to seal into this collection. A collection has to read a key's secret in order to wrap it, so the key's own password is needed here.",
+            "That key could not be opened, so there was no secret to seal into this collection. A collection has to read a key's secret in order to wrap it, and the password given for it was wrong or missing.",
+            "That key could not be opened, so there was no secret to seal into this collection. A collection has to read a key's secret in order to wrap it, and the password given for it was wrong or missing.",
           );
         case "too-large":
           // Both halves of the code, because the member cap is checked before
@@ -1136,8 +1152,22 @@ function CollectionCard({
         <dt className="text-muted-foreground">{t("Created", "Created")}</dt>
         <dd>{fullTimestamp(record.createdAt, language)}</dd>
         <dt className="text-muted-foreground">
-          {/* `updatedAt` moves on every re-seal as well as every rename, so
-              "last changed" is the honest reading of it. */}
+          {/* NOT true of a rename, and this comment used to claim it was.
+              `bc-collections/src/lib.rs:341` is explicit — "`updated_at` does
+              not move: the contract defines it as the time of the last
+              re-seal, and a rename re-seals nothing" — and `lib.rs:1059` pins
+              it with `assert_eq!(renamed.updated_at, sealed.record.updated_at)`.
+              So this field is the last *re-seal*, and "Last changed"
+              over-claims: renaming a collection changes it and leaves this
+              timestamp where it was.
+
+              The label is left as it stands pending a decision, because the
+              two honest repairs cost differently: relabel it (one key, eleven
+              translations, no behaviour change) or make `rename` bump
+              `updated_at` (a crate change against a deliberate contract
+              decision, which would make "Last changed" true). Found by the
+              de-DE translator, who checked the comment against the crate
+              rather than translating the label it justifies. */}
           {t("Last changed", "Last changed")}
         </dt>
         <dd>{fullTimestamp(record.updatedAt, language)}</dd>

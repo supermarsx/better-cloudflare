@@ -420,8 +420,15 @@ async fn key_secret(
 /// candidates are honest about that — but `wrong-passphrase` is worded on
 /// screen as "that passphrase did not open this **collection**", which is a
 /// sentence about the wrong secret entirely. `key-locked` says the key could
-/// not be opened and that its own password is what is needed here, which is
+/// not be opened and that the password for it "was wrong or missing", which is
 /// true whether the password was absent, wrong, or right for a different key.
+///
+/// That quotation was "its own password is what is needed here" until the
+/// fr-FR translator pointed out it reads as *absent* while this code raises
+/// the same variant for a *wrong* password too — see `key_secret`'s two
+/// branches. The string moved; this comment had argued for the old one, which
+/// is a comment justifying wording the code has moved past. Caught by the
+/// de-DE translator tracing both branches to check the reword was right.
 fn open_key(
     ciphertext: &str,
     config: EncryptionConfig,
@@ -1837,6 +1844,26 @@ mod tests {
 
     /// Membership is exclusive, and the store's answer to "which collection is
     /// this key in" is what the crate refuses on.
+    ///
+    /// # What the second assertion protects
+    ///
+    /// That the key is **still in the collection it was already in** looks
+    /// redundant here, and in this module it is: membership *is* the envelope,
+    /// and the one write happens after the last refusal can occur, so there is
+    /// no membership write a refusal could leave behind. Nothing that could rot
+    /// is being guarded.
+    ///
+    /// Proving it therefore meant *adding* that write rather than breaking one.
+    /// The mutation cleared the old collection's index on the way in — the
+    /// shape a `collectionId` on the key record takes if it is cleared before
+    /// the seal is known to have succeeded, which is the implementation the
+    /// contract originally described. The refusal still arrived, this assertion
+    /// was the only one of the three refusal tests that saw it, and it reported
+    /// `left: []` against `right: ["key_…"]`.
+    ///
+    /// So this line is here for a future two-store implementation, not for the
+    /// present one. Anybody who moves membership onto the key record will find
+    /// out from this test that a refused add must not clear it.
     #[tokio::test]
     async fn a_key_in_another_collection_is_refused_and_stays_where_it_is() {
         let device = Device::new();

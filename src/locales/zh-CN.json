@@ -1871,7 +1871,7 @@
   "That file was not written by this app.": "该文件不是由此应用写入的。",
   "That file was written by a newer version of this app.": "该文件由此应用的更新版本写入。",
   "That is fewer keys than this device holds now. The ones not in the provider's copy will be gone from this device.": "这比本设备现在持有的密钥要少。不在提供商处副本中的那些密钥，将从本设备上消失。",
-  "That key could not be opened, so there was no secret to seal into this collection. A collection has to read a key's secret in order to wrap it, so the key's own password is needed here.": "该密钥无法打开，因此没有可密封进此密钥集的机密内容。密钥集必须读取密钥的机密内容才能将它包裹起来，所以这里需要该密钥自己的密码。",
+  "That key could not be opened, so there was no secret to seal into this collection. A collection has to read a key's secret in order to wrap it, and the password given for it was wrong or missing.": "该密钥无法打开，因此没有可密封进此密钥集的机密内容。密钥集必须读取密钥的机密内容才能将它包裹起来，而为该密钥提供的密码有误或缺失。",
   "That key is already in a collection. A key belongs to at most one, so remove it from the collection it is in before adding it here.": "该密钥已在某个密钥集中。一个密钥最多只能属于一个密钥集，请先把它从所在的密钥集中移除，再添加到这里。",
   "That key is not in this collection, so there was nothing to remove.": "该密钥不在此密钥集中，因此没有可移除的内容。",
   "That name cannot be used.": "该名称不可使用。",

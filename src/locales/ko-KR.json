@@ -1871,7 +1871,7 @@
   "That file was not written by this app.": "그 파일은 이 앱이 작성한 것이 아닙니다.",
   "That file was written by a newer version of this app.": "그 파일은 이 앱의 더 새로운 버전에서 작성되었습니다.",
   "That is fewer keys than this device holds now. The ones not in the provider's copy will be gone from this device.": "지금 이 기기가 가진 키보다 적습니다. 제공자의 사본에 없는 키는 이 기기에서 사라집니다.",
-  "That key could not be opened, so there was no secret to seal into this collection. A collection has to read a key's secret in order to wrap it, so the key's own password is needed here.": "그 키를 열 수 없어 이 컬렉션에 봉인할 비밀이 없었습니다. 컬렉션은 키의 비밀을 봉인하려면 그 비밀을 읽어야 하므로, 여기서는 키 자신의 비밀번호가 필요합니다.",
+  "That key could not be opened, so there was no secret to seal into this collection. A collection has to read a key's secret in order to wrap it, and the password given for it was wrong or missing.": "그 키를 열 수 없어 이 컬렉션에 봉인할 비밀이 없었습니다. 컬렉션은 키의 비밀을 봉인하려면 그 비밀을 읽어야 하는데, 그 키에 주어진 비밀번호가 틀렸거나 아예 없었습니다.",
   "That key is already in a collection. A key belongs to at most one, so remove it from the collection it is in before adding it here.": "그 키는 이미 어떤 컬렉션에 들어 있습니다. 키는 최대 하나의 컬렉션에만 속하므로, 여기에 추가하기 전에 지금 들어 있는 컬렉션에서 제거하세요.",
   "That key is not in this collection, so there was nothing to remove.": "그 키는 이 컬렉션에 없어서 제거할 것이 없었습니다.",
   "That name cannot be used.": "그 이름은 사용할 수 없습니다.",

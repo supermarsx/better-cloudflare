@@ -1871,7 +1871,7 @@
   "That file was not written by this app.": "That file was not written by this app.",
   "That file was written by a newer version of this app.": "That file was written by a newer version of this app.",
   "That is fewer keys than this device holds now. The ones not in the provider's copy will be gone from this device.": "That is fewer keys than this device holds now. The ones not in the provider's copy will be gone from this device.",
-  "That key could not be opened, so there was no secret to seal into this collection. A collection has to read a key's secret in order to wrap it, so the key's own password is needed here.": "That key could not be opened, so there was no secret to seal into this collection. A collection has to read a key's secret in order to wrap it, so the key's own password is needed here.",
+  "That key could not be opened, so there was no secret to seal into this collection. A collection has to read a key's secret in order to wrap it, and the password given for it was wrong or missing.": "That key could not be opened, so there was no secret to seal into this collection. A collection has to read a key's secret in order to wrap it, and the password given for it was wrong or missing.",
   "That key is already in a collection. A key belongs to at most one, so remove it from the collection it is in before adding it here.": "That key is already in a collection. A key belongs to at most one, so remove it from the collection it is in before adding it here.",
   "That key is not in this collection, so there was nothing to remove.": "That key is not in this collection, so there was nothing to remove.",
   "That name cannot be used.": "That name cannot be used.",

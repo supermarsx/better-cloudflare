@@ -1871,7 +1871,7 @@
   "That file was not written by this app.": "Этот файл записан не этим приложением.",
   "That file was written by a newer version of this app.": "Этот файл записан более новой версией этого приложения.",
   "That is fewer keys than this device holds now. The ones not in the provider's copy will be gone from this device.": "Это меньше ключей, чем сейчас есть на этом устройстве. Тех, которых нет в копии провайдера, на этом устройстве не останется.",
-  "That key could not be opened, so there was no secret to seal into this collection. A collection has to read a key's secret in order to wrap it, so the key's own password is needed here.": "Этот ключ не удалось открыть, поэтому запечатывать в эту коллекцию было нечего. Чтобы обернуть ключ, коллекции нужно прочитать его секрет, поэтому здесь требуется собственный пароль ключа.",
+  "That key could not be opened, so there was no secret to seal into this collection. A collection has to read a key's secret in order to wrap it, and the password given for it was wrong or missing.": "Этот ключ не удалось открыть, поэтому запечатывать в эту коллекцию было нечего. Чтобы обернуть ключ, коллекции нужно прочитать его секрет, а собственный пароль ключа оказался неверным или вовсе не был указан.",
   "That key is already in a collection. A key belongs to at most one, so remove it from the collection it is in before adding it here.": "Этот ключ уже входит в коллекцию. Ключ может входить не более чем в одну, поэтому сначала уберите его из той коллекции, в которой он находится.",
   "That key is not in this collection, so there was nothing to remove.": "Этого ключа нет в этой коллекции, поэтому убирать было нечего.",
   "That name cannot be used.": "Это имя использовать нельзя.",

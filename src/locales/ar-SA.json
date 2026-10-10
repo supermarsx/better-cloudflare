@@ -1871,7 +1871,7 @@
   "That file was not written by this app.": "لم يكتب هذا التطبيق هذا الملف.",
   "That file was written by a newer version of this app.": "كُتب هذا الملف بإصدار أحدث من هذا التطبيق.",
   "That is fewer keys than this device holds now. The ones not in the provider's copy will be gone from this device.": "هذا عدد أقل من المفاتيح مما يحمله هذا الجهاز الآن. والمفاتيح غير الموجودة في نسخة الموفر ستزول من هذا الجهاز.",
-  "That key could not be opened, so there was no secret to seal into this collection. A collection has to read a key's secret in order to wrap it, so the key's own password is needed here.": "تعذّر فتح ذلك المفتاح، فلم يكن هناك سرّ يُختم داخل هذه المجموعة. ولا بد أن تقرأ المجموعة سرّ المفتاح لتختمه، فكلمة المرور الخاصة بالمفتاح مطلوبة هنا.",
+  "That key could not be opened, so there was no secret to seal into this collection. A collection has to read a key's secret in order to wrap it, and the password given for it was wrong or missing.": "تعذّر فتح ذلك المفتاح، فلم يكن هناك سرّ يُختم داخل هذه المجموعة. ولا بد أن تقرأ المجموعة سرّ المفتاح لتختمه، وكلمة مرور ذلك المفتاح إما خاطئة وإما غير مُقدَّمة.",
   "That key is already in a collection. A key belongs to at most one, so remove it from the collection it is in before adding it here.": "ذلك المفتاح موجود في مجموعة بالفعل. والمفتاح لا ينتمي إلى أكثر من مجموعة واحدة، فأزِله من المجموعة التي هو فيها قبل إضافته هنا.",
   "That key is not in this collection, so there was nothing to remove.": "ذلك المفتاح ليس في هذه المجموعة، فلم يكن هناك ما يُزال.",
   "That name cannot be used.": "لا يمكن استخدام هذا الاسم.",
