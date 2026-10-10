@@ -207,14 +207,25 @@ function errorMessage(error: unknown): string {
  *
  * That distinction is invisible from inside this file and it is load-bearing
  * for translation: a shared string cannot agree with a noun it does not know.
- * Three translators hit it from different directions. Spanish had rendered
- * `"Keep the stored one"` with a neuter dodge because the pronoun had no
- * antecedent to agree with; Portuguese had picked masculine for the set and
- * had to revisit it; Hindi's `"Will be removed when you save"` is masculine
- * singular and is correct **only because both secrets here happen to be
- * masculine nouns** — add a third whose noun is feminine and it becomes
- * ungrammatical for it, with nothing to catch it, since the key, the value and
- * the placeholders would all be unchanged.
+ *
+ * `"Keep the stored one"` is the one string below that still has no subject,
+ * and the shipped locales divide three ways on it. fr-FR and ru-RU name one
+ * outright — `"Conserver le secret enregistré"`, `"Оставить сохранённое
+ * значение"` — which is the repair. pt-PT and hi-IN sidestep agreement with a
+ * relative construction, "keep what is stored". **es-ES agrees with a noun the
+ * string cannot see**: `"Conservar la ya almacenada"` is feminine, and it is
+ * correct only because `credencial` and `frase de contraseña` both happen to
+ * be feminine. Add a third secret whose Spanish label is masculine and that
+ * line becomes ungrammatical for it, with nothing to catch it, since the key,
+ * the value and the placeholders would all be unchanged. Found by the es-ES
+ * translator, against an earlier version of this comment that had the Spanish
+ * backwards — it claimed a neuter dodge, and described the hazard as one the
+ * locale had escaped rather than one it is in.
+ *
+ * The sibling string shows the fix working. `"Will be removed when you save"`
+ * had the same defect and is now `"The stored secret will be removed when you
+ * save"`; es-ES, pt-PT and hi-IN all render that subject explicitly, and none
+ * of them has to guess a gender any more.
  *
  * So: a string added below must read correctly for any secret this component
  * could ever serve. If one genuinely cannot — if it has to agree with a
