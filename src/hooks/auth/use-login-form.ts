@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { toast } from "@/hooks/use-toast";
 import { storageManager } from "@/lib/storage/storage";
 import { storageBackend } from "@/lib/storage/storage-util";
@@ -35,7 +35,17 @@ export function useLoginForm(
   onLogin: (apiKey: string, email?: string) => void | Promise<void>,
   desktop: boolean,
 ) {
-  const t = i18next.t.bind(i18next);
+  // Bound once, not per render. `bind` delegates to the live i18next
+  // instance, so a stable identity still resolves against whatever language
+  // is active at the moment a handler fires — this hook only ever passes
+  // `t(...)` straight into a `toast()`, never into returned state, so it has
+  // no need to re-render when the locale changes.
+  //
+  // It was `i18next.t.bind(i18next)` on every render, which handed `t` a new
+  // identity each time and so re-ran every effect listing it as a dependency
+  // on every render. The effect below now needs `t` too, which is what made
+  // that worth fixing rather than working around.
+  const t = useMemo(() => i18next.t.bind(i18next), []);
   const [apiKeys, setApiKeys] = useState<ApiKey[]>([]);
   const backend = storageBackend();
   const verifyToken = async (
@@ -73,7 +83,7 @@ export function useLoginForm(
       ...(desktop ? { command: "verify_token" } : {}),
     });
     toast({
-      title: "Login could not be completed",
+      title: t("Login could not be completed"),
       description: formatError(normalized),
       variant: "destructive",
       persistent: true,
@@ -129,8 +139,9 @@ export function useLoginForm(
     if (backend === "memory") {
       toast({
         title: t("Persistent storage unavailable"),
-        description:
+        description: t(
           "This session is using temporary memory storage. Changes will not survive an app restart.",
+        ),
         variant: "destructive",
       });
     }
@@ -146,7 +157,7 @@ export function useLoginForm(
         })
         .catch((error) => {
           toast({
-            title: "Encryption settings unavailable",
+            title: t("Encryption settings unavailable"),
             description: formatError(error),
             variant: "destructive",
             persistent: true,
@@ -161,7 +172,7 @@ export function useLoginForm(
         })
         .catch((error) => {
           toast({
-            title: "Preferences unavailable",
+            title: t("Preferences unavailable"),
             description: formatError(error),
             variant: "destructive",
             persistent: true,
@@ -171,7 +182,7 @@ export function useLoginForm(
     }
     cryptoManager.reloadConfig();
     setEncryptionSettings(cryptoManager.getConfig());
-  }, [desktop, formatError]);
+  }, [desktop, formatError, t]);
 
   useEffect(() => {
     let current = true;
@@ -288,8 +299,8 @@ export function useLoginForm(
     if (loginInFlight.current) return;
     if (!selectedKeyId || !password) {
       toast({
-        title: "Error",
-        description: "Please select an API key and enter your password",
+        title: t("Error"),
+        description: t("Please select an API key and enter your password"),
         variant: "destructive",
       });
       return;
@@ -335,8 +346,8 @@ export function useLoginForm(
       succeeded = true;
 
       toast({
-        title: "Success",
-        description: "Logged in successfully",
+        title: t("Success"),
+        description: t("Logged in successfully"),
       });
     } catch (error) {
       showLoginFailure(error);
@@ -352,8 +363,8 @@ export function useLoginForm(
   const handleAddKey = async () => {
     if (!newKeyLabel || !newApiKey || !newPassword) {
       toast({
-        title: "Error",
-        description: "Please fill in all fields",
+        title: t("Error"),
+        description: t("Please fill in all fields"),
         variant: "destructive",
       });
       return;
@@ -418,13 +429,13 @@ export function useLoginForm(
       setShowAddKey(false);
 
       toast({
-        title: "Success",
-        description: "API key added successfully",
+        title: t("Success"),
+        description: t("API key added successfully"),
       });
     } catch (error) {
       toast({
-        title: "Error",
-        description: "Failed to add API key: " + formatError(error),
+        title: t("Error"),
+        description: t("Failed to add API key: ") + formatError(error),
         variant: "destructive",
       });
     }
@@ -433,8 +444,8 @@ export function useLoginForm(
   const handleRegisterPasskey = async () => {
     if (!selectedKeyId) {
       toast({
-        title: "Error",
-        description: "Select a key before registering a passkey",
+        title: t("Error"),
+        description: t("Select a key before registering a passkey"),
         variant: "destructive",
       });
       return;
@@ -442,8 +453,10 @@ export function useLoginForm(
 
     if (!password) {
       toast({
-        title: "Error",
-        description: "Enter your password to decrypt the key for registration",
+        title: t("Error"),
+        description: t(
+          "Enter your password to decrypt the key for registration",
+        ),
         variant: "destructive",
       });
       return;
@@ -454,9 +467,10 @@ export function useLoginForm(
     // asked us not to keep, and produce a passkey that cannot log in.
     if (!vaultEnabled) {
       toast({
-        title: "OS vault is turned off",
-        description:
+        title: t("Passkey login needs the OS vault"),
+        description: t(
           "Passkey login stores this API key in the OS vault, which is disabled in Encryption Settings. Turn the OS vault on before registering a passkey.",
+        ),
         variant: "destructive",
         persistent: true,
       });
@@ -467,10 +481,12 @@ export function useLoginForm(
 
     // Show initial guidance toast
     toast({
-      title: "Passkey Registration",
+      title: t("Passkey Registration"),
       description: passkeyNative
-        ? "Your system will ask how you want to save this passkey — Windows Hello, a security key, or your phone."
-        : "Follow the prompts from your device to register a new passkey...",
+        ? t(
+            "Your system will ask how you want to save this passkey — Windows Hello, a security key, or your phone.",
+          )
+        : t("Follow the prompts from your device to register a new passkey..."),
     });
 
     try {
@@ -484,8 +500,8 @@ export function useLoginForm(
         typeof decrypted === "string" ? selectedKey?.email : decrypted?.email;
       if (!decryptedKey) {
         toast({
-          title: "Error",
-          description: "Invalid password or corrupted key",
+          title: t("Error"),
+          description: t("Invalid password or corrupted key"),
           variant: "destructive",
         });
         return;
@@ -496,10 +512,11 @@ export function useLoginForm(
         await sc.storeVaultSecret(selectedKeyId, decryptedKey);
       } catch (err) {
         toast({
-          title: "OS vault storage unavailable",
+          title: t("OS vault storage unavailable"),
           description:
-            "Passkey registration can continue, but vault-based recovery was not saved. " +
-            formatError(err),
+            t(
+              "Passkey registration can continue, but vault-based recovery was not saved. ",
+            ) + formatError(err),
           variant: "destructive",
           persistent: true,
         });
@@ -511,8 +528,8 @@ export function useLoginForm(
       if (passkeyNative) {
         await TauriClient.registerPasskeyNative(selectedKeyId);
         toast({
-          title: "✓ Passkey Registered",
-          description: "You can now use this passkey for passwordless login",
+          title: t("✓ Passkey Registered"),
+          description: t("You can now use this passkey for passwordless login"),
         });
         return;
       }
@@ -533,13 +550,13 @@ export function useLoginForm(
           serializeRegistrationCredential(att),
         );
         toast({
-          title: "✓ Passkey Registered",
-          description: "You can now use this passkey for passwordless login",
+          title: t("✓ Passkey Registered"),
+          description: t("You can now use this passkey for passwordless login"),
         });
       } else {
         toast({
-          title: "Registration Cancelled",
-          description: "Passkey registration was not completed",
+          title: t("Registration Cancelled"),
+          description: t("Passkey registration was not completed"),
           variant: "destructive",
         });
       }
@@ -553,7 +570,7 @@ export function useLoginForm(
           : (webauthnCeremonyMessage(error, "register") ?? formatError(error));
 
       toast({
-        title: "Passkey Registration Failed",
+        title: t("Passkey Registration Failed"),
         description: userMessage,
         variant: "destructive",
       });
@@ -565,8 +582,8 @@ export function useLoginForm(
   const handleUsePasskey = async () => {
     if (!selectedKeyId) {
       toast({
-        title: "Error",
-        description: "Select a key to authenticate",
+        title: t("Error"),
+        description: t("Select a key to authenticate"),
         variant: "destructive",
       });
       return;
@@ -576,9 +593,10 @@ export function useLoginForm(
     // before any vault read rather than after the device prompt.
     if (!vaultEnabled) {
       toast({
-        title: "OS vault is turned off",
-        description:
+        title: t("Passkey login needs the OS vault"),
+        description: t(
           "Passkey login reads this API key from the OS vault, which is disabled in Encryption Settings. Turn the OS vault on, or sign in with your password.",
+        ),
         variant: "destructive",
         persistent: true,
       });
@@ -589,10 +607,12 @@ export function useLoginForm(
 
     // Show guidance toast
     toast({
-      title: "Passkey Authentication",
+      title: t("Passkey Authentication"),
       description: passkeyNative
-        ? "Your system will ask you to confirm — with Windows Hello, a security key, or your phone."
-        : "Use your device's biometric or security key to authenticate...",
+        ? t(
+            "Your system will ask you to confirm — with Windows Hello, a security key, or your phone.",
+          )
+        : t("Use your device's biometric or security key to authenticate..."),
     });
 
     try {
@@ -630,8 +650,8 @@ export function useLoginForm(
 
       if (!serverResp) {
         toast({
-          title: "Authentication Cancelled",
-          description: "Passkey authentication was not completed",
+          title: t("Authentication Cancelled"),
+          description: t("Passkey authentication was not completed"),
           variant: "destructive",
         });
       } else if (serverResp.success) {
@@ -644,21 +664,22 @@ export function useLoginForm(
           storageManager.setCurrentSession(selectedKeyId);
           await onLogin(secret, selectedKey?.email);
           toast({
-            title: "✓ Login Successful",
-            description: "Authenticated using passkey",
+            title: t("✓ Login Successful"),
+            description: t("Authenticated using passkey"),
           });
         } else {
           toast({
-            title: "Error",
-            description:
+            title: t("Error"),
+            description: t(
               "No API key found in vault. Please register a passkey first.",
+            ),
             variant: "destructive",
           });
         }
       } else {
         toast({
-          title: "Authentication Failed",
-          description: "Passkey verification failed. Please try again.",
+          title: t("Authentication Failed"),
+          description: t("Passkey verification failed. Please try again."),
           variant: "destructive",
         });
       }
@@ -681,7 +702,7 @@ export function useLoginForm(
       }
 
       toast({
-        title: "Authentication Failed",
+        title: t("Authentication Failed"),
         description: userMessage,
         variant: "destructive",
       });
@@ -748,13 +769,13 @@ export function useLoginForm(
       }
       setShowEditKey(false);
       toast({
-        title: "Success",
-        description: "API key updated successfully",
+        title: t("Success"),
+        description: t("API key updated successfully"),
       });
     } catch (error) {
       toast({
-        title: "Error",
-        description: "Failed to update API key: " + formatError(error),
+        title: t("Error"),
+        description: t("Failed to update API key: ") + formatError(error),
         variant: "destructive",
         persistent: true,
       });
@@ -799,8 +820,8 @@ export function useLoginForm(
       setSelectedKeyId("");
     }
     toast({
-      title: "Success",
-      description: "API key deleted",
+      title: t("Success"),
+      description: t("API key deleted"),
     });
   };
 
@@ -813,13 +834,16 @@ export function useLoginForm(
           ).benchmark(encryptionSettings.iterations);
       setBenchmarkResult(result);
       toast({
-        title: "Benchmark Complete",
-        description: `Encryption took ${result.toFixed(2)}ms`,
+        title: t("Benchmark Complete"),
+        description: t("Encryption took {{duration}}ms", {
+          duration: result.toFixed(2),
+          defaultValue: `Encryption took ${result.toFixed(2)}ms`,
+        }),
       });
     } catch (error) {
       toast({
-        title: "Error",
-        description: "Benchmark failed: " + formatError(error),
+        title: t("Error"),
+        description: t("Benchmark failed: ") + formatError(error),
         variant: "destructive",
       });
     }
@@ -833,13 +857,13 @@ export function useLoginForm(
         cryptoManager.updateConfig(encryptionSettings);
       }
       toast({
-        title: "Success",
-        description: "Encryption settings updated",
+        title: t("Success"),
+        description: t("Encryption settings updated"),
       });
       setShowSettings(false);
     } catch (error) {
       toast({
-        title: "Encryption settings were not saved",
+        title: t("Encryption settings were not saved"),
         description: formatError(error),
         variant: "destructive",
         persistent: true,
@@ -860,8 +884,8 @@ export function useLoginForm(
         typeof decrypted === "string" ? selectedKey?.email : decrypted?.email;
       if (!decryptedKey) {
         toast({
-          title: "Error",
-          description: "Invalid password",
+          title: t("Error"),
+          description: t("Invalid password"),
           variant: "destructive",
         });
         return;
@@ -871,8 +895,8 @@ export function useLoginForm(
       setShowManagePasskeys(true);
     } catch (err) {
       toast({
-        title: "Error",
-        description: "Failed to decrypt key: " + formatError(err),
+        title: t("Error"),
+        description: t("Failed to decrypt key: ") + formatError(err),
         variant: "destructive",
         persistent: true,
       });
@@ -893,8 +917,8 @@ export function useLoginForm(
       );
       if (!decryptedKey) {
         toast({
-          title: "Error",
-          description: "No key returned from keychain",
+          title: t("Error"),
+          description: t("No key returned from keychain"),
           variant: "destructive",
         });
         return;
@@ -905,7 +929,7 @@ export function useLoginForm(
         await verifyToken(decryptedKey, selectedKey?.email);
       } catch (err) {
         toast({
-          title: "Error",
+          title: t("Error"),
           description: formatError(err),
           variant: "destructive",
         });
@@ -915,8 +939,11 @@ export function useLoginForm(
       storageManager.setCurrentSession(selectedKeyId);
       await onLogin(decryptedKey, selectedKey?.email);
       toast({
-        title: "Success",
-        description: `Logged in with ${biometricLabel}`,
+        title: t("Success"),
+        description: t("Logged in with {{label}}", {
+          label: biometricLabel,
+          defaultValue: `Logged in with ${biometricLabel}`,
+        }),
       });
     } catch (err) {
       const msg = formatError(err);
@@ -925,8 +952,12 @@ export function useLoginForm(
         return;
       }
       toast({
-        title: "Error",
-        description: `${biometricLabel} login failed: ${msg}`,
+        title: t("Error"),
+        description: t("{{label}} login failed: {{reason}}", {
+          label: biometricLabel,
+          reason: msg,
+          defaultValue: `${biometricLabel} login failed: ${msg}`,
+        }),
         variant: "destructive",
       });
     } finally {
@@ -938,8 +969,8 @@ export function useLoginForm(
   const handleBiometricEnroll = async () => {
     if (!selectedKeyId || !password) {
       toast({
-        title: "Error",
-        description: "Select a key and enter your password first",
+        title: t("Error"),
+        description: t("Select a key and enter your password first"),
         variant: "destructive",
       });
       return;
@@ -953,8 +984,8 @@ export function useLoginForm(
         typeof decrypted === "string" ? decrypted : decrypted?.key;
       if (!decryptedKey) {
         toast({
-          title: "Error",
-          description: "Invalid password or corrupted key",
+          title: t("Error"),
+          description: t("Invalid password or corrupted key"),
           variant: "destructive",
         });
         return;
@@ -963,13 +994,20 @@ export function useLoginForm(
       await ServerClient.biometricStoreSecret(selectedKeyId, decryptedKey);
       setBiometricEnrolled(true);
       toast({
-        title: "Success",
-        description: `${biometricLabel} unlock enabled`,
+        title: t("Success"),
+        description: t("{{label}} unlock enabled", {
+          label: biometricLabel,
+          defaultValue: `${biometricLabel} unlock enabled`,
+        }),
       });
     } catch (err) {
       toast({
-        title: "Error",
-        description: `Failed to enable ${biometricLabel}: ${formatError(err)}`,
+        title: t("Error"),
+        description: t("Failed to enable {{label}}: {{reason}}", {
+          label: biometricLabel,
+          reason: formatError(err),
+          defaultValue: `Failed to enable ${biometricLabel}: ${formatError(err)}`,
+        }),
         variant: "destructive",
       });
     } finally {
@@ -985,13 +1023,20 @@ export function useLoginForm(
       await ServerClient.biometricDeleteSecret(selectedKeyId);
       setBiometricEnrolled(false);
       toast({
-        title: "Success",
-        description: `${biometricLabel} unlock removed`,
+        title: t("Success"),
+        description: t("{{label}} unlock removed", {
+          label: biometricLabel,
+          defaultValue: `${biometricLabel} unlock removed`,
+        }),
       });
     } catch (err) {
       toast({
-        title: "Error",
-        description: `Failed to remove ${biometricLabel}: ${formatError(err)}`,
+        title: t("Error"),
+        description: t("Failed to remove {{label}}: {{reason}}", {
+          label: biometricLabel,
+          reason: formatError(err),
+          defaultValue: `Failed to remove ${biometricLabel}: ${formatError(err)}`,
+        }),
         variant: "destructive",
       });
     } finally {
@@ -1096,17 +1141,36 @@ export function useLoginForm(
           // Turning the vault off stops this app using it. It does not erase
           // what is already in the OS keychain, and no command reports whether
           // a secret is there, so say so plainly instead of implying it is gone.
+          //
+          // This title is a *confirmation*: the user turned the vault off and
+          // it worked. The passkey handlers above report the *blocked* case,
+          // and their title is "Passkey login needs the OS vault" rather than
+          // a second phrasing of this one. Both were "OS vault is turned off"
+          // and "OS vault turned off" — one word apart, which no translator
+          // working from a key list could tell apart, and which the
+          // reworded-values gate cannot see either. If the two ever converge
+          // again, a success toast and a blocked-action toast read identically.
           toast({
-            title: "OS vault turned off",
-            description:
-              'Passkey login is now disabled. Any API key already saved to the OS vault stays in the system keychain until you delete it with "Remove Vault Secret" below.',
+            title: t("OS vault turned off"),
+            // `prettier-ignore`, and the escaped quotes, are both load-bearing.
+            // This string quotes a control name, so it contains double quotes
+            // and no apostrophes — and Prettier picks whichever quote needs
+            // fewer escapes, so left alone it rewrites this into a
+            // single-quoted literal. `readQuoted` in
+            // `scripts/i18n-coverage.mjs` only reads double-quoted strings, so
+            // the single-quoted form is invisible to the scanner: the key would
+            // never be catalogued and would ship in English in every locale
+            // while the coverage report stayed clean. Verified both ways before
+            // writing this. Do not "tidy" the escapes away.
+            // prettier-ignore
+            description: t("Passkey login is now disabled. Any API key already saved to the OS vault stays in the system keychain until you delete it with \"Remove Vault Secret\" below."),
             variant: "destructive",
             persistent: true,
           });
         }
       } catch (error) {
         toast({
-          title: "Vault preference was not saved",
+          title: t("Vault preference was not saved"),
           description: formatError(error),
           variant: "destructive",
           persistent: true,

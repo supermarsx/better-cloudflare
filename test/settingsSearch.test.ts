@@ -126,6 +126,56 @@ test("the translated label is matched, and so is the English one", () => {
   assert.ok(byKey.some((result) => result.entry.id === "auto-refresh"));
 });
 
+test("a localisable synonym is matched in the user's language", () => {
+  // The gap `synonyms` closes. `keywords` is matched in English alone, which
+  // is right for "dropbox" and wrong for "backup": a translated UI could find
+  // a setting only by words it was shown, because the whole synonym layer —
+  // the words a user reaches for *instead* of the label — existed in English
+  // and nowhere else.
+  assert.deepEqual(
+    ids("sauvegarde"),
+    [],
+    "the stand-in French below must not be matching by accident",
+  );
+
+  const translate: SettingsTranslate = (key, defaultValue) =>
+    key.includes("another computer")
+      ? "synchronisation, sauvegarde, autre ordinateur"
+      : defaultValue;
+
+  const translated = searchSettings("sauvegarde", { desktop: true, translate });
+  assert.equal(translated[0]?.entry.id, "sync-provider");
+
+  // And the English side of that same field still answers inside that locale,
+  // so moving a word out of `keywords` into `synonyms` costs an English query
+  // nothing.
+  const english = searchSettings("another computer", {
+    desktop: true,
+    translate,
+  });
+  assert.ok(english.some((result) => result.entry.id === "sync-provider"));
+});
+
+test("a product name and an earlier build's label survive any locale", () => {
+  // What `keywords` is for, asserted against a locale that renamed every
+  // translatable string in the index. "dropbox" is a product and "test
+  // connection" is the label this control had in an earlier English build —
+  // the word an upgrading user types — so neither may depend on the catalogue.
+  const translate: SettingsTranslate = () => "Paramètre";
+
+  const byProduct = searchSettings("dropbox", { desktop: true, translate });
+  assert.equal(byProduct[0]?.entry.id, "sync-provider");
+
+  const byOldLabel = searchSettings("test connection", {
+    desktop: true,
+    translate,
+  });
+  assert.ok(
+    byOldLabel.some((result) => result.entry.id === "sync-provider"),
+    "the previous name of the access test no longer finds it",
+  );
+});
+
 test("accents in a translated label do not have to be typed", () => {
   const translate: SettingsTranslate = (key, defaultValue) =>
     key === "Confirm logout" ? "Déconnexion confirmée" : defaultValue;

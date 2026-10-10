@@ -31,10 +31,21 @@ import { AboutAppInfoCard } from "../src/components/about/AboutAppInfoCard";
 import { DEPENDENCY_TOTALS } from "../src/lib/about/dependency-totals.generated";
 
 import { useEnglishLocale } from "./i18n-ready";
+import { stripComments } from "./source-text";
 
-const SOURCE = readFileSync(
-  new URL("../src/components/about/AboutAppInfoCard.tsx", import.meta.url),
-  "utf8",
+/**
+ * Comments stripped, because one of the assertions below was vacuous without
+ * it: the component's module header names `loadDependencyManifest()` in prose,
+ * so `assert.match(SOURCE, /loadDependencyManifest\(\)/)` was satisfied by the
+ * documentation whether or not the call survived. Replacing the real call with
+ * a static import — the regression the test exists to catch — left it green.
+ * Found by an audit of all forty-five source-text assertions in this suite.
+ */
+const SOURCE = stripComments(
+  readFileSync(
+    new URL("../src/components/about/AboutAppInfoCard.tsx", import.meta.url),
+    "utf8",
+  ),
 );
 
 /** `app_host_facts`, answered the way a stamped release build answers it. */

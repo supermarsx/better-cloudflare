@@ -110,11 +110,20 @@
  * machines have no shared folder between them.
  *
  * **A folder that has vanished is never recreated**, which is the opposite of
- * the WebDAV rule and deliberate: a missing local folder usually means an
- * unmounted share or an unplugged disk, and creating it would write the vault
- * into a directory shadowing the mount point. The push would report success,
- * the sync client would never see the bytes, and the mount returning would
- * hide them again. So it reports `unreachable`. See `bc-sync/src/folder.rs`.
+ * the WebDAV rule and deliberate: a missing local folder usually means
+ * whatever carries it is no longer available — a network location that is not
+ * connected, a drive that is not attached — and creating it again would leave
+ * an ordinary local folder with nothing behind it. The push would report a new
+ * generation, nothing would carry the bytes off this device, and once the real
+ * folder came back the app would write there instead, stranding that copy. So
+ * it reports `unreachable`. See `bc-sync/src/folder.rs`.
+ *
+ * Stated without a mechanism on purpose. The older wording here described a
+ * local directory shadowing a Unix mount point, which is one platform's
+ * version of it: this app ships primarily on Windows, where an unmapped drive
+ * letter cannot be created over at all and a cloud-client folder on the local
+ * disk is not a mount. The consequence is the same everywhere, and it is the
+ * consequence that justifies the refusal.
  *
  * Nextcloud still authenticates: URL, username and app password is precisely
  * how Nextcloud expects a third-party client to sign in. A folder does not —

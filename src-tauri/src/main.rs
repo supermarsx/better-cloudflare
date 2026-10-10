@@ -214,6 +214,14 @@ fn main() {
         // `PasskeyState` is managed in `initialize_app` instead: it needs an
         // `AppHandle` to reach the window whose origin scopes the relying party.
         .manage(mcp)
+        // Which key collections are unlocked, for this session only. Managed
+        // here rather than in `initialize_app` because it needs nothing from
+        // the app handle: it is an empty map until somebody types a
+        // passphrase, it is never persisted, and a relaunch therefore starts
+        // with every collection locked — which is the contract's claim about
+        // where that secret lives, held up by there being no code path that
+        // could do otherwise.
+        .manage(commands::collections::CollectionVaultState::default())
         .manage(SessionManager::default())
         .manage(agent)
         .setup(initialize_app)
@@ -332,6 +340,23 @@ fn main() {
             commands::sync::preview_sync_pull,
             commands::sync::pull_sync,
             commands::sync::resolve_sync_conflict,
+            // Key collections: a named set of API keys sealed under one
+            // passphrase, so unlocking it once makes every member key usable.
+            // Nine commands, one read and eight operations, all desktop-only
+            // by construction: they live in the OS keyring and the only
+            // unlock state there is sits in this process's memory. Two of
+            // them re-seal the envelope and so need the collection open;
+            // delete, rename and rotate deliberately do not. See
+            // `commands::collections::COMMAND_NAMES`.
+            commands::collections::list_collections,
+            commands::collections::create_collection,
+            commands::collections::rename_collection,
+            commands::collections::delete_collection,
+            commands::collections::unlock_collection,
+            commands::collections::lock_collection,
+            commands::collections::add_key_to_collection,
+            commands::collections::remove_key_from_collection,
+            commands::collections::rotate_collection_passphrase,
             commands::retention::retain_dns_record,
             commands::retention::list_retained_records,
             commands::retention::restore_retained_record,
@@ -656,6 +681,32 @@ mod tests {
                 "{command} must be registered in the invoke handler"
             );
         }
+    }
+
+    /// The same pinning again, for the nine collection commands.
+    ///
+    /// They are worth the third copy of this test rather than a loop over
+    /// three lists: each one reads its own module's `COMMAND_NAMES`, which is
+    /// itself pinned against that feature's renderer contract, and a
+    /// consolidated test would fail naming nothing in particular.
+    #[test]
+    fn every_collection_command_is_registered() {
+        let source = include_str!("main.rs");
+        let production = source
+            .split_once("#[cfg(test)]")
+            .map(|(production, _)| production)
+            .expect("main.rs should retain a separate test module");
+        for command in commands::collections::COMMAND_NAMES {
+            assert!(
+                production.contains(&format!("commands::collections::{command},")),
+                "{command} must be registered in the invoke handler"
+            );
+        }
+        assert!(
+            production.contains("commands::collections::CollectionVaultState::default()"),
+            "the session unlock state must be managed, or every collection command \
+             fails at the moment someone opens the panel"
+        );
     }
 
     #[test]

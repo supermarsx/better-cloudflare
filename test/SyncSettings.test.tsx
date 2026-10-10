@@ -751,6 +751,93 @@ test("a folder's failure is not attributed to a provider that does not exist", a
   );
 });
 
+test("the Transfer row and its outcome agree about what a push did", async () => {
+  // `"Uploaded as generation N"` told the user their keys had reached somewhere
+  // else, on the provider where this app cannot know whether they did.
+  // `FolderEngine::put` writes two files into a directory on this machine and
+  // returns; what carries them off it is a sync client the app cannot query. So
+  // it was a success report about the destination of someone's API keys, made
+  // without the information.
+  //
+  // Two strings, not one, and that is the point of asserting them together:
+  // the Transfer row's description is the sentence that teaches what Push does,
+  // and `OutcomeReport` renders four lines below it. Fixing only the outcome
+  // left "A push uploads this device's keys" sitting directly above "Written to
+  // the folder as generation 4" — a self-contradiction created by the fix.
+  // Found by sync-engine reading the pair, which is the only way to find it.
+  //
+  // Both providers, because a branch can be wrong in two directions: the
+  // folder must not say "uploaded", and Nextcloud — which really does upload —
+  // must not lose the word in either string.
+  harness({ settings: folderSettings() });
+  await renderPanel("status");
+
+  // The teaching sentence. A distinctive clause rather than the whole
+  // description, which also carries the untouched "the provider's copy".
+  assert.ok(
+    screen.getByText(/writes this device's keys to the folder/u),
+    "the Transfer row still describes a folder push as an upload",
+  );
+
+  fireEvent.click(screen.getByTestId("sync-push"));
+  const folder = await screen.findByTestId("sync-transfer-outcome");
+  await waitFor(() =>
+    assert.match(folder.textContent ?? "", /Written to the folder/u),
+  );
+  assert.ok(
+    !/[Uu]ploaded/u.test(folder.textContent ?? ""),
+    "a folder write was reported as an upload off this machine",
+  );
+  // And nowhere else in the section either, which is the adjacency claim.
+  assert.ok(
+    !/[Uu]pload/u.test(
+      screen.getByTestId("sync-section-status").textContent ?? "",
+    ),
+    "something in the status section told a folder user their keys were uploaded",
+  );
+
+  cleanup();
+  harness();
+  await renderPanel("status");
+
+  assert.ok(
+    screen.getByText(/uploads this device's keys/u),
+    "Nextcloud's Transfer row stopped saying what it really does",
+  );
+  fireEvent.click(screen.getByTestId("sync-push"));
+  const webdav = await screen.findByTestId("sync-transfer-outcome");
+  await waitFor(() => assert.match(webdav.textContent ?? "", /[Uu]ploaded/u));
+});
+
+test("a folder error says what happened with nothing quoted under it", async () => {
+  // `provider-error` was "The folder could not be used." — the shortest
+  // headline in the set, and only informative beside the detail line below it.
+  // The detail is there on every path today (every `SyncError::Provider`
+  // carries a message, and `folder.rs` passes `io::Error::to_string` or a
+  // literal at each site), but `SyncOutcome.message` is nullable in the
+  // contract and a headline that needs company is not a headline.
+  //
+  // It can also say "the folder is there", which the shorter version could
+  // not: every folder-side `Provider` error is raised past `root_now()`, so
+  // the path had already been confirmed to exist and be a directory, and what
+  // failed was a read or a write inside it.
+  harness({
+    settings: folderSettings(),
+    push: { state: "failed", code: "provider-error", message: null },
+  });
+  await renderPanel("status");
+
+  fireEvent.click(screen.getByTestId("sync-push"));
+  const outcome = await screen.findByTestId("sync-transfer-outcome");
+  const text = outcome.textContent ?? "";
+  assert.match(text, /read or write/u);
+  // Nothing is framed as a quotation, because there was nothing to quote.
+  assert.ok(
+    !/(?:filesystem|provider) said/u.test(text),
+    "an absent message was still introduced as something someone said",
+  );
+});
+
 test("an unreachable provider is not made to say why it was unreachable", async () => {
   // `unreachable` is the one state that means the provider demonstrably said
   // nothing — and `SyncError::Unreachable` carries a message anyway, which for
@@ -810,8 +897,8 @@ test("an unreachable provider is not made to say why it was unreachable", async 
 test("replacing a stored secret does not claim there is nothing stored", async () => {
   // One input branch, two causes: nothing is stored, or Replace was pressed on
   // something that is. A single placeholder read "Nothing is stored" for both,
-  // so the replace path put it directly beside "Keep the stored one" — a
-  // button that only renders when something *is* stored. Two strings in one
+  // so the replace path put it directly beside the keep button — which only
+  // renders when something *is* stored. Two strings in one
   // row contradicting each other, in every locale. Found by the hi-IN
   // translator; no test objected, because both strings were correct for the
   // branch each was written for.
@@ -828,7 +915,12 @@ test("replacing a stored secret does not claim there is nothing stored", async (
   // test that only checked the placeholder would still pass if the two came
   // apart again.
   assert.ok(
-    within(field).queryByRole("button", { name: /Keep the stored one/u }),
+    // Matched on the distinctive part rather than the whole label: this one
+    // has already moved once, from the subjectless "Keep the stored one" to a
+    // wording that names what is kept, and it will move again before it names
+    // a particular secret — which it must never do, since one component
+    // renders it for two.
+    within(field).queryByRole("button", { name: /Keep the secret/u }),
     "the keep-stored button is gone, so this is no longer the replace path",
   );
   assert.ok(
@@ -849,8 +941,8 @@ test("replacing a stored secret does not claim there is nothing stored", async (
     "Nothing is stored",
   );
   assert.ok(
-    !within(empty).queryByRole("button", { name: /Keep the stored one/u }),
-    "a secret that is not stored offered to keep the stored one",
+    !within(empty).queryByRole("button", { name: /Keep the secret/u }),
+    "a secret that is not stored offered to keep the one already stored",
   );
 });
 
@@ -1172,7 +1264,13 @@ test("push is withheld, and explained, where this device's keys are not", async 
   );
   assert.match(
     screen.getByTestId("sync-push-unavailable").textContent ?? "",
-    /Uploading is not offered here/u,
+    // The distinctive part rather than the opening word. "Uploading" was
+    // briefly reworded out of this notice during the provider-vocabulary pass
+    // and then deliberately restored — it is a negation about an offer, not a
+    // claim that anything reached anywhere — so what this assertion is for is
+    // the notice being present at all. Scoped to the testid, so it cannot
+    // collide with the keep-local notice phrased the same way.
+    /not offered here/u,
   );
   // Pull is the whole point of this host, so it stays.
   assert.ok(screen.getByTestId("sync-pull"));

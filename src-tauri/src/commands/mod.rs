@@ -4,6 +4,12 @@ use crate::storage::Storage;
 
 pub mod audit;
 pub mod auth;
+/// Named sets of API keys that one passphrase opens. Not glob-re-exported, so
+/// its wire types and its managed `CollectionVaultState` stay behind
+/// `commands::collections::` the way `sync`'s do — they are named after the
+/// renderer's contract rather than after this module, and a `CollectionRecord`
+/// in the crate root would be anybody's.
+pub mod collections;
 pub mod dns;
 /// A zone's change history and the undo it offers. Not glob-re-exported, so
 /// its wire types stay behind `commands::history::` the way `retention`'s do —

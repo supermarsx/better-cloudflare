@@ -7,6 +7,6 @@
 
 /** How many packages this build is made of, by ecosystem. */
 export const DEPENDENCY_TOTALS = {
-  npm: { direct: 26, directDevelopment: 27, directOptional: 1, total: 577 },
-  rust: { direct: 46, directDevelopment: 1, workspaceCrates: 21, total: 699 },
+  npm: { direct: 27, directDevelopment: 27, directOptional: 1, total: 577 },
+  rust: { direct: 46, directDevelopment: 1, workspaceCrates: 22, total: 700 },
 } as const;

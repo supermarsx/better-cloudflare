@@ -199,33 +199,37 @@ function errorMessage(error: unknown): string {
  *
  * This component is rendered twice — once for the provider credential, once
  * for the sync passphrase — so `"Nothing is stored"`, `"Type a replacement"`,
- * `"Keep the stored one"`, `"The stored secret will be removed when you save"`,
- * `"Cancel the removal"`, `"Replace"`, `"Remove"` and the empty-field note all
- * describe **whichever secret is in front of the user**, not a particular one. Only `label`, `description`,
+ * `"Keep the secret already stored"`, `"The stored secret will be removed when
+ * you save"`, `"Cancel the removal"`, `"Replace"`, `"Remove"` and the
+ * empty-field note all describe **whichever secret is in front of the user**,
+ * not a particular one. Only `label`, `description`,
  * `presentText` and `absentText` arrive per instance and may therefore name
  * their own field.
  *
  * That distinction is invisible from inside this file and it is load-bearing
  * for translation: a shared string cannot agree with a noun it does not know.
  *
- * `"Keep the stored one"` is the one string below that still has no subject,
- * and the shipped locales divide three ways on it. fr-FR and ru-RU name one
- * outright — `"Conserver le secret enregistré"`, `"Оставить сохранённое
- * значение"` — which is the repair. pt-PT and hi-IN sidestep agreement with a
- * relative construction, "keep what is stored". **es-ES agrees with a noun the
- * string cannot see**: `"Conservar la ya almacenada"` is feminine, and it is
- * correct only because `credencial` and `frase de contraseña` both happen to
- * be feminine. Add a third secret whose Spanish label is masculine and that
- * line becomes ungrammatical for it, with nothing to catch it, since the key,
- * the value and the placeholders would all be unchanged. Found by the es-ES
- * translator, against an earlier version of this comment that had the Spanish
- * backwards — it claimed a neuter dodge, and described the hazard as one the
- * locale had escaped rather than one it is in.
+ * **Every string below now names its subject**, and the last one that did not
+ * was `"Keep the stored one"`. The shipped locales divided three ways on it.
+ * fr-FR and ru-RU named one outright — `"Conserver le secret enregistré"`,
+ * `"Оставить сохранённое значение"` — which was the repair. pt-PT and hi-IN
+ * sidestepped agreement with a relative construction, "keep what is stored".
+ * **es-ES agreed with a noun the string could not see**: `"Conservar la ya
+ * almacenada"` is feminine, and it was correct only because `credencial` and
+ * `frase de contraseña` both happen to be feminine. A third secret whose
+ * Spanish label is masculine would have made that line ungrammatical for it
+ * with nothing to catch it, since the key, the value and the placeholders
+ * would all have been unchanged. Found by the es-ES translator, against an
+ * earlier version of this comment that had the Spanish backwards — it claimed
+ * a neuter dodge, and described the hazard as one the locale had escaped
+ * rather than one it is in. The string es-ES proposed is the one in the code
+ * now: `"Keep the secret already stored"`, which fits any secret this
+ * component could serve.
  *
- * The sibling string shows the fix working. `"Will be removed when you save"`
- * had the same defect and is now `"The stored secret will be removed when you
- * save"`; es-ES, pt-PT and hi-IN all render that subject explicitly, and none
- * of them has to guess a gender any more.
+ * Two sibling strings show the same fix. `"Will be removed when you save"` is
+ * now `"The stored secret will be removed when you save"`; es-ES, pt-PT and
+ * hi-IN all render that subject explicitly, and none of them has to guess a
+ * gender any more.
  *
  * So: a string added below must read correctly for any secret this component
  * could ever serve. If one genuinely cannot — if it has to agree with a
@@ -241,7 +245,7 @@ function errorMessage(error: unknown): string {
  *
  * That is also the repair if the constraint above is ever broken: split the
  * string per field, or give it a subject, rather than retranslate it — which
- * is what splitting `"Cancel the removal"` out of `"Keep the stored one"`
+ * is what splitting `"Cancel the removal"` out of the keep button's label
  * already did for a different reason.
  */
 function SecretField({
@@ -297,8 +301,9 @@ function SecretField({
                    opens either because nothing is stored or because the user
                    pressed Replace on something that is — and the one
                    placeholder read "Nothing is stored" in both, so the replace
-                   path showed it directly beside the "Keep the stored one"
-                   button that only exists when something *is* stored: two
+                   path showed it directly beside the "Keep the secret already
+                   stored" button that only exists when something *is*
+                   stored: two
                    strings in one row contradicting each other. Found by the
                    hi-IN translator. `present` is the same condition that
                    renders that button, so the two cannot disagree again. */
@@ -319,7 +324,10 @@ function SecretField({
                 disabled={disabled}
                 onClick={() => onChange(SYNC_SECRET_KEEP)}
               >
-                {t("Keep the stored one", "Keep the stored one")}
+                {t(
+                  "Keep the secret already stored",
+                  "Keep the secret already stored",
+                )}
               </Button>
             ) : null}
           </div>
@@ -342,10 +350,11 @@ function SecretField({
               disabled={disabled}
               onClick={() => onChange(SYNC_SECRET_KEEP)}
             >
-              {/* Not "Keep the stored one": in this mode the secret is already
-                  marked for removal, so the act is undoing that rather than
-                  choosing between stored and typed. One label for both jobs
-                  elided a difference that does not survive translation. */}
+              {/* Not "Keep the secret already stored": in this mode the secret
+                  is already marked for removal, so the act is undoing that
+                  rather than choosing between stored and typed. One label for
+                  both jobs elided a difference that does not survive
+                  translation. */}
               {t("Cancel the removal", "Cancel the removal")}
             </Button>
           </div>
@@ -409,7 +418,12 @@ function ManifestFacts({
     >
       <dt className="text-muted-foreground">{t("Generation", "Generation")}</dt>
       <dd className="font-mono">{manifest.generation}</dd>
-      <dt className="text-muted-foreground">{t("Written", "Written")}</dt>
+      {/* "Written at", not "Written": the value is a timestamp, and the bare
+          participle is both a verb and a noun in English with nothing in the
+          key to say which. Seven locales read it as the participle and four as
+          a noun. "at" fixes the reading and keeps it parallel with "Written
+          by" in the row below, which is the sibling it has to scan with. */}
+      <dt className="text-muted-foreground">{t("Written at", "Written at")}</dt>
       <dd>{fullTimestamp(manifest.writtenAt, language)}</dd>
       <dt className="text-muted-foreground">{t("Written by", "Written by")}</dt>
       <dd className="break-all">
@@ -631,20 +645,71 @@ function useFailureText(
           // or Syncthing folder stays exactly where it is when the client
           // quits — so a stopped client never produces this error, and naming
           // it here would claim a detection this app does not have.
+          //
+          // It also no longer enumerates the arms, because it got the count
+          // wrong. `FolderEngine::root_now` has **three** failure arms, not
+          // two: `Err(NotFound)` is "is not there", `Ok(meta)` that is not a
+          // directory is "is not a folder", and a third arm catches every
+          // other `fs::metadata` error. In that third case this app never
+          // learns whether the folder exists or what it is, so "it is not
+          // there, or it is not a folder" was a false dichotomy and the OS's
+          // own words below it were the only true part. "Nothing this app can
+          // use is at that path right now" covers all three without claiming
+          // to have distinguished them.
+          //
+          // The causes are the measured ones, from sync-engine running each
+          // arm on Windows 11, and the old pair had them under the wrong arm.
+          // A drive letter that survives its medium — a card reader, a
+          // powered-off enclosure — is the *third* arm: `fs::metadata` answers
+          // os error 21, `ERROR_NOT_READY`, "The device is not ready.", which
+          // is why the drive here is one that is "not ready" rather than one
+          // that is "not attached". A drive letter or UNC host that is gone
+          // altogether is `NotFound`, the second arm, and that is the case the
+          // never-created warning further down the screen is about — so the
+          // two strings naming different drive states is deliberate, not drift.
+          // `PermissionDenied` is **not** one of these arms: a directory's
+          // metadata is answered from its parent's entry, so a full deny ACE
+          // on the folder still returns `Ok(is_dir)`. Permissions belong to
+          // `provider-error` below, and are named only there.
           return provider === "folder"
             ? t(
-                "The folder could not be reached, so nothing was transferred either way. It is not there, or it is not a folder — which usually means an unmounted share or an unplugged disk.",
-                "The folder could not be reached, so nothing was transferred either way. It is not there, or it is not a folder — which usually means an unmounted share or an unplugged disk.",
+                "The folder could not be reached, so nothing was transferred either way. Nothing this app can use is at that path right now, which usually means whatever carries the folder is no longer available: a network location that is not connected, or a drive that is not ready.",
+                "The folder could not be reached, so nothing was transferred either way. Nothing this app can use is at that path right now, which usually means whatever carries the folder is no longer available: a network location that is not connected, or a drive that is not ready.",
               )
             : t(
                 "Nextcloud could not be reached, so nothing was transferred either way.",
                 "Nextcloud could not be reached, so nothing was transferred either way.",
               );
         case "provider-error":
+          // "The folder could not be used." was the shortest headline in this
+          // set and said less than any of its siblings — used for what, and by
+          // whom? It also leaned on the detail line below it to mean anything
+          // at all. The detail does happen to be there on every path: a
+          // `provider-error` is `SyncError::Provider(String)`, whose
+          // `provider_message` is always `Some`, and every construction site in
+          // `folder.rs` passes either `io::Error::to_string` or a literal. But
+          // a headline that is only informative in company is not a headline,
+          // and `message` is `string | null` in the contract, so the type says
+          // it may one day arrive empty.
+          //
+          // "The folder is there" is a claim the code earns rather than a
+          // guess: every folder-side `Provider` error is raised past
+          // `root_now()`, which has already confirmed the path exists and is a
+          // directory, so what failed was a read or a write *inside* it. The
+          // three causes are the plausible ones for that; the detail line still
+          // says which.
+          //
+          // This is also the one place a permission may be named. It is
+          // unreachable from `root_now` — a deny ACE on a directory still
+          // answers `Ok(is_dir)`, because the metadata comes from the parent's
+          // entry — but `fs::write`, `fs::read` and `fs::rename` *inside* the
+          // folder hit it squarely, and "Access is denied. (os error 5)" is
+          // the fixture `test/SyncSettings.test.tsx` already drives this code
+          // with.
           return provider === "folder"
             ? t(
-                "The folder could not be used.",
-                "The folder could not be used.",
+                "The folder is there, but this app could not read or write inside it. A permission, a file another program is holding open, or a disk with no room left all look like this.",
+                "The folder is there, but this app could not read or write inside it. A permission, a file another program is holding open, or a disk with no room left all look like this.",
               )
             : t(
                 "Nextcloud answered with something this app could not use.",
@@ -661,9 +726,17 @@ function useFailureText(
             "The stored copy was written by a newer version of this app. It was refused rather than read, because reading it wrongly would be worse.",
           );
         case "corrupt":
+          // No action named at all, which is stricter than the consistency the
+          // rest of this pass is about: "the download" was not merely the
+          // second word for a pull, it was **wrong**. `FolderEngine::put`
+          // re-reads the manifest before it commits, so a manifest that will
+          // not parse answers `Corrupt` to a *push* — and so does a guard that
+          // named a generation against a folder that is now empty. Naming
+          // either direction here describes something the user may not have
+          // been doing.
           return t(
-            "The stored bytes do not match their checksum, so the download was refused rather than opened.",
-            "The stored bytes do not match their checksum, so the download was refused rather than opened.",
+            "The stored bytes do not match their checksum, so they were refused rather than opened.",
+            "The stored bytes do not match their checksum, so they were refused rather than opened.",
           );
         case "wrong-passphrase":
           return t(
@@ -822,11 +895,26 @@ function OutcomeReport({
               )}
             </p>
           ) : verb === "pushed" ? (
+            // Branched on provider, like the failure text and the probe text
+            // below, and for the same reason: "Uploaded" says the keys reached
+            // somewhere else, and on the folder provider this app has no idea
+            // whether they did. `FolderEngine::put` writes two files into a
+            // directory on this machine and returns; whether anything carries
+            // them off it is up to a sync client this app cannot query and
+            // cannot detect the absence of. Of every string in this feature
+            // this was the one that claimed the most and knew the least — a
+            // success report about the destination of someone's API keys.
+            // Found by sync-engine while proving that detection impossible.
             <p>
-              {t("Uploaded as generation {{generation}}.", {
-                generation: outcome.manifest.generation,
-                defaultValue: `Uploaded as generation ${outcome.manifest.generation}.`,
-              })}
+              {provider === "folder"
+                ? t("Written to the folder as generation {{generation}}.", {
+                    generation: outcome.manifest.generation,
+                    defaultValue: `Written to the folder as generation ${outcome.manifest.generation}.`,
+                  })
+                : t("Uploaded as generation {{generation}}.", {
+                    generation: outcome.manifest.generation,
+                    defaultValue: `Uploaded as generation ${outcome.manifest.generation}.`,
+                  })}
             </p>
           ) : verb === "pulled" ? (
             <p>
@@ -1099,7 +1187,16 @@ function PullDialog({
               data-testid="sync-pull-applying"
             >
               <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-              {t("Installing the keys", "Installing the keys")}
+              {/* "Replacing", not "Installing". This progress line, the button
+                  that starts it and the outcome that follows it are one act,
+                  and the act is called "replace" at the two of those three the
+                  user decides from: "Replace this device's keys" on the button
+                  and "This replaces the API keys stored on this device" in the
+                  dialog's own description. */}
+              {t(
+                "Replacing this device's keys",
+                "Replacing this device's keys",
+              )}
             </div>
           ) : null}
 
@@ -1133,8 +1230,8 @@ function PullDialog({
               data-testid="sync-pull-diverged"
             >
               {t(
-                "The two copies have diverged, so nothing was installed. Close this and settle it under Sync status.",
-                "The two copies have diverged, so nothing was installed. Close this and settle it under Sync status.",
+                "The two copies have diverged, so nothing was replaced. Close this and settle it under Sync status.",
+                "The two copies have diverged, so nothing was replaced. Close this and settle it under Sync status.",
               )}
             </p>
           ) : null}
@@ -1686,11 +1783,25 @@ export function SyncSettings({
                     a push that succeeded says "Uploaded as generation N", so
                     "would report success" describes a screen that does not
                     exist. The three-step consequence is what earns this
-                    paragraph its length and is kept whole. */}
+                    paragraph its length and is kept whole.
+
+                    It used to describe a Unix mount: "underneath where the
+                    share should have been … the mount coming back would hide
+                    them again" is a directory being shadowed by a mount point,
+                    which is not what happens on this app's primary platform —
+                    a Windows drive letter that is not mapped cannot be created
+                    over, and a cloud-client folder on the local disk is not a
+                    mount at all. The hazard is the same everywhere once it is
+                    stated without the mechanism: a folder this app made is a
+                    folder nothing is carrying. The causes are also a matched
+                    pair now ("not connected" / "not attached") rather than a
+                    state and a physical act, and the carrier is "nothing"
+                    rather than "your sync client", because two of the three
+                    arrangements this provider supports have no client. */}
                 <p data-testid="sync-folder-absent-note">
                   {t(
-                    "A folder that is not there is reported as one that could not be reached, and is never created. A missing folder almost always means an unmounted share or an unplugged disk, and creating it would put the sealed copy on the local disk, underneath where the share should have been: the push would report a new generation, your sync client would never see the bytes, and the mount coming back would hide them again.",
-                    "A folder that is not there is reported as one that could not be reached, and is never created. A missing folder almost always means an unmounted share or an unplugged disk, and creating it would put the sealed copy on the local disk, underneath where the share should have been: the push would report a new generation, your sync client would never see the bytes, and the mount coming back would hide them again.",
+                    "A folder that is not there is reported as one that could not be reached, and is never created. A missing folder almost always means that whatever carries it is no longer available — a network location that is not connected, a drive that is not attached — or that the folder itself has been moved or deleted. Creating it again would leave an ordinary local folder with nothing behind it: the push would report a new generation, nothing would carry the sealed copy off this device, and once the real folder came back this app would write there instead, leaving that copy stranded where nobody looks for it.",
+                    "A folder that is not there is reported as one that could not be reached, and is never created. A missing folder almost always means that whatever carries it is no longer available — a network location that is not connected, a drive that is not attached — or that the folder itself has been moved or deleted. Creating it again would leave an ordinary local folder with nothing behind it: the push would report a new generation, nothing would carry the sealed copy off this device, and once the real folder came back this app would write there instead, leaving that copy stranded where nobody looks for it.",
                   )}
                 </p>
                 {/* The two real names, spelled out. They are the one thing on
@@ -1728,15 +1839,29 @@ export function SyncSettings({
 
               A privacy disclosure rather than a detail, and its own string
               rather than a clause on the conflict-copy note, which is already
-              the longest in the feature and the worst for bidi. */}
+              the longest in the feature and the worst for bidi.
+
+              The list is **partial, and says so**. `SyncManifest` has ten
+              cleartext fields; this names six. The four it leaves out —
+              `payloadVersion`, `iterations`, `keyLength`, `algorithm` — are
+              the format marker and the KDF parameters, which `payload.rs`
+              justifies as public inputs by construction and which disclose
+              nothing about the user, so the privacy claim holds. What did not
+              hold was the shape: an em-dash apposition after "a small
+              unencrypted manifest" reads as the file's entire contents, and
+              all eleven translators took it that way. Hence "Among the things
+              it holds in the clear", and a closing clause that accounts for
+              the remainder by kind rather than by name. Do not turn it back
+              into a complete-looking list — either it is all ten fields or it
+              is hedged, and ten is more than this paragraph can carry. */}
           {provider !== null ? (
             <p
               className="py-3 text-xs text-muted-foreground"
               data-testid="sync-manifest-privacy-note"
             >
               {t(
-                "Of the two files, better-cloudflare-vault.json is a small unencrypted manifest — a generation number, a checksum, a size, when it was written, and a stable id and a coarse name for the device that wrote it, so that two machines can tell which copy is newer and whose it is. Your keys are only ever in better-cloudflare-vault.enc.",
-                "Of the two files, better-cloudflare-vault.json is a small unencrypted manifest — a generation number, a checksum, a size, when it was written, and a stable id and a coarse name for the device that wrote it, so that two machines can tell which copy is newer and whose it is. Your keys are only ever in better-cloudflare-vault.enc.",
+                "Of the two files, better-cloudflare-vault.json is a small unencrypted manifest. Among the things it holds in the clear are a generation number, a checksum, a size, when it was written, and a stable id and a coarse name for the device that wrote it, so that two machines can tell which copy is newer and whose it is; the rest describes the format and the encryption parameters rather than you. Your keys are only ever in better-cloudflare-vault.enc.",
+                "Of the two files, better-cloudflare-vault.json is a small unencrypted manifest. Among the things it holds in the clear are a generation number, a checksum, a size, when it was written, and a stable id and a coarse name for the device that wrote it, so that two machines can tell which copy is newer and whose it is; the rest describes the format and the encryption parameters rather than you. Your keys are only ever in better-cloudflare-vault.enc.",
               )}
             </p>
           ) : null}
@@ -1805,20 +1930,30 @@ export function SyncSettings({
               {/* "as not configured" is gone from all three: `not-configured`
                   is a `SyncFailureCode` and naming it here leaks an internal
                   the user never sees. The passphrase sibling below words the
-                  same refusal without it, and all four now match. */}
+                  same refusal without it, and all four now match.
+
+                  "conflict resolution" is gone for a related reason: it is the
+                  name of a `ConflictResolution` type and of nothing the user is
+                  ever shown. What they are shown is "Both copies have moved",
+                  two Keep buttons, and two other strings that call the act
+                  **settling** — "when you settle a conflict" and "settle it
+                  under Sync status". Three names for one act, so these four
+                  move to the one that is already on screen. Gerunds throughout
+                  so the list is parallel; "every push, pull and settling of a
+                  conflict" is not. */}
               {missingField === "folderPath"
                 ? t(
-                    "Sync is switched on and no folder has been chosen, so every push, pull and conflict resolution will be refused until one is.",
-                    "Sync is switched on and no folder has been chosen, so every push, pull and conflict resolution will be refused until one is.",
+                    "Sync is switched on and no folder has been chosen, so pushing, pulling and settling a conflict will all be refused until one is.",
+                    "Sync is switched on and no folder has been chosen, so pushing, pulling and settling a conflict will all be refused until one is.",
                   )
                 : missingField === "webdavUrl"
                   ? t(
-                      "Sync is switched on and no WebDAV URL is set, so every push, pull and conflict resolution will be refused until one is.",
-                      "Sync is switched on and no WebDAV URL is set, so every push, pull and conflict resolution will be refused until one is.",
+                      "Sync is switched on and no WebDAV URL is set, so pushing, pulling and settling a conflict will all be refused until one is.",
+                      "Sync is switched on and no WebDAV URL is set, so pushing, pulling and settling a conflict will all be refused until one is.",
                     )
                   : t(
-                      "Sync is switched on and no WebDAV username is set, so every push, pull and conflict resolution will be refused until one is.",
-                      "Sync is switched on and no WebDAV username is set, so every push, pull and conflict resolution will be refused until one is.",
+                      "Sync is switched on and no WebDAV username is set, so pushing, pulling and settling a conflict will all be refused until one is.",
+                      "Sync is switched on and no WebDAV username is set, so pushing, pulling and settling a conflict will all be refused until one is.",
                     )}
             </p>
           ) : null}
@@ -1959,8 +2094,8 @@ export function SyncSettings({
                   and a user reading this while trying to *restore* is in
                   exactly the case the old wording left out. */}
               {t(
-                "Sync is switched on and no passphrase is set, so every push, pull and conflict resolution will be refused until one is.",
-                "Sync is switched on and no passphrase is set, so every push, pull and conflict resolution will be refused until one is.",
+                "Sync is switched on and no passphrase is set, so pushing, pulling and settling a conflict will all be refused until one is.",
+                "Sync is switched on and no passphrase is set, so pushing, pulling and settling a conflict will all be refused until one is.",
               )}
             </p>
           ) : null}
@@ -1979,9 +2114,13 @@ export function SyncSettings({
           <SettingRow
             htmlFor={fieldId("enabled")}
             label={t("Sync this device", "Sync this device")}
+            // "pushed or pulled", not "uploaded or downloaded": the two
+            // directions are called Push and Pull on the buttons that perform
+            // them and in every outcome that reports one, so this row named
+            // them a second way for no gain.
             description={t(
-              "Off, nothing is uploaded or downloaded. The settings and the stored secrets are kept, so turning it back on needs no setting up again.",
-              "Off, nothing is uploaded or downloaded. The settings and the stored secrets are kept, so turning it back on needs no setting up again.",
+              "Off, nothing is pushed or pulled. The settings and the stored secrets are kept, so turning it back on needs no setting up again.",
+              "Off, nothing is pushed or pulled. The settings and the stored secrets are kept, so turning it back on needs no setting up again.",
             )}
           >
             <Switch
@@ -2190,10 +2329,40 @@ export function SyncSettings({
                     "Save your changes first: a push seals the bundle with the passphrase and credential already stored, not with the ones typed above.",
                   )
                 : allowPush
-                  ? t(
-                      "A push uploads this device's keys. A pull replaces them with the provider's copy, and asks first.",
-                      "A push uploads this device's keys. A pull replaces them with the provider's copy, and asks first.",
-                    )
+                  ? // Branched, and on `settings.provider` rather than the
+                    // draft, because this is the sentence that teaches the
+                    // user what Push *does* and it sits four lines above
+                    // `OutcomeReport`, which answers in the stored provider's
+                    // words. "A push uploads this device's keys" directly
+                    // above "Written to the folder as generation 3" is a
+                    // screen contradicting itself, and the contradiction was
+                    // created by fixing the outcome line — found by
+                    // sync-engine reading the two together, which is the only
+                    // way it was ever going to be found.
+                    //
+                    // A neutral verb would have cost the same one key and was
+                    // the first remedy tried; branching wins because it leaves
+                    // *both* providers internally consistent — folder reads
+                    // "writes"/"Written to the folder", Nextcloud reads
+                    // "uploads"/"Uploaded" — where one verb for both left
+                    // Nextcloud mismatched against its own outcome line.
+                    //
+                    // The second sentence keeps "the provider's copy" in both.
+                    // A folder genuinely holds a copy, "provider" is this
+                    // screen's own word for the setting the user picked, and
+                    // the pull dialog and conflict panel say the same thing to
+                    // the same user minutes later. The earlier misattribution
+                    // fix was about *speech* and *reachability*, which a
+                    // folder has none of; it is not licence to sweep this.
+                    settings.provider === "folder"
+                    ? t(
+                        "A push writes this device's keys to the folder. A pull replaces them with the provider's copy, and asks first.",
+                        "A push writes this device's keys to the folder. A pull replaces them with the provider's copy, and asks first.",
+                      )
+                    : t(
+                        "A push uploads this device's keys. A pull replaces them with the provider's copy, and asks first.",
+                        "A push uploads this device's keys. A pull replaces them with the provider's copy, and asks first.",
+                      )
                   : t(
                       "A pull replaces this device's keys with the provider's copy, and asks first.",
                       "A pull replaces this device's keys with the provider's copy, and asks first.",
@@ -2227,6 +2396,13 @@ export function SyncSettings({
                 className="max-w-xs text-xs text-muted-foreground"
                 data-testid="sync-push-unavailable"
               >
+                {/* "Uploading" stays, deliberately, and was briefly changed to
+                    "Pushing" before the reasoning was checked against the
+                    sentence: this is a negation about an *offer*, on a host
+                    that cannot see this device's keys at all. It claims
+                    nothing reached anywhere, so it is not the kind of
+                    destination claim the outcome line was. sync-engine made
+                    the per-string case for leaving this one alone. */}
                 {t(
                   "Uploading is not offered here: a push seals the keys this device holds, and they are not available on this screen. Sign in first to push.",
                   "Uploading is not offered here: a push seals the keys this device holds, and they are not available on this screen. Sign in first to push.",

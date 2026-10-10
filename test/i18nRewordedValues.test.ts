@@ -111,6 +111,16 @@ const INTENTIONAL_REWORDS: readonly string[] = [
   // Reworded after the fact: the English gained "DNS" to distinguish it from
   // importing other things.
   "Import Records from JSON format",
+  // Not a rewording — a disambiguator. `"Updated"` was one key serving a date
+  // column header in `RegistryMonitor` and a completion toast in
+  // `DNSManager`, and no language that distinguishes a date noun from "it has
+  // been done" can render both: ar, ja and ko each rendered this key as a
+  // completion while rendering its grid siblings `Created` and `Expires` as
+  // date nouns, in the same grid. The column now has its own key whose
+  // default is still `"Updated"`, so the English is unchanged and only the
+  // translators see the distinction. Same shape as the aria-label keys above
+  // whose default is the plain visible label.
+  "Updated (date label)",
 ].toSorted();
 
 test("the set of reworded base values is the one we know about", () => {

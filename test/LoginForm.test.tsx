@@ -334,7 +334,10 @@ test("useLoginForm writes nothing to the vault while the preference is off", asy
     0,
     "the key must not even be decrypted for a vault that is off",
   );
-  assert.match(document.body.textContent ?? "", /OS vault is turned off/);
+  assert.match(
+    document.body.textContent ?? "",
+    /Passkey login needs the OS vault/,
+  );
   assert.match(document.body.textContent ?? "", /Encryption Settings/);
 });
 
@@ -363,7 +366,10 @@ test("useLoginForm reads nothing from the vault while the preference is off", as
     0,
     "the refusal must precede the device prompt, not follow it",
   );
-  assert.match(document.body.textContent ?? "", /OS vault is turned off/);
+  assert.match(
+    document.body.textContent ?? "",
+    /Passkey login needs the OS vault/,
+  );
 });
 
 test("useLoginForm still uses the vault when the preference is on", async () => {

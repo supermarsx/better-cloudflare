@@ -41,6 +41,7 @@ import {
   resolveTagColorId,
 } from "@/components/tags/tag-colors";
 import { useCloudflareAPI } from "@/hooks/dns/use-cloudflare-api";
+import { useDebouncedAutosave } from "@/hooks/dns/use-debounced-autosave";
 import type { DNSRecord, Zone, ZoneSetting, RecordType } from "@/types/dns";
 import { RECORD_TYPES } from "@/types/dns";
 import { useToast } from "@/hooks/use-toast";
@@ -488,6 +489,28 @@ function persistDnsPreferenceFields(fields: Record<string, unknown>) {
   void TauriClient.updatePreferenceFields(fields).catch(
     reportPreferenceFailure,
   );
+}
+
+/**
+ * As `persistDnsPreferenceFields`, but the rejection reaches the caller.
+ *
+ * The settings autosave indicator has to be able to say a write failed, and a
+ * write whose only outcome is a diagnostic cannot be reported on. The
+ * diagnostic still happens — `reportPreferenceFailure` rate-limits itself to
+ * one report per ten seconds, so it is not a substitute for the indicator,
+ * which must name every failure — and the error is re-thrown afterwards.
+ *
+ * Separate from `persistDnsPreferenceFields` rather than a change to it: the
+ * other caller treats that one as fire-and-forget, and handing it a rejecting
+ * promise would turn a failed preference write into an unhandled rejection.
+ */
+function persistDnsPreferenceFieldsReporting(
+  fields: Record<string, unknown>,
+): Promise<void> {
+  return TauriClient.updatePreferenceFields(fields).catch((error: unknown) => {
+    reportPreferenceFailure(error);
+    throw error;
+  });
 }
 
 function normalizeMcpToolIds(values: readonly unknown[]): string[] {
@@ -2517,6 +2540,50 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
   const [lastOpenTabs, setLastOpenTabs] = useState<string[]>([]);
   const [restoredTabs, setRestoredTabs] = useState(false);
   const [prefsReady, setPrefsReady] = useState(false);
+  /**
+   * The settings autosave.
+   *
+   * `prefsReady` is handed over as the gate rather than only guarding the
+   * effect that schedules a write, because a write parked in a timer is the
+   * one thing that could outlive the gate and land component defaults over
+   * stored preferences. The hook re-checks it when the timer fires.
+   */
+  const settingsAutosave = useDebouncedAutosave({ ready: prefsReady });
+  const scheduleSettingsWrite = settingsAutosave.schedule;
+  const flushSettingsWrite = settingsAutosave.flush;
+  /**
+   * The one sentence the settings panel says about saving.
+   *
+   * Word for word the ladder `SyncSettings` shows for its own save state, and
+   * for the same reason the components share `SettingRow`: two indicators in
+   * one app describing the same five situations in different words would be
+   * two things for a user to learn. Every string here is already catalogued,
+   * so none of this costs a translation.
+   */
+  const settingsSaveText = useMemo(() => {
+    switch (settingsAutosave.state) {
+      case "saving":
+        return t("Saving…", "Saving…");
+      case "saved":
+        return t("Saved", "Saved");
+      case "loading":
+        return t("Loading…", "Loading…");
+      case "error":
+        return t("Could not save: {{error}}", {
+          error: settingsAutosave.error ?? "",
+          defaultValue: `Could not save: ${settingsAutosave.error ?? ""}`,
+        });
+      default:
+        return settingsAutosave.dirty
+          ? t("Not saved yet", "Not saved yet")
+          : "";
+    }
+  }, [
+    settingsAutosave.dirty,
+    settingsAutosave.error,
+    settingsAutosave.state,
+    t,
+  ]);
   const [mcpSessionPreferencesRevision, setMcpSessionPreferencesRevision] =
     useState(0);
   const [pendingLastActiveTab, setPendingLastActiveTab] = useState("");
@@ -7103,123 +7170,136 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
 
   useEffect(() => {
     if (!prefsReady) return;
-    storageManager.setDefaultPerPage(globalPerPage);
-    storageManager.setZonePerPageMap(zonePerPage);
-    storageManager.setShowUnsupportedRecordTypes(showUnsupportedRecordTypes);
-    storageManager.setZoneShowUnsupportedRecordTypesMap(
-      zoneShowUnsupportedRecordTypes,
-    );
-    storageManager.setReopenLastTabs(reopenLastTabs);
-    storageManager.setReopenZoneTabs(reopenZoneTabs);
-    storageManager.setLastOpenTabs(lastOpenTabs);
-    storageManager.setConfirmLogout(confirmLogout);
-    storageManager.setIdleLogoutMs(idleLogoutMs);
-    storageManager.setConfirmWindowClose(confirmWindowClose);
-    storageManager.setCloseTabOnMiddleClick(closeTabOnMiddleClick);
-    storageManager.setAiAssistantPresentation(assistantPresentation);
-    // Only once there is a position: `null` means never dragged, and writing
-    // it would clear a point stored on a previous launch.
-    if (assistantBubblePosition) {
-      storageManager.setAiAssistantBubblePosition(assistantBubblePosition);
-    }
-    storageManager.setMcpServerEnabled(mcpServerEnabled);
-    storageManager.setMcpServerHost(mcpServerHost);
-    storageManager.setMcpServerPort(mcpServerPort);
-    storageManager.setLoadingOverlayTimeoutMs(loadingOverlayTimeoutMs);
-    storageManager.setTopologyResolutionMaxHops(topologyResolutionMaxHops);
-    storageManager.setTopologyResolverMode(topologyResolverMode);
-    storageManager.setTopologyDnsServer(topologyDnsServer);
-    storageManager.setTopologyCustomDnsServer(topologyCustomDnsServer);
-    storageManager.setTopologyDohProvider(topologyDohProvider);
-    storageManager.setTopologyDohCustomUrl(topologyDohCustomUrl);
-    storageManager.setTopologyExportConfirmPath(topologyExportConfirmPath);
-    storageManager.setTopologyExportFolderPreset(topologyExportFolderPreset);
-    storageManager.setTopologyExportCustomPath(topologyExportCustomPath);
-    storageManager.setTopologyCopyActions(topologyCopyActions);
-    storageManager.setTopologyExportActions(topologyExportActions);
-    storageManager.setTopologyDisableAnnotations(topologyDisableAnnotations);
-    storageManager.setTopologyDisableFullWindow(topologyDisableFullWindow);
-    storageManager.setTopologyLookupTimeoutMs(topologyLookupTimeoutMs);
-    storageManager.setTopologyDisablePtrLookups(topologyDisablePtrLookups);
-    storageManager.setTopologyDisableGeoLookups(topologyDisableGeoLookups);
-    storageManager.setTopologyGeoProvider(topologyGeoProvider);
-    storageManager.setTopologyScanResolutionChain(topologyScanResolutionChain);
-    storageManager.setTopologyDisableServiceDiscovery(
-      topologyDisableServiceDiscovery,
-    );
-    storageManager.setTopologyTcpServices(topologyTcpServices);
-    storageManager.setAuditExportDefaultDocuments(auditExportDefaultDocuments);
-    storageManager.setConfirmClearAuditLogs(confirmClearAuditLogs);
-    storageManager.setAuditExportFolderPreset(auditExportFolderPreset);
-    storageManager.setAuditExportCustomPath(auditExportCustomPath);
-    storageManager.setAuditExportSkipDestinationConfirm(
-      auditExportSkipDestinationConfirm,
-    );
-    storageManager.setDomainAuditCategories(domainAuditCategories);
-    storageManager.setRewriteCopiedRecordDomains(rewriteCopiedRecordDomains);
-    storageManager.setConfirmPastePreview(confirmPastePreview);
-    storageManager.setTableColumns(tableColumns);
-    storageManager.setSessionSettingsProfile(
-      currentSessionId,
-      buildSessionSettingsProfile(),
-    );
+    // Debounced rather than written inline: this body writes every
+    // preference from current state, so a free-text setting would
+    // otherwise cost sixty `storageManager` writes and a 45-field IPC
+    // round trip per keystroke. Coalescing is lossless for exactly that
+    // reason — the newest closure writes everything the older ones would
+    // have — and `use-debounced-autosave` is what makes sure the pending
+    // one still runs if the component unmounts or the window closes.
+    scheduleSettingsWrite(() => {
+      storageManager.setDefaultPerPage(globalPerPage);
+      storageManager.setZonePerPageMap(zonePerPage);
+      storageManager.setShowUnsupportedRecordTypes(showUnsupportedRecordTypes);
+      storageManager.setZoneShowUnsupportedRecordTypesMap(
+        zoneShowUnsupportedRecordTypes,
+      );
+      storageManager.setReopenLastTabs(reopenLastTabs);
+      storageManager.setReopenZoneTabs(reopenZoneTabs);
+      storageManager.setLastOpenTabs(lastOpenTabs);
+      storageManager.setConfirmLogout(confirmLogout);
+      storageManager.setIdleLogoutMs(idleLogoutMs);
+      storageManager.setConfirmWindowClose(confirmWindowClose);
+      storageManager.setCloseTabOnMiddleClick(closeTabOnMiddleClick);
+      storageManager.setAiAssistantPresentation(assistantPresentation);
+      // Only once there is a position: `null` means never dragged, and writing
+      // it would clear a point stored on a previous launch.
+      if (assistantBubblePosition) {
+        storageManager.setAiAssistantBubblePosition(assistantBubblePosition);
+      }
+      storageManager.setMcpServerEnabled(mcpServerEnabled);
+      storageManager.setMcpServerHost(mcpServerHost);
+      storageManager.setMcpServerPort(mcpServerPort);
+      storageManager.setLoadingOverlayTimeoutMs(loadingOverlayTimeoutMs);
+      storageManager.setTopologyResolutionMaxHops(topologyResolutionMaxHops);
+      storageManager.setTopologyResolverMode(topologyResolverMode);
+      storageManager.setTopologyDnsServer(topologyDnsServer);
+      storageManager.setTopologyCustomDnsServer(topologyCustomDnsServer);
+      storageManager.setTopologyDohProvider(topologyDohProvider);
+      storageManager.setTopologyDohCustomUrl(topologyDohCustomUrl);
+      storageManager.setTopologyExportConfirmPath(topologyExportConfirmPath);
+      storageManager.setTopologyExportFolderPreset(topologyExportFolderPreset);
+      storageManager.setTopologyExportCustomPath(topologyExportCustomPath);
+      storageManager.setTopologyCopyActions(topologyCopyActions);
+      storageManager.setTopologyExportActions(topologyExportActions);
+      storageManager.setTopologyDisableAnnotations(topologyDisableAnnotations);
+      storageManager.setTopologyDisableFullWindow(topologyDisableFullWindow);
+      storageManager.setTopologyLookupTimeoutMs(topologyLookupTimeoutMs);
+      storageManager.setTopologyDisablePtrLookups(topologyDisablePtrLookups);
+      storageManager.setTopologyDisableGeoLookups(topologyDisableGeoLookups);
+      storageManager.setTopologyGeoProvider(topologyGeoProvider);
+      storageManager.setTopologyScanResolutionChain(
+        topologyScanResolutionChain,
+      );
+      storageManager.setTopologyDisableServiceDiscovery(
+        topologyDisableServiceDiscovery,
+      );
+      storageManager.setTopologyTcpServices(topologyTcpServices);
+      storageManager.setAuditExportDefaultDocuments(
+        auditExportDefaultDocuments,
+      );
+      storageManager.setConfirmClearAuditLogs(confirmClearAuditLogs);
+      storageManager.setAuditExportFolderPreset(auditExportFolderPreset);
+      storageManager.setAuditExportCustomPath(auditExportCustomPath);
+      storageManager.setAuditExportSkipDestinationConfirm(
+        auditExportSkipDestinationConfirm,
+      );
+      storageManager.setDomainAuditCategories(domainAuditCategories);
+      storageManager.setRewriteCopiedRecordDomains(rewriteCopiedRecordDomains);
+      storageManager.setConfirmPastePreview(confirmPastePreview);
+      storageManager.setTableColumns(tableColumns);
+      storageManager.setSessionSettingsProfile(
+        currentSessionId,
+        buildSessionSettingsProfile(),
+      );
 
-    if (isDesktop()) {
-      persistDnsPreferenceFields({
-        rewrite_copied_record_domains: rewriteCopiedRecordDomains,
-        dns_table_columns: resolveTableColumns(
-          "dnsRecords",
-          tableColumns.dnsRecords,
-        ),
-        default_per_page: globalPerPage,
-        zone_per_page: zonePerPage,
-        show_unsupported_record_types: showUnsupportedRecordTypes,
-        zone_show_unsupported_record_types: zoneShowUnsupportedRecordTypes,
-        reopen_last_tabs: reopenLastTabs,
-        reopen_zone_tabs: reopenZoneTabs,
-        last_open_tabs: lastOpenTabs,
-        confirm_logout: confirmLogout,
-        idle_logout_ms: idleLogoutMs,
-        confirm_window_close: confirmWindowClose,
-        close_tab_on_middle_click: closeTabOnMiddleClick,
-        mcp_server_enabled: mcpServerEnabled,
-        mcp_server_host: mcpServerHost,
-        mcp_server_port: mcpServerPort,
-        mcp_enabled_tools: mcpEnabledTools,
-        loading_overlay_timeout_ms: loadingOverlayTimeoutMs,
-        topology_resolution_max_hops: topologyResolutionMaxHops,
-        topology_resolver_mode: topologyResolverMode,
-        topology_dns_server: topologyDnsServer,
-        topology_custom_dns_server: topologyCustomDnsServer,
-        topology_doh_provider: topologyDohProvider,
-        topology_doh_custom_url: topologyDohCustomUrl,
-        topology_export_confirm_path: topologyExportConfirmPath,
-        topology_export_folder_preset: topologyExportFolderPreset,
-        topology_export_custom_path: topologyExportCustomPath,
-        topology_copy_actions: topologyCopyActions,
-        topology_export_actions: topologyExportActions,
-        topology_disable_annotations: topologyDisableAnnotations,
-        topology_disable_full_window: topologyDisableFullWindow,
-        topology_lookup_timeout_ms: topologyLookupTimeoutMs,
-        topology_disable_ptr_lookups: topologyDisablePtrLookups,
-        topology_disable_geo_lookups: topologyDisableGeoLookups,
-        topology_geo_provider: topologyGeoProvider,
-        topology_scan_resolution_chain: topologyScanResolutionChain,
-        topology_disable_service_discovery: topologyDisableServiceDiscovery,
-        topology_tcp_services: topologyTcpServices,
-        audit_export_default_documents: auditExportDefaultDocuments,
-        confirm_clear_audit_logs: confirmClearAuditLogs,
-        audit_export_folder_preset: auditExportFolderPreset,
-        audit_export_custom_path: auditExportCustomPath,
-        audit_export_skip_destination_confirm:
-          auditExportSkipDestinationConfirm,
-        domain_audit_categories: domainAuditCategories,
-        session_settings_profiles: {
-          ...sessionSettingsProfiles,
-          [currentSessionId]: buildSessionSettingsProfile(),
-        },
-      });
-    }
+      if (isDesktop()) {
+        return persistDnsPreferenceFieldsReporting({
+          rewrite_copied_record_domains: rewriteCopiedRecordDomains,
+          dns_table_columns: resolveTableColumns(
+            "dnsRecords",
+            tableColumns.dnsRecords,
+          ),
+          default_per_page: globalPerPage,
+          zone_per_page: zonePerPage,
+          show_unsupported_record_types: showUnsupportedRecordTypes,
+          zone_show_unsupported_record_types: zoneShowUnsupportedRecordTypes,
+          reopen_last_tabs: reopenLastTabs,
+          reopen_zone_tabs: reopenZoneTabs,
+          last_open_tabs: lastOpenTabs,
+          confirm_logout: confirmLogout,
+          idle_logout_ms: idleLogoutMs,
+          confirm_window_close: confirmWindowClose,
+          close_tab_on_middle_click: closeTabOnMiddleClick,
+          mcp_server_enabled: mcpServerEnabled,
+          mcp_server_host: mcpServerHost,
+          mcp_server_port: mcpServerPort,
+          mcp_enabled_tools: mcpEnabledTools,
+          loading_overlay_timeout_ms: loadingOverlayTimeoutMs,
+          topology_resolution_max_hops: topologyResolutionMaxHops,
+          topology_resolver_mode: topologyResolverMode,
+          topology_dns_server: topologyDnsServer,
+          topology_custom_dns_server: topologyCustomDnsServer,
+          topology_doh_provider: topologyDohProvider,
+          topology_doh_custom_url: topologyDohCustomUrl,
+          topology_export_confirm_path: topologyExportConfirmPath,
+          topology_export_folder_preset: topologyExportFolderPreset,
+          topology_export_custom_path: topologyExportCustomPath,
+          topology_copy_actions: topologyCopyActions,
+          topology_export_actions: topologyExportActions,
+          topology_disable_annotations: topologyDisableAnnotations,
+          topology_disable_full_window: topologyDisableFullWindow,
+          topology_lookup_timeout_ms: topologyLookupTimeoutMs,
+          topology_disable_ptr_lookups: topologyDisablePtrLookups,
+          topology_disable_geo_lookups: topologyDisableGeoLookups,
+          topology_geo_provider: topologyGeoProvider,
+          topology_scan_resolution_chain: topologyScanResolutionChain,
+          topology_disable_service_discovery: topologyDisableServiceDiscovery,
+          topology_tcp_services: topologyTcpServices,
+          audit_export_default_documents: auditExportDefaultDocuments,
+          confirm_clear_audit_logs: confirmClearAuditLogs,
+          audit_export_folder_preset: auditExportFolderPreset,
+          audit_export_custom_path: auditExportCustomPath,
+          audit_export_skip_destination_confirm:
+            auditExportSkipDestinationConfirm,
+          domain_audit_categories: domainAuditCategories,
+          session_settings_profiles: {
+            ...sessionSettingsProfiles,
+            [currentSessionId]: buildSessionSettingsProfile(),
+          },
+        });
+      }
+    });
   }, [
     rewriteCopiedRecordDomains,
     confirmPastePreview,
@@ -7272,6 +7352,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     buildSessionSettingsProfile,
     sessionSettingsProfiles,
     prefsReady,
+    scheduleSettingsWrite,
   ]);
 
   useEffect(() => {
@@ -7421,6 +7502,76 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     window.addEventListener("beforeunload", flush);
     return () => window.removeEventListener("beforeunload", flush);
   }, [persistTabStateBestEffort]);
+
+  /**
+   * Flush the settings autosave when the host asks to close the window.
+   *
+   * The autosave hook registers `beforeunload` and `pagehide` itself, but
+   * neither is dependable in a desktop shell: Tauri destroys the webview
+   * rather than navigating it. The window's own close request is the signal
+   * that is actually raised, and the component that *acts* on it is
+   * `WindowTitleBar`, not this one — it cancels the close and shows a
+   * confirmation whenever `confirm_window_close` is on, and that path leaves
+   * the debounce all the time in the world. The path that does not is the same
+   * preference turned off, where the close is carried out straight away. This
+   * listener is what covers that one, and it only observes.
+   *
+   * ## Why `listen`, and not `onCloseRequested`
+   *
+   * `Window.onCloseRequested` is not a listener, it is a *policy*: its wrapper
+   * calls `window.destroy()` after the handler unless that handler called
+   * `preventDefault` on the event object it was handed. Each registration gets
+   * its own event object, so a second `onCloseRequested` anywhere in the tree
+   * does not merely fail to veto — it destroys the window on every close
+   * request, silently overriding `WindowTitleBar`'s veto and taking the
+   * confirmation dialog, and any unsaved work behind it, with it. A bare
+   * `listen` on the same event has no such wrapper, which is what an observer
+   * wants: this component gets told, and has no say.
+   *
+   * So the flush is synchronous and best-effort. The `storageManager` half has
+   * landed by the time it returns and the host write is in flight; what is
+   * left at risk is a change younger than the debounce when the process is
+   * killed outright, which is a far narrower window than leaving every change
+   * younger than the debounce at risk of every close.
+   */
+  useEffect(() => {
+    if (!isDesktop()) return;
+    let disposed = false;
+    let unlisten: (() => void | Promise<void>) | undefined;
+
+    void (async () => {
+      try {
+        const [{ getCurrentWindow }, { TauriEvent }] = await Promise.all([
+          import("@tauri-apps/api/window"),
+          import("@tauri-apps/api/event"),
+        ]);
+        const stopListening = await getCurrentWindow().listen(
+          TauriEvent.WINDOW_CLOSE_REQUESTED,
+          () => {
+            flushSettingsWrite();
+          },
+        );
+        if (disposed) await stopListening();
+        else unlisten = stopListening;
+      } catch (error) {
+        reportDnsManagerFailure(
+          error,
+          "Register the settings autosave close-request listener",
+        );
+      }
+    })();
+
+    return () => {
+      disposed = true;
+      if (!unlisten) return;
+      void Promise.resolve(unlisten()).catch((error) => {
+        reportDnsManagerFailure(
+          error,
+          "Remove the settings autosave close-request listener",
+        );
+      });
+    };
+  }, [flushSettingsWrite]);
 
   useEffect(() => {
     const onChanged = () => setTagsVersion((v) => v + 1);
@@ -14371,9 +14522,33 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
               {activeTab.kind === "settings" && (
                 <Card className="border-border/60 bg-card/70">
                   <CardHeader>
-                    <CardTitle className="text-lg">
-                      {t("Session settings", "Session settings")}
-                    </CardTitle>
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <CardTitle className="text-lg">
+                        {t("Session settings", "Session settings")}
+                      </CardTitle>
+                      {/* One indicator for the whole panel, in the header so
+                          that it is the same answer whichever subtab is open.
+                          The per-control "Saved" toasts are still there and
+                          still say what a particular setting now means; this
+                          is the only thing that can say a write is pending, or
+                          that one failed. Shaped like `sync-save-state` in
+                          `SyncSettings.tsx`, down to `data-state` and
+                          `data-dirty`, so a test drives both the same way. */}
+                      <span
+                        role="status"
+                        aria-live="polite"
+                        data-testid="settings-save-state"
+                        data-state={settingsAutosave.state}
+                        data-dirty={settingsAutosave.dirty}
+                        className={
+                          settingsAutosave.state === "error"
+                            ? "text-xs text-destructive"
+                            : "text-xs text-muted-foreground"
+                        }
+                      >
+                        {settingsSaveText}
+                      </span>
+                    </div>
                   </CardHeader>
                   <CardContent className="space-y-4">
                     <SettingsSearch

@@ -1,5 +1,6 @@
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
+import { useI18n } from "@/hooks/use-i18n";
 import { Fingerprint, ShieldCheck, Trash2 } from "lucide-react";
 
 interface LoginBiometricSectionProps {
@@ -40,6 +41,30 @@ export function LoginBiometricSection({
   hasKeys,
   desktop,
 }: LoginBiometricSectionProps) {
+  const { t } = useI18n();
+  // `biometricLabel` is the platform's own name for the hardware — "Touch ID",
+  // "Windows Hello" — so it is interpolated rather than translated, and the
+  // surrounding sentence is a key with a `{{label}}` slot. A locale that needs
+  // the label somewhere other than where English puts it can move the slot,
+  // which is the whole reason this is one key and not a concatenation.
+  //
+  // The button labels keep their English as a floor, the same guard
+  // `LoginSettingsMenu` uses: `t` is an empty string until `src/i18n.ts`
+  // finishes its dynamic `import`, and a button's text is its accessible name.
+  const loginLabel =
+    t("Login with {{label}}", {
+      label: biometricLabel,
+      defaultValue: `Login with ${biometricLabel}`,
+    }) || `Login with ${biometricLabel}`;
+  const verifyingLabel = t("Verifying…", "Verifying…") || "Verifying…";
+  const enableLabel =
+    t("Enable {{label}} Unlock", {
+      label: biometricLabel,
+      defaultValue: `Enable ${biometricLabel} Unlock`,
+    }) || `Enable ${biometricLabel} Unlock`;
+  const enrollingLabel = t("Enrolling…", "Enrolling…") || "Enrolling…";
+  const removeLabel = t("Remove", "Remove") || "Remove";
+
   // Only render on desktop with biometric hardware and at least one key
   if (!desktop || !biometricAvailable || !hasKeys) return null;
 
@@ -48,12 +73,20 @@ export function LoginBiometricSection({
       <div className="flex items-center gap-2 pl-1">
         <ShieldCheck className="h-4 w-4 text-primary/70" />
         <Label className="text-foreground/70 text-xs uppercase tracking-wider font-semibold">
-          {biometricLabel} Unlock
+          {t("{{label}} Unlock", {
+            label: biometricLabel,
+            defaultValue: `${biometricLabel} Unlock`,
+          })}
         </Label>
       </div>
       <p className="text-xs text-muted-foreground pl-1 mb-3">
-        Use {biometricLabel} to instantly unlock your API key without typing a
-        password
+        {t(
+          "Use {{label}} to instantly unlock your API key without typing a password",
+          {
+            label: biometricLabel,
+            defaultValue: `Use ${biometricLabel} to instantly unlock your API key without typing a password`,
+          },
+        )}
       </p>
 
       {biometricEnrolled ? (
@@ -66,7 +99,7 @@ export function LoginBiometricSection({
             className="w-full"
           >
             <Fingerprint className="h-4 w-4 mr-1" />
-            {biometricLoading ? "Verifying…" : `Login with ${biometricLabel}`}
+            {biometricLoading ? verifyingLabel : loginLabel}
           </Button>
 
           <Button
@@ -77,7 +110,7 @@ export function LoginBiometricSection({
             className="w-full text-destructive hover:text-destructive"
           >
             <Trash2 className="h-4 w-4 mr-1" />
-            Remove
+            {removeLabel}
           </Button>
         </div>
       ) : (
@@ -89,7 +122,7 @@ export function LoginBiometricSection({
           className="w-full"
         >
           <Fingerprint className="h-4 w-4 mr-1" />
-          {biometricLoading ? "Enrolling…" : `Enable ${biometricLabel} Unlock`}
+          {biometricLoading ? enrollingLabel : enableLabel}
         </Button>
       )}
     </div>

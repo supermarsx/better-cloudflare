@@ -30,6 +30,7 @@ import {
   type EncryptionConfig,
 } from "../../types/dns";
 import { Switch } from "@/components/ui/switch";
+import { useI18n } from "@/hooks/use-i18n";
 
 /**
  * Props for the EncryptionSettingsDialog, which allows users to configure
@@ -90,6 +91,22 @@ export function EncryptionSettingsDialog({
   legacyRecoveryAvailable,
   canUseSelectedKey,
 }: EncryptionSettingsDialogProps) {
+  const { t } = useI18n();
+  // Each of the four buttons below keeps its English literal as a floor,
+  // written out as a bare `t(…) || "…"` the way `LoginSettingsMenu` does.
+  // `src/i18n.ts` loads its bundles with a dynamic `import`, so `t` returns an
+  // empty string for the first few microtasks of the process — and a button
+  // whose text is its only accessible name is, for that frame, a control with
+  // no name at all. The prose and placeholders in this dialog are left on a
+  // plain `t()`: a description that paints a frame late is cosmetic, and
+  // repeating a three-line sentence a third time to guard it is not worth it.
+  const benchmarkLabel = t("Benchmark", "Benchmark") || "Benchmark";
+  const updateLabel = t("Update", "Update") || "Update";
+  const reviewPasskeysLabel =
+    t("Review legacy passkeys", "Review legacy passkeys") ||
+    "Review legacy passkeys";
+  const removeVaultSecretLabel =
+    t("Remove Vault Secret", "Remove Vault Secret") || "Remove Vault Secret";
   const [useVault, setUseVault] = useState(vaultEnabled);
   const safeIterations =
     Number.isSafeInteger(settings.iterations) &&
@@ -110,14 +127,21 @@ export function EncryptionSettingsDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="flex max-h-[calc(100dvh-var(--app-top-inset)-2rem)] flex-col overflow-hidden">
         <DialogHeader className="shrink-0">
-          <DialogTitle>Encryption Settings</DialogTitle>
+          <DialogTitle>
+            {t("Encryption Settings", "Encryption Settings")}
+          </DialogTitle>
           <DialogDescription>
-            Configure encryption parameters for security and performance
+            {t(
+              "Configure encryption parameters for security and performance",
+              "Configure encryption parameters for security and performance",
+            )}
           </DialogDescription>
         </DialogHeader>
         <div className="min-h-0 flex-1 space-y-4 scrollbar-themed overflow-y-auto pr-1">
           <div className="space-y-2">
-            <Label htmlFor="iterations">PBKDF2 Iterations</Label>
+            <Label htmlFor="iterations">
+              {t("PBKDF2 Iterations", "PBKDF2 Iterations")}
+            </Label>
             <Input
               id="iterations"
               type="number"
@@ -137,12 +161,17 @@ export function EncryptionSettingsDialog({
               }}
             />
             <p className="text-xs text-muted-foreground">
-              Allowed range: {MIN_PBKDF2_ITERATIONS.toLocaleString()}–
-              {MAX_PBKDF2_ITERATIONS.toLocaleString()} iterations.
+              {t("Allowed range: {{min}}–{{max}} iterations.", {
+                min: MIN_PBKDF2_ITERATIONS.toLocaleString(),
+                max: MAX_PBKDF2_ITERATIONS.toLocaleString(),
+                defaultValue: `Allowed range: ${MIN_PBKDF2_ITERATIONS.toLocaleString()}–${MAX_PBKDF2_ITERATIONS.toLocaleString()} iterations.`,
+              })}
             </p>
           </div>
           <div className="space-y-2">
-            <Label htmlFor="key-length">Key Length (bits)</Label>
+            <Label htmlFor="key-length">
+              {t("Key Length (bits)", "Key Length (bits)")}
+            </Label>
             <Select value={AES_256_KEY_LENGTH_BITS.toString()} disabled>
               <SelectTrigger id="key-length">
                 <SelectValue />
@@ -155,7 +184,7 @@ export function EncryptionSettingsDialog({
             </Select>
           </div>
           <div className="space-y-2">
-            <Label htmlFor="algorithm">Algorithm</Label>
+            <Label htmlFor="algorithm">{t("Algorithm", "Algorithm")}</Label>
             <Select value={safeAlgorithm} disabled>
               <SelectTrigger id="algorithm">
                 <SelectValue />
@@ -176,21 +205,24 @@ export function EncryptionSettingsDialog({
               className="flex-1"
               disabled={!validSettings}
             >
-              Benchmark
+              {benchmarkLabel}
             </Button>
             <Button
               onClick={onUpdate}
               className="flex-1"
               disabled={!validSettings}
             >
-              Update
+              {updateLabel}
             </Button>
           </div>
           <div className="flex items-center justify-between gap-3 rounded-lg border border-border/60 bg-muted/40 px-3 py-2">
             <div className="space-y-0.5">
-              <Label>Enable OS Vault</Label>
+              <Label>{t("Enable OS Vault", "Enable OS Vault")}</Label>
               <p className="text-xs text-muted-foreground">
-                Store decrypted keys in the system vault for passkey login.
+                {t(
+                  "Store decrypted keys in the system vault for passkey login.",
+                  "Store decrypted keys in the system vault for passkey login.",
+                )}
               </p>
             </div>
             <Switch
@@ -203,7 +235,10 @@ export function EncryptionSettingsDialog({
           </div>
           {benchmarkResult !== null && (
             <p className="text-sm text-muted-foreground">
-              Last benchmark: {benchmarkResult.toFixed(2)}ms
+              {t("Last benchmark: {{duration}}ms", {
+                duration: benchmarkResult.toFixed(2),
+                defaultValue: `Last benchmark: ${benchmarkResult.toFixed(2)}ms`,
+              })}
             </p>
           )}
 
@@ -213,16 +248,21 @@ export function EncryptionSettingsDialog({
               click away from the password field. */}
           <div className="space-y-3 border-t border-border/60 pt-4">
             <div className="space-y-0.5">
-              <Label>Key maintenance</Label>
+              <Label>{t("Key maintenance", "Key maintenance")}</Label>
               <p className="text-xs text-muted-foreground">
-                These act on the key selected on the login screen, and need its
-                password.
+                {t(
+                  "These act on the key selected on the login screen, and need its password.",
+                  "These act on the key selected on the login screen, and need its password.",
+                )}
               </p>
             </div>
 
             {!canUseSelectedKey && (
               <p className="text-xs text-muted-foreground/80">
-                Select a key and enter its password to enable these.
+                {t(
+                  "Select a key and enter its password to enable these.",
+                  "Select a key and enter its password to enable these.",
+                )}
               </p>
             )}
 
@@ -235,7 +275,7 @@ export function EncryptionSettingsDialog({
                 disabled={!canUseSelectedKey}
                 className="w-full"
               >
-                Review legacy passkeys
+                {reviewPasskeysLabel}
               </Button>
             )}
 
@@ -244,9 +284,10 @@ export function EncryptionSettingsDialog({
                 data-testid="vault-disabled-notice"
                 className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-muted-foreground"
               >
-                The OS vault is off, so passkey login is unavailable. An API key
-                saved to the vault earlier remains in the system keychain until
-                you remove it here.
+                {t(
+                  "The OS vault is off, so passkey login is unavailable. An API key saved to the vault earlier remains in the system keychain until you remove it here.",
+                  "The OS vault is off, so passkey login is unavailable. An API key saved to the vault earlier remains in the system keychain until you remove it here.",
+                )}
               </p>
             )}
 
@@ -258,7 +299,7 @@ export function EncryptionSettingsDialog({
               disabled={!canUseSelectedKey}
               className="w-full"
             >
-              Remove Vault Secret
+              {removeVaultSecretLabel}
             </Button>
           </div>
         </div>

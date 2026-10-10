@@ -16,6 +16,7 @@ import {
   passkeyStatusNotice,
 } from "@/components/auth/PasskeyStatusNotice";
 import { passkeyErrorMessage } from "@/lib/auth/passkey-error";
+import { useI18n } from "@/hooks/use-i18n";
 import {
   Fingerprint,
   Smartphone,
@@ -58,6 +59,11 @@ export function PasskeyManagerDialog({
   const revokeInFlight = useRef(new Set<string>());
   const mounted = useRef(true);
   const { toast } = useToast();
+  // `useI18n` keeps `t` stable between renders and swaps it only when the
+  // locale actually changes, which is what makes it safe to list in the
+  // dependency arrays below: the listing effect re-runs on a language change
+  // and on nothing else.
+  const { t } = useI18n();
 
   useEffect(() => {
     mounted.current = true;
@@ -93,11 +99,14 @@ export function PasskeyManagerDialog({
         if (controller.signal.aborted || sequence !== loadSequence.current) {
           return;
         }
-        const message =
-          "Failed to list legacy passkeys: " + passkeyErrorMessage(err);
+        const reason = passkeyErrorMessage(err);
+        const message = t("Failed to list legacy passkeys: {{reason}}", {
+          reason,
+          defaultValue: `Failed to list legacy passkeys: ${reason}`,
+        });
         setActionError(message);
         toast({
-          title: "Error",
+          title: t("Error", "Error"),
           description: message,
           variant: "destructive",
         });
@@ -109,7 +118,7 @@ export function PasskeyManagerDialog({
     })();
 
     return () => controller.abort();
-  }, [open, id, apiKey, email, toast]);
+  }, [open, id, apiKey, email, toast, t]);
 
   const handleRevoke = async (cid: string) => {
     if (revokeInFlight.current.has(cid)) return;
@@ -128,14 +137,20 @@ export function PasskeyManagerDialog({
       if (sequence !== loadSequence.current) return;
       setItems((current) => current.filter((item) => item.id !== cid));
       setActionError(null);
-      toast({ title: "Success", description: "Legacy passkey removed" });
+      toast({
+        title: t("Success", "Success"),
+        description: t("Legacy passkey removed", "Legacy passkey removed"),
+      });
     } catch (err) {
       if (sequence !== loadSequence.current) return;
-      const message =
-        "Failed to remove legacy passkey: " + passkeyErrorMessage(err);
+      const reason = passkeyErrorMessage(err);
+      const message = t("Failed to remove legacy passkey: {{reason}}", {
+        reason,
+        defaultValue: `Failed to remove legacy passkey: ${reason}`,
+      });
       setActionError(message);
       toast({
-        title: "Error",
+        title: t("Error", "Error"),
         description: message,
         variant: "destructive",
       });
@@ -151,7 +166,12 @@ export function PasskeyManagerDialog({
     }
   };
 
-  const notice = passkeyStatusNotice(status);
+  const notice = passkeyStatusNotice(status, t);
+  // Floored like `LoginSettingsMenu`'s labels: this button's text is its only
+  // accessible name, and `t` is an empty string until `src/i18n.ts` finishes
+  // its dynamic `import`.
+  const removeLabel = t("Remove", "Remove") || "Remove";
+  const removingLabel = t("Removing…", "Removing…") || "Removing…";
 
   const getDeviceIcon = (label?: string) => {
     const lowerLabel = (label || "").toLowerCase();
@@ -181,12 +201,13 @@ export function PasskeyManagerDialog({
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Shield aria-hidden="true" className="h-5 w-5 text-primary" />
-            Legacy passkey recovery
+            {t("Legacy passkey recovery", "Legacy passkey recovery")}
           </DialogTitle>
           <DialogDescription>
-            Legacy credentials can only be reviewed and removed. They cannot
-            authenticate and must be re-enrolled when verified registration is
-            available.
+            {t(
+              "Legacy credentials can only be reviewed and removed. They cannot authenticate and must be re-enrolled when verified registration is available.",
+              "Legacy credentials can only be reviewed and removed. They cannot authenticate and must be re-enrolled when verified registration is available.",
+            )}
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-4">
@@ -206,11 +227,13 @@ export function PasskeyManagerDialog({
             >
               <div className="flex items-center gap-2 font-semibold text-foreground">
                 <ShieldCheck aria-hidden="true" className="h-4 w-4 shrink-0" />
-                Passkeys are available
+                {t("Passkeys are available", "Passkeys are available")}
               </div>
               <p className="mt-1 text-xs text-muted-foreground">
-                Remove the legacy credentials below, then register a new passkey
-                from the login screen to replace them.
+                {t(
+                  "Remove the legacy credentials below, then register a new passkey from the login screen to replace them.",
+                  "Remove the legacy credentials below, then register a new passkey from the login screen to replace them.",
+                )}
               </p>
             </div>
           ) : (
@@ -223,10 +246,16 @@ export function PasskeyManagerDialog({
                   aria-hidden="true"
                   className="h-4 w-4 shrink-0"
                 />
-                Passkeys temporarily unavailable
+                {t(
+                  "Passkeys temporarily unavailable",
+                  "Passkeys temporarily unavailable",
+                )}
               </div>
               <p className="mt-1 text-xs text-muted-foreground">
-                Existing credentials require removal and future re-enrollment.
+                {t(
+                  "Existing credentials require removal and future re-enrollment.",
+                  "Existing credentials require removal and future re-enrollment.",
+                )}
               </p>
             </div>
           )}
@@ -236,7 +265,9 @@ export function PasskeyManagerDialog({
             </p>
           )}
           <div>
-            <Label className="text-base">Legacy credentials</Label>
+            <Label className="text-base">
+              {t("Legacy credentials", "Legacy credentials")}
+            </Label>
             <div
               className="mt-3 max-h-[50vh] space-y-3 scrollbar-themed overflow-y-auto pr-1"
               aria-busy={isLoading}
@@ -246,7 +277,7 @@ export function PasskeyManagerDialog({
                   className="py-8 text-center text-sm text-muted-foreground"
                   role="status"
                 >
-                  Loading legacy passkeys…
+                  {t("Loading legacy passkeys…", "Loading legacy passkeys…")}
                 </div>
               ) : !items || items.length === 0 ? (
                 <div className="text-center py-8 text-muted-foreground border-2 border-dashed rounded-lg">
@@ -255,10 +286,13 @@ export function PasskeyManagerDialog({
                     className="h-12 w-12 mx-auto mb-2 opacity-50"
                   />
                   <p className="text-sm font-medium">
-                    No legacy passkeys found
+                    {t("No legacy passkeys found", "No legacy passkeys found")}
                   </p>
                   <p className="text-xs mt-1">
-                    Future passkey enrollment requires verified registration
+                    {t(
+                      "Future passkey enrollment requires verified registration",
+                      "Future passkey enrollment requires verified registration",
+                    )}
                   </p>
                 </div>
               ) : (
@@ -275,7 +309,8 @@ export function PasskeyManagerDialog({
                         </div>
                         <div className="flex-1 min-w-0">
                           <div className="font-medium text-sm">
-                            {it.label || "Legacy credential"}
+                            {it.label ||
+                              t("Legacy credential", "Legacy credential")}
                           </div>
                           <div className="font-mono text-xs text-muted-foreground truncate">
                             ID: {it.id.substring(0, 32)}...
@@ -288,11 +323,14 @@ export function PasskeyManagerDialog({
                               permanent Remove button. */}
                           {it.requiresReregistration !== false ? (
                             <div className="text-xs text-destructive mt-1">
-                              Re-enrollment required
+                              {t(
+                                "Re-enrollment required",
+                                "Re-enrollment required",
+                              )}
                             </div>
                           ) : (
                             <div className="text-xs text-muted-foreground mt-1">
-                              Active
+                              {t("Active", "Active")}
                             </div>
                           )}
                         </div>
@@ -306,7 +344,7 @@ export function PasskeyManagerDialog({
                         disabled={isRevoking}
                       >
                         <Trash2 aria-hidden="true" className="h-4 w-4 mr-1" />
-                        {isRevoking ? "Removing…" : "Remove"}
+                        {isRevoking ? removingLabel : removeLabel}
                       </Button>
                     </div>
                   );
@@ -318,8 +356,10 @@ export function PasskeyManagerDialog({
             <div className="pt-3 border-t">
               <p className="text-xs text-muted-foreground">
                 <Shield aria-hidden="true" className="h-3 w-3 inline mr-1" />
-                Removing a legacy credential is permanent. Re-enroll only after
-                verified passkey registration is available.
+                {t(
+                  "Removing a legacy credential is permanent. Re-enroll only after verified passkey registration is available.",
+                  "Removing a legacy credential is permanent. Re-enroll only after verified passkey registration is available.",
+                )}
               </p>
             </div>
           )}

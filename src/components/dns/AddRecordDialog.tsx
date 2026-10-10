@@ -1377,13 +1377,20 @@ export function AddRecordDialog({
                 : undefined
             }
           >
+            {/* All four branches go through `t()`. The first always did and
+                the other three did not, so this one button rendered a
+                translated label while submitting and English otherwise — the
+                clearest case of why a partially translated expression is
+                worse than an untranslated one: nothing looks wrong until you
+                reach the branch nobody wired. All three were already
+                catalogued and translated in eleven locales. */}
             {isSubmitting
               ? t("Creating DNS record...", "Creating DNS record...")
               : submissionWarnings.length > 0
                 ? confirmInvalid
-                  ? "Create Anyway"
-                  : "Review Warnings"
-                : "Create Record"}
+                  ? t("Create Anyway", "Create Anyway")
+                  : t("Review Warnings", "Review Warnings")
+                : t("Create Record", "Create Record")}
           </Button>
           {submissionWarnings.length > 0 && confirmInvalid && (
             <Button

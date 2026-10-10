@@ -367,7 +367,7 @@ test("toasts contain long text and keep full diagnostics in an accessible modal"
   assert.match(description.className, /max-w-full/);
   assert.match(viewport?.className ?? "", /overflow-x-hidden/);
   assert.match(viewport?.className ?? "", /\bgap-2\b/);
-  assert.match(viewport?.className ?? "", /\bsm:right-3\b/);
+  assert.match(viewport?.className ?? "", /\bsm:end-3\b/);
   assert.match(title.className, /\bleading-5\b/);
   assert.match(description.className, /\btext-xs\b/);
   assert.match(

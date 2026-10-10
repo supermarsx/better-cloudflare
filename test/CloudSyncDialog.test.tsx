@@ -48,6 +48,7 @@ import { SYNC_COMMANDS, type SyncStatus } from "../src/lib/sync/types";
 import type { ApiKey } from "../src/types/dns";
 
 import { useEnglishLocale } from "./i18n-ready";
+import { stripComments } from "./source-text";
 
 useEnglishLocale();
 
@@ -225,9 +226,16 @@ test("the dialog passes allowPush={false}, checked against the source", () => {
   // if the panel ever stopped offering a push button at all. This fails if the
   // prop is dropped, which is how it would actually regress — an innocuous
   // refactor of a host, not a decision about uploads.
-  const source = readFileSync(
-    new URL("../src/components/auth/CloudSyncDialog.tsx", import.meta.url),
-    "utf8",
+  // Comments stripped. This assertion is clean today only because nobody has
+  // yet described this component's props in a sentence beside the code — the
+  // day someone writes "mounts <SyncSettings allowPush={false} />" in a
+  // comment, it stops asserting and nothing says so. Stripping makes it safe
+  // by construction rather than by luck.
+  const source = stripComments(
+    readFileSync(
+      new URL("../src/components/auth/CloudSyncDialog.tsx", import.meta.url),
+      "utf8",
+    ),
   );
   assert.match(
     source,

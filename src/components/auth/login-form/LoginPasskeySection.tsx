@@ -2,6 +2,7 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { PasskeyStatusNotice } from "@/components/auth/PasskeyStatusNotice";
 import type { PasskeyStatusState } from "@/lib/auth/passkey-status";
+import { useI18n } from "@/hooks/use-i18n";
 import { Fingerprint, KeyRound, Shield } from "lucide-react";
 
 interface LoginPasskeySectionProps {
@@ -29,6 +30,17 @@ export function LoginPasskeySection({
   hasKeys,
   status,
 }: LoginPasskeySectionProps) {
+  const { t } = useI18n();
+  // Both button labels keep their English as a floor — see the same guard in
+  // `LoginSettingsMenu`. `t` returns an empty string until `src/i18n.ts` has
+  // finished its dynamic `import`, and a button whose text is its only
+  // accessible name has no name at all for that frame.
+  const registerLabel =
+    t("Register passkey", "Register passkey") || "Register passkey";
+  const registeringLabel = t("Registering…", "Registering…") || "Registering…";
+  const usePasskeyLabel = t("Use passkey", "Use passkey") || "Use passkey";
+  const signingInLabel = t("Signing in…", "Signing in…") || "Signing in…";
+
   if (!hasKeys || !status) return null;
 
   // Registration is offered whenever the state says registration is open. That
@@ -54,15 +66,21 @@ export function LoginPasskeySection({
       <div className="flex items-center gap-2 pl-1">
         <Shield aria-hidden="true" className="h-4 w-4 text-primary/70" />
         <Label className="text-foreground/70 text-xs uppercase tracking-wider font-semibold">
-          Passkey security status
+          {t("Passkey security status", "Passkey security status")}
         </Label>
       </div>
 
       {offersCeremony && (
         <p className="text-xs text-muted-foreground pl-1 mb-3">
           {native
-            ? "Sign in with your device instead of typing this key's password. Your system handles the prompt, so a security key or a passkey on your phone works too."
-            : "Sign in with your device instead of typing this key's password."}
+            ? t(
+                "Sign in with your device instead of typing this key's password. Your system handles the prompt, so a security key or a passkey on your phone works too.",
+                "Sign in with your device instead of typing this key's password. Your system handles the prompt, so a security key or a passkey on your phone works too.",
+              )
+            : t(
+                "Sign in with your device instead of typing this key's password.",
+                "Sign in with your device instead of typing this key's password.",
+              )}
         </p>
       )}
 
@@ -88,7 +106,7 @@ export function LoginPasskeySection({
               className="w-full"
             >
               <KeyRound aria-hidden="true" className="h-4 w-4 mr-1" />
-              {registerLoading ? "Registering…" : "Register passkey"}
+              {registerLoading ? registeringLabel : registerLabel}
             </Button>
           )}
 
@@ -102,7 +120,7 @@ export function LoginPasskeySection({
               className="w-full"
             >
               <Fingerprint aria-hidden="true" className="h-4 w-4 mr-1" />
-              {authLoading ? "Signing in…" : "Use passkey"}
+              {authLoading ? signingInLabel : usePasskeyLabel}
             </Button>
           )}
         </div>

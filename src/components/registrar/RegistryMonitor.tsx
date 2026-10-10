@@ -627,7 +627,22 @@ function DomainRow({ domain, health, expanded, onToggle, t }: DomainRowProps) {
             </div>
             <div>
               <span className="text-muted-foreground block">
-                {t("Updated", "Updated")}
+                {/* Not `t("Updated", "Updated")`, which this used to be. That
+                    key is also the completion toast at DNSManager.tsx:9881,
+                    and the two roles want different words in any language
+                    that distinguishes a date noun from "it has been done":
+                    ar rendered the siblings above as تاريخ الإنشاء and
+                    تاريخ الانتهاء — both "date of …" — but Updated as
+                    تم التحديث, "has been updated", in the same grid; ja and
+                    ko split the same way. English hides it because "Updated"
+                    happens to read as both, and de, ru and fr got away with
+                    it for the same reason. The toast keeps the short key; the
+                    column gets its own, with the English unchanged, so the
+                    default renders exactly as before. Same shape as
+                    `t("Password (placeholder)", "Enter your password")`
+                    already in the catalogue. Found by the locale-hygiene
+                    pass, from the grid's own three labels disagreeing. */}
+                {t("Updated (date label)", "Updated")}
               </span>
               <span title={updated.full}>{updated.label}</span>
             </div>

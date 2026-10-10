@@ -57,7 +57,7 @@
 //!   app cannot tell the user their provider made one.
 
 use std::fs;
-use std::io::ErrorKind;
+use std::io::{ErrorKind, Write};
 use std::path::{Component, Path, PathBuf};
 
 use crate::{
@@ -162,6 +162,73 @@ impl FolderEngine {
         Ok(self.root_now()?.join(name))
     }
 
+    /// Where [`SyncEngine::probe`] writes, named in one place.
+    ///
+    /// Two callers need this path — the probe that creates it and the push
+    /// that collects it — and two `format!`s over the same two constants are
+    /// two places for the name to drift apart. That drift would not fail a
+    /// test: the probe would still clean up after itself in the ordinary case,
+    /// and the collector would quietly start removing a file nothing creates.
+    fn probe_path(root: &Path) -> PathBuf {
+        root.join(format!("{SYNC_MANIFEST_NAME}{PROBE_SUFFIX}"))
+    }
+
+    /// Write `bytes` to `path`, reporting success only once the filesystem
+    /// has accepted them.
+    ///
+    /// # Why not `fs::write`
+    ///
+    /// `fs::write` is `File::create(path)?.write_all(bytes)` followed by a
+    /// drop, and `File`'s `Drop` closes the handle and **discards the close
+    /// result**. Rust has no stable `File::close()` to observe it with, so
+    /// `sync_all` is the only portable way to make a deferred failure surface
+    /// while there is still a `Result` to carry it.
+    ///
+    /// That matters here because this engine's folder is frequently not a
+    /// local disk. SMB and NFS buffer writes on the client and report a full
+    /// volume, an exceeded quota, an I/O error, a dropped session and a share
+    /// remounted read-only **at close** rather than at the write. Through
+    /// `fs::write` every one of those returns `Ok`, and then
+    /// [`SyncEngine::put`] renames a staged file whose bytes never left this
+    /// machine — the rename is a metadata operation and can succeed anyway —
+    /// and reports a new generation. The user is told a push worked that did
+    /// not.
+    ///
+    /// [`SyncEngine::probe`] is the sharper case, and the reason this is not
+    /// left as a documented gap. Its entire job is answering "can this app
+    /// write here", and an empty file is the write *most* likely to be
+    /// satisfied out of the client-side cache and never reach the wire at
+    /// all — so the one operation whose purpose is to be certain was the one
+    /// most likely to be wrong, on exactly the filesystems a shared sync
+    /// folder tends to live on.
+    ///
+    /// # The fsync is affordable, and this is not a hot path
+    ///
+    /// Two per push and two per archive, on a payload bounded at 96 KiB by
+    /// [`MAX_SYNC_ENVELOPE_BYTES`], with auto-push on a minutes-scale timer.
+    /// Written down because an `fsync` sitting in what looks like a write
+    /// path is the kind of thing a later reader removes on principle.
+    ///
+    /// # What this does and does not prove
+    ///
+    /// It makes a close-time error *reportable*. It is not a durability
+    /// guarantee for the directory entry: see the report accompanying this
+    /// change for the `fs::rename` question, which is deliberately left
+    /// alone. And the close-time capture itself is not covered by a test —
+    /// this crate's tests run against a local temp directory where `close`
+    /// does not fail. What is covered is that every write in this engine
+    /// routes through here; see
+    /// `tests::every_write_in_this_engine_goes_through_the_durable_path`.
+    ///
+    /// Returns `io::Result` rather than [`SyncError`] so each call site keeps
+    /// the mapping it needs — the probe's in particular must stay the OS
+    /// error alone.
+    fn write_durably(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+        let mut file = fs::File::create(path)?;
+        file.write_all(bytes)?;
+        file.sync_all()
+    }
+
     /// Read a file, bounded, treating absence as `Ok(None)`.
     ///
     /// The size is taken from the metadata and refused *before* the read, so
@@ -204,7 +271,8 @@ impl FolderEngine {
     fn write_atomic(&self, name: &str, bytes: &[u8]) -> Result<(), SyncError> {
         let root = self.root_now()?;
         let staged = root.join(format!("{name}{INCOMING_SUFFIX}"));
-        fs::write(&staged, bytes).map_err(|error| SyncError::Provider(error.to_string()))?;
+        Self::write_durably(&staged, bytes)
+            .map_err(|error| SyncError::Provider(error.to_string()))?;
         match fs::rename(&staged, root.join(name)) {
             Ok(()) => Ok(()),
             Err(error) => {
@@ -259,10 +327,25 @@ impl SyncEngine for FolderEngine {
     /// one until the first push, and "Test" is the moment the user is asking
     /// to be told. An empty folder is a successful probe, as the trait
     /// requires: nothing has been pushed yet.
+    ///
+    /// # The removal is best-effort, and something else collects
+    ///
+    /// Writability is the only question this answers, and the write answers
+    /// it. A folder that accepted the file and then refused the unlink is
+    /// still a writable folder — on Windows that is a sharing violation from
+    /// an antivirus scanner or from the user's own sync client, both of which
+    /// open a new file the moment it appears — so reporting a failure there
+    /// would send the user looking for a problem they do not have.
+    ///
+    /// What the dropped error costs is a stray zero-byte file, in a folder
+    /// whose whole purpose is that something else mirrors it to every other
+    /// device. So it is collected rather than merely hoped about: see the
+    /// unlink at the top of [`SyncEngine::put`], which is what lets this one
+    /// be best-effort.
     async fn probe(&self) -> Result<(), SyncError> {
         let root = self.root_now()?;
-        let probe = root.join(format!("{SYNC_MANIFEST_NAME}{PROBE_SUFFIX}"));
-        fs::write(&probe, b"")
+        let probe = Self::probe_path(root);
+        let wrote = Self::write_durably(&probe, b"")
             // The message is the OS error alone, with no prose of ours in
             // front of it. The renderer frames this path as a quotation —
             // "The filesystem said: …" — so a prefix this app composed would
@@ -272,9 +355,12 @@ impl SyncEngine for FolderEngine {
             // by the ru-RU translator, who found the frame quoting our words.
             // The surrounding failure text supplies the context the prefix
             // used to.
-            .map_err(|error| SyncError::Provider(error.to_string()))?;
+            .map_err(|error| SyncError::Provider(error.to_string()));
+        // Attempted whichever way the write went, and before the error is
+        // propagated: `fs::write` creates the file before it can fail writing
+        // into it, so the failure path leaves one behind too.
         let _ = fs::remove_file(&probe);
-        Ok(())
+        wrote
     }
 
     async fn fetch_manifest(&self) -> Result<Option<SyncManifest>, SyncError> {
@@ -308,8 +394,21 @@ impl SyncEngine for FolderEngine {
         guard: GenerationGuard,
     ) -> Result<PutOutcome, SyncError> {
         let root = self.root_now()?.to_path_buf();
+        // Collect a probe file an earlier [`SyncEngine::probe`] could not
+        // remove. That unlink is best-effort by design, so nothing inside
+        // `probe` can promise the file goes; a push is the operation that runs
+        // on a timer, which makes it the one that reliably comes back to the
+        // folder.
+        //
+        // Before the guard rather than after it, so a device stuck refusing
+        // every push — a conflict nobody has resolved yet — still tidies up.
+        // Unconditional rather than guarded by an `exists`, which would cost
+        // the same `stat` and then race it; the usual answer is `NotFound` and
+        // that is not an error worth having.
+        let _ = fs::remove_file(Self::probe_path(&root));
         let staged = root.join(format!("{SYNC_BLOB_NAME}{INCOMING_SUFFIX}"));
-        fs::write(&staged, blob).map_err(|error| SyncError::Provider(error.to_string()))?;
+        Self::write_durably(&staged, blob)
+            .map_err(|error| SyncError::Provider(error.to_string()))?;
 
         // Re-read as late as possible: everything above this is reversible.
         let remote = self.fetch_manifest().await?;
@@ -506,6 +605,132 @@ mod tests {
                 .join(format!("{SYNC_MANIFEST_NAME}{PROBE_SUFFIX}"))
                 .exists(),
             "a probe file left behind is read as a half-finished push"
+        );
+    }
+
+    /// Every write in this engine goes through [`FolderEngine::write_durably`].
+    ///
+    /// A *structural* assertion, and weaker than a behavioural one — it reads
+    /// this file's own source rather than observing a failure. It is written
+    /// this way because the behaviour it protects cannot be reached from a
+    /// test here: the error `write_durably` exists to surface is one a network
+    /// filesystem reports at `close`, and these tests run against a local temp
+    /// directory where `close` does not fail.
+    ///
+    /// What it does catch is the regression that will actually happen —
+    /// someone adding a fifth write and reaching for `fs::write` out of
+    /// habit, which silently restores a push that reports success for bytes
+    /// that never left the machine.
+    #[test]
+    fn every_write_in_this_engine_goes_through_the_durable_path() {
+        let (engine, _tests) = include_str!("folder.rs")
+            .split_once("#[cfg(test)]")
+            .expect("this file has a test module");
+        assert!(
+            !engine.contains("fs::write("),
+            "a write that bypasses `write_durably` discards the close error, \
+             and on SMB or NFS that is a push reporting success for bytes \
+             that never arrived"
+        );
+    }
+
+    /// And the durable path actually flushes before it reports success.
+    ///
+    /// Separate from the routing test deliberately: one mutation must not be
+    /// able to kill both. Routing every write through a helper that no longer
+    /// calls `sync_all` is the same defect wearing a better name, and the
+    /// test above stays green through it.
+    ///
+    /// Knowingly the weakest assertion in this file. `sync_all` and its
+    /// absence are indistinguishable on a local filesystem, so there is
+    /// nothing to observe and the source is all there is to read.
+    #[test]
+    fn the_durable_path_flushes_before_it_reports_success() {
+        let (engine, _tests) = include_str!("folder.rs")
+            .split_once("#[cfg(test)]")
+            .expect("this file has a test module");
+        assert!(
+            engine.contains(".sync_all()"),
+            "`write_durably` without a flush reports success out of a buffer, \
+             which is the defect it was added to remove"
+        );
+    }
+
+    /// A write that cannot even start is reported rather than swallowed.
+    ///
+    /// The behavioural bound of the three, and the one that observes the code
+    /// instead of reading it: a `write_durably` answering `Ok` on a failed
+    /// `File::create` would make every caller's error mapping dead.
+    #[test]
+    fn a_durable_write_that_cannot_start_is_reported() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let nowhere = dir.path().join("no-such-subdirectory").join(SYNC_BLOB_NAME);
+        assert!(
+            FolderEngine::write_durably(&nowhere, b"sealed").is_err(),
+            "a staged write into a directory that is not there must not report success"
+        );
+    }
+
+    /// A probe file that outlived its probe is collected by the next push.
+    ///
+    /// `probe` drops the error from its own unlink on purpose — writability
+    /// was proved, and a scanner holding the new file open is not a broken
+    /// folder — so nothing inside `probe` can promise the file goes. Left
+    /// uncollected it is a zero-byte file the user's sync client mirrors to
+    /// every device they own, under a name that reads like a half-finished
+    /// push.
+    #[tokio::test]
+    async fn a_push_collects_a_probe_file_an_earlier_probe_could_not_remove() {
+        let (dir, engine) = folder();
+        let left_behind = dir
+            .path()
+            .join(format!("{SYNC_MANIFEST_NAME}{PROBE_SUFFIX}"));
+        fs::write(&left_behind, b"").expect("write");
+
+        let blob = b"sealed-envelope";
+        assert!(matches!(
+            engine
+                .put(blob, &manifest(1, blob), GenerationGuard(None))
+                .await,
+            Ok(PutOutcome::Written)
+        ));
+        assert!(
+            !left_behind.exists(),
+            "a probe file nothing collects is mirrored to every device the user owns"
+        );
+    }
+
+    /// And a push that the guard refuses collects it as well.
+    ///
+    /// Separate from the written case because it pins the unlink's *position*
+    /// rather than its existence: a device whose every push is refused — a
+    /// conflict nobody has resolved — is exactly the one that would otherwise
+    /// keep the stray file forever, so collecting only on the way out would
+    /// miss the user it was written for.
+    #[tokio::test]
+    async fn a_refused_push_collects_a_stale_probe_file_too() {
+        let (dir, engine) = folder();
+        let theirs = b"the-other-device";
+        engine
+            .put(theirs, &manifest(4, theirs), GenerationGuard(None))
+            .await
+            .expect("seed");
+
+        let left_behind = dir
+            .path()
+            .join(format!("{SYNC_MANIFEST_NAME}{PROBE_SUFFIX}"));
+        fs::write(&left_behind, b"").expect("write");
+
+        let mine = b"mine";
+        assert!(matches!(
+            engine
+                .put(mine, &manifest(5, mine), GenerationGuard(Some(3)))
+                .await,
+            Ok(PutOutcome::Refused(_)),
+        ));
+        assert!(
+            !left_behind.exists(),
+            "a device that refuses every push is the one that keeps the stray file"
         );
     }
 

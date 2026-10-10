@@ -39,6 +39,24 @@ export function RuntimeDiagnosticDetails({
         onClick={() => void copy()}
         className="ui-focus mt-2 self-start rounded-md border border-border/60 bg-background/50 px-2 py-1 text-xs hover:bg-accent/50 focus-visible:outline-none"
       >
+        {/* These three stay English, deliberately, and the dead-key gate
+            should treat them as an opt-out rather than debt.
+
+            This component is rendered by `ErrorBoundary` and by
+            `RuntimeCrashRecovery` — it is on screen precisely when something
+            has already failed, which includes failing *during* start-up.
+            `t` resolves asynchronously and returns an empty string until it
+            does (see `LoginSettingsMenu.tsx:75`), so on a crash before i18n
+            settles this button would render with no label at all. Worse,
+            calling `useI18n()` here would make the crash screen depend on the
+            very context that may be what broke, turning one failure into a
+            boundary that cannot render.
+
+            `"Copied"` is catalogued and translated in eleven locales, so
+            wiring it would look free. It is not: the cost is paid only in the
+            situation this component exists for. If this ever does get
+            translated, it needs the `|| "literal"` floor pattern and a
+            non-hook translator, not `useI18n()`. */}
         {copyState === "copied"
           ? "Copied"
           : copyState === "unavailable"

@@ -63,6 +63,55 @@ const REGISTRY_FILES = [
   // `group` omission below was found: by someone adding a row and asking
   // whether their own string would ever be translated.
   join(ROOT, "src", "components", "dns", "DNSManager.tsx"),
+  // The three AI registries, found by subtracting `extractStrings()` from
+  // `en-US.json` and reading where each remaining key actually lives. All
+  // three are pure copy tables consumed by a variable-label `t()` — the shape
+  // above, in three more files:
+  //
+  //   `AI_ASSISTANT_PRESENTATION_OPTIONS` -> `t(option.label)`,
+  //     `t(option.hint)`, `t(option.saved)`      DNSManager.tsx:2875-2877
+  //   `PROVIDER_PROTOCOL_INFO`            -> `t(info.label)`,
+  //     `t(protocolInfo.description)`      AiProviderSettings.tsx:517,713
+  //   `AI_PERMISSION_MODE_COPY`           -> `t(mode.label)`,
+  //     `t(mode.consequence)`              AiPermissionSettings.tsx:124,130
+  //
+  // Each of the twenty-one strings they hold was already catalogued and
+  // already translated in all twelve locales, so adding them here costs no
+  // translation work; it stops them reading as dead keys to anything that
+  // asks which catalogued strings have a call site.
+  join(ROOT, "src", "lib", "ai", "presentation.ts"),
+  join(ROOT, "src", "lib", "ai", "providers.ts"),
+  join(ROOT, "src", "lib", "ai", "permissions.ts"),
+];
+
+/**
+ * Flat `{ id: "Label" }` maps whose *values* are keys, by declaration name.
+ *
+ * `REGISTRY_FILES` cannot express these. It sweeps a fixed set of property
+ * names, and here the property names are the ids — `amber`, `oled`, `sunset` —
+ * so there is no field list to write down. Sweeping every quoted value in the
+ * file instead is not an option either: `ThemeToggle.tsx` is a component, and
+ * that would catalogue its class names.
+ *
+ * So the declaration is named, and only the values inside that one object
+ * literal are read. Both of these are consumed by a variable-label `t()`:
+ * `t(TAG_COLOR_LABELS[colorId])` at `DNSManager.tsx:7715` and
+ * `t(themeLabels[id], themeLabels[id])` at `ThemeToggle.tsx:203`.
+ *
+ * Reading them found `"Void"`, the fourth theme's name, uncatalogued while
+ * `"Sunset"`, `"Night"` and `"Midday"` beside it were all catalogued and
+ * translated twelve ways — so the theme menu listed three translated names and
+ * one English one, in every locale, with the coverage report green.
+ */
+const REGISTRY_LABEL_MAPS = [
+  {
+    path: join(ROOT, "src", "components", "tags", "tag-colors.ts"),
+    name: "TAG_COLOR_LABELS",
+  },
+  {
+    path: join(ROOT, "src", "components", "layout", "ThemeToggle.tsx"),
+    name: "themeLabels",
+  },
 ];
 
 /**
@@ -78,8 +127,50 @@ const REGISTRY_FILES = [
  * stayed green — the same silent shape as the subtab names, found by the agent
  * wiring the export surface when it went to add a group of its own and
  * realised a new one would never be translated.
+ *
+ * `saved` and `consequence` are the same omission a third and fourth time, in
+ * the AI registries added above: `AI_ASSISTANT_PRESENTATION_OPTIONS` renders
+ * `t(option.saved)` as the confirmation line under each layout choice, and
+ * `AI_PERMISSION_MODE_COPY` renders `t(mode.consequence)` as the sentence
+ * spelling out what a permission mode will actually let the assistant do —
+ * which is the most consequential copy on that screen, and would have been the
+ * one paragraph left in English.
+ *
+ * `synonyms` is the fifth, and the only one so far that is a *functional*
+ * defect rather than a missing translation. `settings-search.ts:208` declares
+ * it as one translatable string per entry and `:1265` renders it through
+ * `translate(entry.synonyms, entry.synonyms)`; it is what makes a settings
+ * search match anything beyond the literal label. Four entries carry one, all
+ * of them sync settings. Left out of this list, those four never reached
+ * `en-US.json`, so in every locale but English the sync settings were findable
+ * only by their English synonyms — and a search that matches less does not look
+ * broken, it just looks like a search. Found by `sync-copy`.
+ *
+ * `requires` is the sixth. `DNSManager.tsx:5344` renders
+ * `t(entry.requires, entry.requires)` as the `{{condition}}` of
+ * `t("{{label}} appears when {{condition}}.")`, so the sentence frame was
+ * translated and the clause inside it was not: five conditions — "DNS server
+ * is set to Custom", "GEO detection is enabled" and three more — were
+ * uncatalogued and read as English inside an otherwise translated sentence, in
+ * all twelve locales.
+ *
+ * Six omissions in one list is a pattern, not six accidents, and the mechanism
+ * is measurable: this is a hand-kept mirror of property names chosen in other
+ * files, and **removing a name from it makes the scanner find fewer strings,
+ * so the uncatalogued count goes down and every test in the project gets
+ * quieter.** See the note in `test/i18nDeadKeys.test.ts` for the measurement
+ * and for the shape of a test that would catch the seventh.
  */
-const REGISTRY_TEXT_FIELDS = ["label", "description", "hint", "group"];
+const REGISTRY_TEXT_FIELDS = [
+  "label",
+  "description",
+  "hint",
+  "group",
+  "saved",
+  "consequence",
+  "synonyms",
+  "requires",
+];
 
 /**
  * The shortest string worth cataloguing.
@@ -103,9 +194,12 @@ function walk(dir, out = []) {
   return out;
 }
 
+/** The quote characters a JavaScript string literal can open with. */
+const QUOTES = new Set(['"', "'"]);
+
 /**
- * Read one double-quoted JavaScript string starting at `source[start]`, or
- * `null` if it is not terminated.
+ * Read one quoted JavaScript string starting at `source[start]`, or `null` if
+ * it is not terminated.
  *
  * Scans for the closing quote rather than taking the next one, because a
  * string may contain an escaped quote — `t("a house rule (\"always show the
@@ -114,9 +208,25 @@ function walk(dir, out = []) {
  * runtime, so that string was untranslatable in every locale while looking
  * catalogued. Returns the **unescaped** value, which is what `t()` actually
  * receives and therefore what a locale file has to key on.
+ *
+ * **Single quotes count, and leaving them out hid a live string.** Prettier
+ * picks whichever quote needs fewer escapes, so copy containing more double
+ * quotes than apostrophes gets rewritten single-quoted — and then disappeared
+ * from a scanner that only recognised `"`. The realised case is
+ * `NotificationsSettingsDelivery.tsx:156`, the quiet-hours description: four
+ * double quotes, no apostrophes, so Prettier chose `'`, so the scanner never
+ * saw it, so it was in **0 of 12** locale files while the coverage report read
+ * green. Nobody wrote that string wrongly; the formatter moved it out of view.
+ *
+ * Note how narrow the surviving margin was elsewhere: the one catalogued key
+ * that contains a double quote (the AI standing-instructions description) has
+ * exactly **two double quotes and two apostrophes** — a tie, which Prettier
+ * breaks in favour of double by default. It was never safe, it was one
+ * character from vanishing.
  */
 function readQuoted(source, start) {
-  if (source[start] !== '"') return null;
+  const quote = source[start];
+  if (!QUOTES.has(quote)) return null;
   let out = "";
   for (let index = start + 1; index < source.length; index += 1) {
     const char = source[index];
@@ -128,7 +238,7 @@ function readQuoted(source, start) {
       index += 1;
       continue;
     }
-    if (char === '"') return out;
+    if (char === quote) return out;
     out += char;
   }
   return null;
@@ -256,12 +366,66 @@ export function extractRegistryStrings(text) {
   // commented-out registry entry is not a setting anyone can see.
   const source = stripComments(text);
   for (const field of REGISTRY_TEXT_FIELDS) {
-    const pattern = new RegExp(`\\b${field}:\\s*"`, "g");
+    // Either quote: a registry string that Prettier rewrote single-quoted is
+    // still a registry string. See {@link readQuoted}.
+    const pattern = new RegExp(`\\b${field}:\\s*["']`, "g");
     for (const match of source.matchAll(pattern)) {
       const value = readQuoted(source, match.index + match[0].length - 1);
       if (value === null || value.length < MIN_LENGTH) continue;
       found.add(value);
     }
+  }
+  return found;
+}
+
+/**
+ * The values of one flat `{ id: "Label" }` map, by declaration name.
+ *
+ * Scoped to a single named declaration rather than the whole file, because the
+ * files these live in are components: sweeping every quoted value would
+ * catalogue class names. The brace depth is counted so that a nested object
+ * cannot end the scan early, and a quoted *property* name is skipped by
+ * looking for the colon that follows it — `{ "opt-in": "Needs turning on" }`
+ * has to contribute the label and not the id.
+ *
+ * Returns the unescaped values, matching {@link readQuoted} elsewhere here:
+ * the key a locale file needs is what `t()` receives, not what the source
+ * spells.
+ */
+export function extractLabelMap(text, name) {
+  const found = new Set();
+  const source = stripComments(text);
+  const declared = new RegExp(`\\b(?:const|let|var)\\s+${name}\\b`).exec(
+    source,
+  );
+  if (!declared) return found;
+  const open = source.indexOf("{", declared.index);
+  if (open < 0) return found;
+  let depth = 0;
+  for (let index = open; index < source.length; index += 1) {
+    const char = source[index];
+    if (char === "{") {
+      depth += 1;
+      continue;
+    }
+    if (char === "}") {
+      depth -= 1;
+      if (depth === 0) break;
+      continue;
+    }
+    // Either quote. Safe despite apostrophes in English copy, because each
+    // literal found is stepped over whole below, so a `'` inside a
+    // double-quoted value is never reached as an opening quote.
+    if (!QUOTES.has(char)) continue;
+    const value = readQuoted(source, index);
+    if (value === null) continue;
+    // Step the cursor past this literal either way, so the closing quote is
+    // never read as the opening one of the next.
+    const end = findQuoteEnd(source, index);
+    index = end < 0 ? index : end - 1;
+    if (/^\s*:/.test(source.slice(end))) continue;
+    if (value.length < MIN_LENGTH) continue;
+    found.add(value);
   }
   return found;
 }
@@ -310,15 +474,22 @@ export function extractDefaults(text) {
   return defaults;
 }
 
-/** Index just past the closing quote of the string starting at `start`. */
+/**
+ * Index just past the closing quote of the string starting at `start`.
+ *
+ * Quote-aware for the same reason as {@link readQuoted}: a single-quoted key
+ * whose end could not be found made the scanner miss the `, "default"` after
+ * it, so `extractDefaults` silently dropped the pair.
+ */
 function findQuoteEnd(source, start) {
-  if (source[start] !== '"') return -1;
+  const quote = source[start];
+  if (!QUOTES.has(quote)) return -1;
   for (let index = start + 1; index < source.length; index += 1) {
     if (source[index] === "\\") {
       index += 1;
       continue;
     }
-    if (source[index] === '"') return index + 1;
+    if (source[index] === quote) return index + 1;
   }
   return -1;
 }
@@ -336,6 +507,12 @@ export function extractStrings() {
   for (const path of REGISTRY_FILES) {
     const text = readFileSync(path, "utf8");
     for (const value of extractRegistryStrings(text)) {
+      if (!found.has(value)) found.set(value, relative(ROOT, path));
+    }
+  }
+  for (const { path, name } of REGISTRY_LABEL_MAPS) {
+    const text = readFileSync(path, "utf8");
+    for (const value of extractLabelMap(text, name)) {
       if (!found.has(value)) found.set(value, relative(ROOT, path));
     }
   }

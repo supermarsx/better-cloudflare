@@ -549,6 +549,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "bc-collections"
+version = "0.1.0"
+dependencies = [
+ "bc-crypto",
+ "chrono",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "zeroize",
+]
+
+[[package]]
 name = "bc-crypto"
 version = "0.1.0"
 dependencies = [
@@ -754,6 +766,7 @@ dependencies = [
  "bc-ai-tools",
  "bc-biometrics",
  "bc-cloudflare-api",
+ "bc-collections",
  "bc-crypto",
  "bc-dns-tools",
  "bc-domain-audit",

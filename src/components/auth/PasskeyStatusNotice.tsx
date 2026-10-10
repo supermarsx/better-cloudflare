@@ -17,6 +17,7 @@ import type {
   PasskeyAdvisory,
 } from "@/lib/auth/passkey-status";
 import { passkeyStatusReason } from "@/lib/auth/passkey-status";
+import { useI18n } from "@/hooks/use-i18n";
 import { cn } from "@/lib/utils";
 import {
   AlertTriangle,
@@ -50,9 +51,47 @@ export interface PasskeyNotice {
   icon: LucideIcon;
 }
 
-function advisoryNotice(advisory: PasskeyAdvisory): PasskeyNotice {
+/**
+ * The `t` from {@link useI18n}, narrowed to the two-argument form.
+ *
+ * Passed in rather than read from a hook because {@link passkeyStatusNotice}
+ * is a plain function, called from two components and from neither a render
+ * nor a hook body in one of them.
+ *
+ * It is a *required* parameter on purpose. Making it optional and falling back
+ * to English would compile at every call site that forgot it, and the only
+ * symptom would be a heading in English in eleven locales — which is the
+ * defect this file is being changed to fix.
+ */
+export type TranslateNotice = (key: string, defaultValue: string) => string;
+
+/**
+ * Each title below is written out as a literal `t("…", "…")`, which is the
+ * point of threading `t` this far.
+ *
+ * These six headings used to be plain string literals in the returned object
+ * and were rendered through `notice.title` — a value, not a literal call. That
+ * is the shape `ACTION_TABS` and the settings-search registry are in, and
+ * `scripts/i18n-coverage.mjs` cannot see it: a scan for literal `t(` call
+ * sites finds nothing, so all six were uncatalogued *and* absent from the
+ * uncatalogued report, invisible to every gate in both directions. They name
+ * the specific thing standing between the user and a working passkey, so they
+ * are the last strings on this screen that should have shipped untranslated.
+ *
+ * The `|| key` floor is the same guard `LoginSettingsMenu` documents: `t`
+ * returns an empty string until `src/i18n.ts` finishes its dynamic `import`,
+ * and a notice with a blank heading says nothing at all.
+ */
+function advisoryNotice(
+  advisory: PasskeyAdvisory,
+  t: TranslateNotice,
+): PasskeyNotice {
   return {
-    title: "No built-in authenticator detected",
+    title:
+      t(
+        "No built-in authenticator detected",
+        "No built-in authenticator detected",
+      ) || "No built-in authenticator detected",
     reason: advisory.reason,
     detail: advisory.detail,
     // Info, not warning: the buttons beside this notice work, and a security
@@ -70,6 +109,7 @@ function advisoryNotice(advisory: PasskeyAdvisory): PasskeyNotice {
  */
 export function passkeyStatusNotice(
   state: PasskeyStatusState | null,
+  t: TranslateNotice,
 ): PasskeyNotice | null {
   // `passkeyStatusReason` is the single place that knows which variants carry a
   // message; the `kind` checks below repeat it only so TypeScript narrows.
@@ -77,12 +117,16 @@ export function passkeyStatusNotice(
   if (!state || reason === null) return null;
 
   if (state.kind === "available") {
-    return state.advisory ? advisoryNotice(state.advisory) : null;
+    return state.advisory ? advisoryNotice(state.advisory, t) : null;
   }
 
   if (state.kind === "error") {
     return {
-      title: "Passkey status could not be read",
+      title:
+        t(
+          "Passkey status could not be read",
+          "Passkey status could not be read",
+        ) || "Passkey status could not be read",
       reason,
       detail: null,
       tone: "critical",
@@ -93,7 +137,11 @@ export function passkeyStatusNotice(
   switch (state.cause) {
     case "webview":
       return {
-        title: "Passkeys are not supported on this platform",
+        title:
+          t(
+            "Passkeys are not supported on this platform",
+            "Passkeys are not supported on this platform",
+          ) || "Passkeys are not supported on this platform",
         reason,
         detail: null,
         tone: "info",
@@ -101,7 +149,11 @@ export function passkeyStatusNotice(
       };
     case "insecure-origin":
       return {
-        title: "Passkeys need a secure context",
+        title:
+          t(
+            "Passkeys need a secure context",
+            "Passkeys need a secure context",
+          ) || "Passkeys need a secure context",
         reason,
         detail: null,
         tone: "info",
@@ -109,7 +161,11 @@ export function passkeyStatusNotice(
       };
     case "legacy-credentials":
       return {
-        title: "Your passkeys need re-registering",
+        title:
+          t(
+            "Your passkeys need re-registering",
+            "Your passkeys need re-registering",
+          ) || "Your passkeys need re-registering",
         reason,
         detail: null,
         tone: "warning",
@@ -118,7 +174,11 @@ export function passkeyStatusNotice(
     case "backend":
     default:
       return {
-        title: "Passkeys temporarily unavailable",
+        title:
+          t(
+            "Passkeys temporarily unavailable",
+            "Passkeys temporarily unavailable",
+          ) || "Passkeys temporarily unavailable",
         reason,
         detail: null,
         tone: "critical",
@@ -156,7 +216,8 @@ export function PasskeyStatusNotice({
   state,
   className,
 }: PasskeyStatusNoticeProps) {
-  const notice = passkeyStatusNotice(state);
+  const { t } = useI18n();
+  const notice = passkeyStatusNotice(state, t);
   if (!notice) return null;
 
   const Icon = notice.icon;

@@ -13,6 +13,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { useI18n } from "@/hooks/use-i18n";
 
 /**
  * Props for the EditKeyDialog allowing label/email changes and password
@@ -60,29 +61,39 @@ export function EditKeyDialog({
   onNewPasswordChange,
   onSave,
 }: EditKeyDialogProps) {
+  const { t } = useI18n();
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Edit API Key</DialogTitle>
+          <DialogTitle>{t("Edit API Key", "Edit API Key")}</DialogTitle>
           <DialogDescription>
-            Update key details or change its encryption password
+            {t(
+              "Update key details or change its encryption password",
+              "Update key details or change its encryption password",
+            )}
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-4">
           <div className="space-y-2">
-            <Label htmlFor="edit-label">Label</Label>
+            <Label htmlFor="edit-label">{t("Label", "Label")}</Label>
             <Input
               id="edit-label"
               value={label}
               onChange={(e: ChangeEvent<HTMLInputElement>) =>
                 onLabelChange(e.target.value)
               }
-              placeholder="e.g., Personal Account"
+              placeholder={t(
+                "e.g., Personal Account",
+                "e.g., Personal Account",
+              )}
             />
           </div>
           <div className="space-y-2">
-            <Label htmlFor="edit-email">Account Email (optional)</Label>
+            <Label htmlFor="edit-email">
+              {t("Account Email (optional)", "Account Email (optional)")}
+            </Label>
             <Input
               id="edit-email"
               type="email"
@@ -90,11 +101,13 @@ export function EditKeyDialog({
               onChange={(e: ChangeEvent<HTMLInputElement>) =>
                 onEmailChange(e.target.value)
               }
-              placeholder="you@example.com"
+              placeholder={t("you@example.com", "you@example.com")}
             />
           </div>
           <div className="space-y-2">
-            <Label htmlFor="current-password">Current Password</Label>
+            <Label htmlFor="current-password">
+              {t("Current Password", "Current Password")}
+            </Label>
             <Input
               id="current-password"
               type="password"
@@ -102,11 +115,16 @@ export function EditKeyDialog({
               onChange={(e: ChangeEvent<HTMLInputElement>) =>
                 onCurrentPasswordChange(e.target.value)
               }
-              placeholder="Required to change password"
+              placeholder={t(
+                "Required to change password",
+                "Required to change password",
+              )}
             />
           </div>
           <div className="space-y-2">
-            <Label htmlFor="new-password">New Password (optional)</Label>
+            <Label htmlFor="new-password">
+              {t("New Password (optional)", "New Password (optional)")}
+            </Label>
             <Input
               id="new-password"
               type="password"
@@ -114,11 +132,14 @@ export function EditKeyDialog({
               onChange={(e: ChangeEvent<HTMLInputElement>) =>
                 onNewPasswordChange(e.target.value)
               }
-              placeholder="Leave blank to keep current"
+              placeholder={t(
+                "Leave blank to keep current",
+                "Leave blank to keep current",
+              )}
             />
           </div>
           <Button onClick={onSave} className="w-full">
-            Save Changes
+            {t("Save Changes", "Save Changes")}
           </Button>
         </div>
       </DialogContent>

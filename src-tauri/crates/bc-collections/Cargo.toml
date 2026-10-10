@@ -1,0 +1,17 @@
+[package]
+name = "bc-collections"
+version = "0.1.0"
+edition = "2021"
+description = "Collections: a named set of API keys sealed under one passphrase, with the membership invariants and the envelope that holds the member secrets"
+
+[dependencies]
+bc-crypto = { path = "../bc-crypto" }
+chrono = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+# The transient plaintext of a collection envelope is a list of API key
+# secrets, and the session passphrase in `vault` is the thing that opens it.
+# Both are wiped rather than left for the allocator to hand to something else.
+# Already in the tree via `bc-crypto` and `bc-biometrics`.
+zeroize = "1"

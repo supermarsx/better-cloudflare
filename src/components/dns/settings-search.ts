@@ -41,7 +41,42 @@
  * so a French UI finds "Auto refresh" by either "actualisation" or "refresh".
  * Storing the translation instead would be impossible — it is not known until
  * runtime — and storing only the English would make search useless in every
- * other locale.
+ * other locale. `group` and `description` work the same way.
+ *
+ * ## Two kinds of extra search term, and why they are two fields
+ *
+ * {@link SettingsSearchEntry.keywords} was the only part of an entry matched
+ * in English alone, which left every non-English locale without a synonym
+ * layer: the label and the hint are translated, so a French user finds a
+ * setting by any word *shown* to them, but there was no way for them to find
+ * "Export settings" by typing "sauvegarde". The obvious repair — put the
+ * keywords through `t()` — is wrong as they stand, for two reasons that pull
+ * in opposite directions:
+ *
+ * - **426 of them are single context-free words**, across 75 entries. Sent to
+ *   eleven translators as keys, "usb", "os", "lost" and "forgot" are
+ *   unanswerable, and a synonym translated wrongly is invisible: nothing
+ *   renders it, so no test and no reviewer ever sees it.
+ * - **Dozens of them must stay English in every locale.** "nextcloud",
+ *   "webdav", "dropbox", "onedrive", "icloud", "syncthing", "json" and "usb"
+ *   are names, not words. So is "test connection", which is kept deliberately
+ *   because it is the label an *earlier English build* used and is what
+ *   someone upgrading will type — translating the historical English of a
+ *   string that never shipped in their locale would mean nothing to anybody.
+ *
+ * So the two jobs are two fields. `keywords` keeps the aliases that are the
+ * same in every language and is **not** translated; {@link
+ * SettingsSearchEntry.synonyms} is one translatable string per entry holding
+ * the words that do differ by language, matched translated *and* in English so
+ * nothing an English query used to find stops being findable.
+ *
+ * One string per entry rather than one per word, because a comma list under
+ * the entry's own label is a brief a translator can answer, and because
+ * `fold()` flattens the commas away before matching anyway. It is a separate
+ * field rather than a join of `keywords` so that adding an alias stays free:
+ * a derived key would change whenever any keyword changed, silently orphaning
+ * that entry's translation and reverting it to English with nothing on screen
+ * to show it.
  */
 import {
   TABLE_COLUMN_GROUPS,
@@ -148,8 +183,29 @@ export interface SettingsSearchEntry {
    * translation the row does.
    */
   description?: string;
-  /** Words a user may plausibly type that the label and hint do not contain. */
+  /**
+   * Aliases a user may plausibly type that the label and hint do not contain,
+   * and that are **the same in every language**: product and protocol names,
+   * file formats, and the English labels earlier builds used.
+   *
+   * Deliberately not translated — see the module header, and `synonyms` for
+   * the half that is. A word added here is matched in English in every locale
+   * and nowhere else, which is right for "dropbox" and wrong for "backup".
+   */
   keywords?: readonly string[];
+  /**
+   * Ordinary-language words for the same setting, comma-separated, rendered
+   * through `t()` like a label.
+   *
+   * This is the half of the synonym vocabulary that differs by language. The
+   * English written here is matched too, so moving a word out of `keywords`
+   * into this field never costs an English query its hit.
+   *
+   * A locale is free to replace the list wholesale rather than word for word:
+   * nothing reads an individual entry of it, and the point is the words a
+   * speaker of that language would actually reach for.
+   */
+  synonyms?: string;
   /** Desktop builds only; hidden from search everywhere else. */
   desktopOnly?: true;
   /**
@@ -504,7 +560,33 @@ const ROW_ENTRIES: readonly SettingsSearchEntry[] = [
     description:
       "Chooses GEO source; Auto tries multiple services and falls back.",
     keywords: ["geoip", "provider", "ipwhois", "ipapi", "country"],
-    requires: "GEO detection is enabled",
+    // Names the switch verbatim, which is the property the other four
+    // `requires` clauses have and this one lacked. They each quote a control
+    // that exists as a settings label *and* on screen — `DNS server`,
+    // `Topology request mode`, `Topology export path`, `Export folder
+    // preset` — so a user can search for the words they just read.
+    // `"GEO detection"` is a label nowhere in `src`: the only control is the
+    // toggle `"Disable GEO detection"` above, so the old wording described a
+    // state no label expressed and left the user nothing to look for.
+    //
+    // It is a double negative, and that is the lesser cost: a searchable
+    // double negative beats an unsearchable positive. `"X is off"` is already
+    // this catalogue's idiom for a switch state (eight keys use it), so this
+    // is the parallel form for a toggle rather than a departure — the other
+    // four read `"X is set to Y"` because their controls are pickers.
+    //
+    // No quotation marks around the control name, deliberately: a string
+    // carrying two double quotes and no apostrophes gets rewritten
+    // single-quoted by Prettier, and the scanner's `readQuoted` could not see
+    // single-quoted strings until this was found hiding a shipped string in
+    // all twelve locales.
+    //
+    // The better repair is to rename the control to a positive
+    // `"GEO detection"` toggle and invert its stored flag, which also fixes
+    // the two toasts. That is a code change and is on the list.
+    //
+    // Found by the zh-CN translator, who proposed this exact wording.
+    requires: "Disable GEO detection is off",
     anchor: { kind: "row" },
   },
   {
@@ -999,11 +1081,11 @@ const ANCHORLESS_ENTRIES: readonly SettingsSearchEntry[] = [
   // `SYNC_SETTINGS_SECTIONS` rather than against anything `DNSManager.tsx`
   // renders.
   //
-  // The keywords carry more weight here than elsewhere, because almost nobody
-  // looking for this feature knows it is called "sync". They search for the
-  // provider they have ("nextcloud", "dropbox"), for what they want to happen
-  // ("backup", "restore", "another computer"), or for the thing they have lost
-  // ("passphrase").
+  // The extra search terms carry more weight here than elsewhere, because
+  // almost nobody looking for this feature knows it is called "sync". They
+  // search for the provider they have ("nextcloud", "dropbox"), for what they
+  // want to happen ("backup", "restore", "another computer"), or for the thing
+  // they have lost ("passphrase").
   //
   // The second provider is a local folder, so the cloud clients that carry one
   // are listed by name: someone who syncs through Dropbox has no reason to
@@ -1011,35 +1093,35 @@ const ANCHORLESS_ENTRIES: readonly SettingsSearchEntry[] = [
   // drive" stays for exactly that reason and not as a leftover — Drive for
   // desktop is one of the clients a folder is carried by — while "access
   // token" goes, because the engine that needed one is gone.
+  //
+  // These four are also the first entries split across `keywords` and
+  // `synonyms`, and they are the entries where it matters most: the whole
+  // premise above is that the words a user reaches for are not the words on
+  // the screen, and until now those words existed in English only. The names
+  // stay in `keywords` and are matched in every locale; everything a speaker
+  // of another language would say differently moved to `synonyms`. Nothing was
+  // dropped in the move — the English side of `synonyms` is matched too.
   {
     id: "sync-provider",
     subtab: "sync",
     label: "Provider",
     keywords: [
-      "sync",
-      "cloud",
       "nextcloud",
       "webdav",
-      "folder",
       "google drive",
       "dropbox",
       "onedrive",
       "icloud",
       "syncthing",
-      "network drive",
       "usb",
-      "app password",
-      "credential",
       "url",
-      "username",
-      // The control is now "Test access"; "test connection" stays because it
-      // is what someone who used the earlier build will type.
-      "test access",
+      // The control is now "Test access"; "test connection" stays here, and
+      // untranslated, because it is what someone who used the earlier English
+      // build will type.
       "test connection",
-      "backup",
-      "another computer",
-      "another machine",
     ],
+    synonyms:
+      "sync, cloud, folder, network drive, app password, credential, username, test access, backup, another computer, another machine",
     desktopOnly: true,
     anchor: { kind: "syncSection", section: "provider" },
   },
@@ -1047,18 +1129,8 @@ const ANCHORLESS_ENTRIES: readonly SettingsSearchEntry[] = [
     id: "sync-encryption",
     subtab: "sync",
     label: "Encryption",
-    keywords: [
-      "sync",
-      "passphrase",
-      "password",
-      "encrypt",
-      "seal",
-      "envelope",
-      "restore",
-      "keyring",
-      "lost",
-      "forgot",
-    ],
+    synonyms:
+      "sync, passphrase, password, encrypt, seal, envelope, restore, keyring, lost, forgot",
     desktopOnly: true,
     anchor: { kind: "syncSection", section: "encryption" },
   },
@@ -1066,18 +1138,8 @@ const ANCHORLESS_ENTRIES: readonly SettingsSearchEntry[] = [
     id: "sync-schedule",
     subtab: "sync",
     label: "Schedule",
-    keywords: [
-      "sync",
-      "automatic",
-      "manual",
-      "cadence",
-      "interval",
-      "minutes",
-      "how often",
-      "enable",
-      "turn off",
-      "upload",
-    ],
+    synonyms:
+      "sync, automatic, manual, cadence, interval, minutes, how often, enable, turn off, upload",
     desktopOnly: true,
     anchor: { kind: "syncSection", section: "schedule" },
   },
@@ -1085,19 +1147,8 @@ const ANCHORLESS_ENTRIES: readonly SettingsSearchEntry[] = [
     id: "sync-status",
     subtab: "sync",
     label: "Sync status",
-    keywords: [
-      "sync",
-      "push",
-      "pull",
-      "last sync",
-      "conflict",
-      "diverged",
-      "generation",
-      "device",
-      "archive",
-      "keep local",
-      "keep remote",
-    ],
+    synonyms:
+      "sync, push, pull, last sync, conflict, diverged, generation, device, archive, keep local, keep remote",
     desktopOnly: true,
     anchor: { kind: "syncSection", section: "status" },
   },
@@ -1236,6 +1287,9 @@ function entryFields(
   const hint = entry.description
     ? translate(entry.description, entry.description) || entry.description
     : undefined;
+  const synonyms = entry.synonyms
+    ? translate(entry.synonyms, entry.synonyms) || entry.synonyms
+    : undefined;
 
   const fields: Field[] = [
     // Both languages: the label the user is reading, and the English key, so a
@@ -1248,6 +1302,11 @@ function entryFields(
     { text: subtabLabel, weight: 3 },
     { text: hint ?? "", weight: 2 },
     { text: entry.description ?? "", weight: 2 },
+    // Both languages again, for the same reason the label is: the translated
+    // synonyms are what a user of that locale would type, and the English ones
+    // are what the docs, the changelog and an earlier build called it.
+    { text: synonyms ?? "", weight: 2 },
+    { text: entry.synonyms ?? "", weight: 2 },
     { text: (entry.keywords ?? []).join(" "), weight: 2 },
   ];
 

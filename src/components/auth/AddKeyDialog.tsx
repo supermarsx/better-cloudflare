@@ -12,6 +12,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { useI18n } from "@/hooks/use-i18n";
 
 /**
  * Props for the AddKeyDialog which collects an API key and encryption
@@ -59,29 +60,37 @@ export function AddKeyDialog({
   onPasswordChange,
   onAdd,
 }: AddKeyDialogProps) {
+  const { t } = useI18n();
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Add New API Key</DialogTitle>
+          <DialogTitle>{t("Add New API Key", "Add New API Key")}</DialogTitle>
           <DialogDescription>
-            Add a new Cloudflare API key with a custom label
+            {t(
+              "Add a new Cloudflare API key with a custom label",
+              "Add a new Cloudflare API key with a custom label",
+            )}
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-4">
           <div className="space-y-2">
-            <Label htmlFor="new-label">Label</Label>
+            <Label htmlFor="new-label">{t("Label", "Label")}</Label>
             <Input
               id="new-label"
               value={label}
               onChange={(e: ChangeEvent<HTMLInputElement>) =>
                 onLabelChange(e.target.value)
               }
-              placeholder="e.g., Personal Account"
+              placeholder={t(
+                "e.g., Personal Account",
+                "e.g., Personal Account",
+              )}
             />
           </div>
           <div className="space-y-2">
-            <Label htmlFor="new-api-key">API Key</Label>
+            <Label htmlFor="new-api-key">{t("API Key", "API Key")}</Label>
             <Input
               id="new-api-key"
               type="password"
@@ -89,12 +98,18 @@ export function AddKeyDialog({
               onChange={(e: ChangeEvent<HTMLInputElement>) =>
                 onApiKeyChange(e.target.value)
               }
-              placeholder="Your Cloudflare API key"
+              placeholder={t(
+                "Your Cloudflare API key",
+                "Your Cloudflare API key",
+              )}
             />
           </div>
           <div className="space-y-2">
             <Label htmlFor="new-email">
-              Account Email (optional for global keys)
+              {t(
+                "Account Email (optional for global keys)",
+                "Account Email (optional for global keys)",
+              )}
             </Label>
             <Input
               id="new-email"
@@ -103,11 +118,13 @@ export function AddKeyDialog({
               onChange={(e: ChangeEvent<HTMLInputElement>) =>
                 onEmailChange(e.target.value)
               }
-              placeholder="you@example.com"
+              placeholder={t("you@example.com", "you@example.com")}
             />
           </div>
           <div className="space-y-2">
-            <Label htmlFor="new-password">Encryption Password</Label>
+            <Label htmlFor="new-password">
+              {t("Encryption Password", "Encryption Password")}
+            </Label>
             <Input
               id="new-password"
               type="password"
@@ -115,11 +132,14 @@ export function AddKeyDialog({
               onChange={(e: ChangeEvent<HTMLInputElement>) =>
                 onPasswordChange(e.target.value)
               }
-              placeholder="Password to encrypt this key"
+              placeholder={t(
+                "Password to encrypt this key",
+                "Password to encrypt this key",
+              )}
             />
           </div>
           <Button onClick={onAdd} className="w-full">
-            Add API Key
+            {t("Add API Key", "Add API Key")}
           </Button>
         </div>
       </DialogContent>

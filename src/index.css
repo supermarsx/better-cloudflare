@@ -472,6 +472,20 @@
     mask-size: 100% 100%;
   }
 
+  /* The angle `.ui-entry::after` sweeps its hover sheen along. The sheen fades
+     out by 55%, so it is anchored to one edge rather than centred, and that
+     edge has to be the one the label starts at — under `dir="rtl"` a sheen
+     pinned to the left is pinned to the end of the text. A gradient angle has
+     no logical form the way `padding-inline-start` does, so the direction is
+     carried as a token instead. */
+  :root {
+    --ui-sheen-angle: 90deg;
+  }
+
+  :root[dir="rtl"] {
+    --ui-sheen-angle: 270deg;
+  }
+
   .ui-entry {
     position: relative;
     border-radius: calc(var(--radius) - 4px);
@@ -496,7 +510,7 @@
     inset: 0;
     border-radius: inherit;
     background: linear-gradient(
-      90deg,
+      var(--ui-sheen-angle),
       hsl(var(--primary) / 0.22),
       transparent 55%
     );
@@ -531,11 +545,43 @@
   }
 
   /* Ensure Tailwind padding utilities can override `.ui-entry` padding even if
-     `.ui-entry` is emitted later in CSS. */
+     `.ui-entry` is emitted later in CSS.
+
+     It is emitted later. Compiling this file through `@tailwindcss/postcss`
+     puts Tailwind's generated `.pl-7` at byte 42084 of its first
+     `@layer utilities` block and this hand-written `.ui-entry` at 91529 of the
+     second -- same layer, one class each, so equal specificity and the later
+     one wins. (Those offsets are measured; "later in the same layer at equal
+     specificity wins" is the cascade rule applied to them rather than
+     something observed rendered.) Hence the compound selectors and the
+     `!important` below: without them `.ui-entry`'s `padding` shorthand simply
+     eats the utility.
+
+     Which makes the *name* on the left load-bearing, and it was wrong. The
+     menu primitives moved their check gutter from `pl-8` to `pl-7` -- see the
+     matching note in `context-menu.tsx`, `DropdownMenu.tsx` and `select.tsx`
+     -- and this block stayed on `pl-8`, which no `.ui-entry` call site uses
+     any more. So the gutter collapsed to the 0.5rem of the shorthand and the
+     check indicator, absolutely positioned at `left-1.5`, sat on top of the
+     label. `.ui-entry.pl-7` below is the fix.
+
+     `test/documentDirection.test.tsx` now asserts that every inline-start
+     padding class those three files use has a matching override here, so the
+     pair cannot drift apart again. That is also what the RTL sweep needs: when
+     those call sites become `ps-7`, this block needs a `.ui-entry.ps-7` with
+     `padding-inline-start`, and the test will fail until it has one. */
+  .ui-entry.pl-7 {
+    padding-left: 1.75rem !important;
+  }
+
+  /* No `.ui-entry` uses `pl-8` any longer; kept for a separate pass rather
+     than deleted here, so that a padding fix stays a padding fix. */
   .ui-entry.pl-8 {
     padding-left: 2rem !important;
   }
 
+  /* Redundant in value -- `.ui-entry`'s shorthand already sets 0.5rem on both
+     inline sides -- and symmetric, so it needs no logical twin. */
   .ui-entry.pr-2 {
     padding-right: 0.5rem !important;
   }
@@ -1397,17 +1443,32 @@
     }
   }
 
+  /* How far, and which way, a toast travels on its way in and out. A toast
+     slides from the edge its viewport is pinned to, and `ToastViewport` pins
+     itself with `sm:end-3` -- the left edge under `dir="rtl"`. `translateX` has
+     no logical form, and a keyframe cannot be selected by direction, so the
+     offset is carried as a token the keyframes read. Changing one of these
+     without the other sends toasts in from the opposite edge, so they live
+     beside each other deliberately. */
+  :root {
+    --ui-toast-enter-x: 100%;
+  }
+
+  :root[dir="rtl"] {
+    --ui-toast-enter-x: -100%;
+  }
+
   @keyframes uiToastIn {
     from {
       opacity: 0;
-      transform: translateX(100%);
+      transform: translateX(var(--ui-toast-enter-x));
     }
   }
 
   @keyframes uiToastOut {
     to {
       opacity: 0;
-      transform: translateX(100%);
+      transform: translateX(var(--ui-toast-enter-x));
     }
   }
 
@@ -1498,7 +1559,9 @@
 .notifications-unread-badge {
   position: absolute;
   top: -0.2rem;
-  right: -0.2rem;
+  /* The trailing corner of the bell, whichever corner that is: `right` would
+     park the count over the glyph in an RTL layout. */
+  inset-inline-end: -0.2rem;
   min-width: 1rem;
   height: 1rem;
   padding: 0 0.25rem;
@@ -1512,8 +1575,11 @@
   pointer-events: none;
 }
 
+/* The unread accent is a margin rule beside the text, so it belongs on the
+   side the text starts at — `border-left` would put it past the end of an
+   Arabic row. */
 .notification-item--unread {
-  border-left: 3px solid hsl(var(--primary) / 0.8);
+  border-inline-start: 3px solid hsl(var(--primary) / 0.8);
   background: hsl(var(--primary) / 0.06);
 }
 
