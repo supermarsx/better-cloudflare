@@ -34,12 +34,12 @@
 //! and not best-effort: an unguarded write to a credential store is how one
 //! device's keys vanish.
 
-pub mod gdrive;
+pub mod folder;
 pub mod payload;
 pub mod settings;
 pub mod webdav;
 
-pub use gdrive::GoogleDriveEngine;
+pub use folder::FolderEngine;
 pub use payload::{
     checksum_hex, SyncManifest, SyncPayload, VaultEntry, MAX_SYNC_ENVELOPE_BYTES, PAYLOAD_FORMAT,
     PAYLOAD_VERSION, SYNC_BLOB_NAME, SYNC_MANIFEST_NAME,
@@ -229,7 +229,9 @@ pub trait SyncEngine: Send + Sync {
 /// Build the engine a settings object names.
 ///
 /// The credential comes from the keyring and is passed in; see the module
-/// header for why this crate never reads it itself.
+/// header for why this crate never reads it itself. It is ignored by a
+/// provider whose `credential_slot()` is `None` — a folder is reached through
+/// the filesystem, and its access check is the directory's own permissions.
 pub fn build_engine(
     settings: &SyncSettings,
     credential: &str,
@@ -248,7 +250,14 @@ pub fn build_engine(
                 .ok_or(SyncError::NotConfigured)?;
             Ok(Box::new(WebDavEngine::new(url, username, credential)?))
         }
-        SyncProvider::GoogleDrive => Ok(Box::new(GoogleDriveEngine::new(credential)?)),
+        SyncProvider::Folder => {
+            let path = settings
+                .folder_path
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+                .ok_or(SyncError::NotConfigured)?;
+            Ok(Box::new(FolderEngine::new(path)?))
+        }
     }
 }
 

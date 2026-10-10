@@ -23,11 +23,14 @@
  * All three are in `@/lib/sync/types`' header with the reasoning. They are
  * repeated to the user here because here is where they matter:
  *
- * 1. **Google Drive has no sign-in button.** A desktop OAuth client cannot
- *    keep a client secret and this repo is public, so the Drive engine takes a
- *    token the user obtained themselves — and a token expires, which looks
- *    exactly like a rejected credential when it does. Nextcloud is named as
- *    the better-supported option rather than the two being offered as equals.
+ * 1. **A folder has nothing to authenticate with, and that is not the same as
+ *    being unconfigured.** `providerNeedsCredential` decides whether the credential
+ *    field exists at all, so "nothing is stored" and "nothing is wanted" are
+ *    two different screens rather than one empty box asking for a secret that
+ *    would never be read. Neither provider is ranked over the other any more:
+ *    the line that did was there because the old Drive engine's pasted token
+ *    expired, and the honest difference left is that a folder has no
+ *    credential to expire while Nextcloud needs nothing else running.
  * 2. **The passphrase is a second secret, and what it costs is bounded.**
  *    Losing it costs the ability to restore *from the provider*. It does not
  *    cost the keys on this device, which are in the OS keyring under their own
@@ -94,15 +97,16 @@ import { Switch } from "@/components/ui/switch";
 import { useI18n } from "@/hooks/use-i18n";
 import { useSyncSettings } from "@/hooks/dns/use-sync-settings";
 import { fullTimestamp } from "@/lib/notifications/notifications-view";
-import type {
-  ConflictResolution,
-  SyncConflict,
-  SyncFailureCode,
-  SyncManifest,
-  SyncOutcome,
-  SyncPreviewOutcome,
-  SyncProvider,
-  SyncSettings as SyncSettingsValue,
+import {
+  providerNeedsCredential,
+  type ConflictResolution,
+  type SyncConflict,
+  type SyncFailureCode,
+  type SyncManifest,
+  type SyncOutcome,
+  type SyncPreviewOutcome,
+  type SyncProvider,
+  type SyncSettings as SyncSettingsValue,
 } from "@/lib/sync/types";
 
 import { SettingRow, SettingsSection } from "./NotificationsSettingsControls";
@@ -112,6 +116,7 @@ import {
   syncCadenceRange,
   syncDraftFromSettings,
   syncPanelDirty,
+  syncProviderIncomplete,
   syncSecretReplaces,
   syncSettingsInput,
   type SyncDraft,
@@ -189,6 +194,44 @@ function errorMessage(error: unknown): string {
  * controls express the three things the user can mean: leave it, replace it,
  * remove it. `data-secret-mode` carries the current one, so the three are
  * distinguishable from the outside and not only in this component's state.
+ *
+ * # Every string literal below is shared by both instances
+ *
+ * This component is rendered twice — once for the provider credential, once
+ * for the sync passphrase — so `"Nothing is stored"`, `"Type a replacement"`,
+ * `"Keep the stored one"`, `"The stored secret will be removed when you save"`,
+ * `"Cancel the removal"`, `"Replace"`, `"Remove"` and the empty-field note all
+ * describe **whichever secret is in front of the user**, not a particular one. Only `label`, `description`,
+ * `presentText` and `absentText` arrive per instance and may therefore name
+ * their own field.
+ *
+ * That distinction is invisible from inside this file and it is load-bearing
+ * for translation: a shared string cannot agree with a noun it does not know.
+ * Three translators hit it from different directions. Spanish had rendered
+ * `"Keep the stored one"` with a neuter dodge because the pronoun had no
+ * antecedent to agree with; Portuguese had picked masculine for the set and
+ * had to revisit it; Hindi's `"Will be removed when you save"` is masculine
+ * singular and is correct **only because both secrets here happen to be
+ * masculine nouns** — add a third whose noun is feminine and it becomes
+ * ungrammatical for it, with nothing to catch it, since the key, the value and
+ * the placeholders would all be unchanged.
+ *
+ * So: a string added below must read correctly for any secret this component
+ * could ever serve. If one genuinely cannot — if it has to agree with a
+ * specific field — it belongs in a prop, the way `"A passphrase is set on this
+ * device"` and `"A credential is stored on this device"` do. Those two also
+ * show the other half of the fix: **name the subject.** They used to be the
+ * participles `"Set on this device"` and `"Stored on this device"`, which no
+ * gendered or case-marked language can render without knowing what they
+ * describe — and which were only ever correct because exactly one provider
+ * carries a credential. Add one whose credential label has a different gender
+ * and every such string breaks at once, in every inflecting locale, with
+ * nothing to catch it: same key, same value, same placeholders.
+ *
+ * That is also the repair if the constraint above is ever broken: split the
+ * string per field, or give it a subject, rather than retranslate it — which
+ * is what splitting `"Cancel the removal"` out of `"Keep the stored one"`
+ * already did for a different reason.
  */
 function SecretField({
   id,
@@ -238,7 +281,20 @@ function SecretField({
               className="h-8 w-64 text-sm"
               value={draft.mode === "set" ? draft.value : ""}
               disabled={disabled}
-              placeholder={t("Not stored", "Not stored")}
+              placeholder={
+                /* Two placeholders, because this branch has two causes. It
+                   opens either because nothing is stored or because the user
+                   pressed Replace on something that is — and the one
+                   placeholder read "Nothing is stored" in both, so the replace
+                   path showed it directly beside the "Keep the stored one"
+                   button that only exists when something *is* stored: two
+                   strings in one row contradicting each other. Found by the
+                   hi-IN translator. `present` is the same condition that
+                   renders that button, so the two cannot disagree again. */
+                present
+                  ? t("Type a replacement", "Type a replacement")
+                  : t("Nothing is stored", "Nothing is stored")
+              }
               onChange={(event) =>
                 onChange({ mode: "set", value: event.target.value })
               }
@@ -259,9 +315,12 @@ function SecretField({
         ) : draft.mode === "clear" ? (
           <div className="flex items-center gap-2">
             <span className="text-xs text-destructive">
+              {/* Shared, so the subject has to be one that fits any secret
+                  this component serves: "the stored secret" rather than a
+                  participle agreeing with a noun the string cannot see. */}
               {t(
-                "Will be removed when you save",
-                "Will be removed when you save",
+                "The stored secret will be removed when you save",
+                "The stored secret will be removed when you save",
               )}
             </span>
             <Button
@@ -507,8 +566,26 @@ function ConflictPanel({
   );
 }
 
-/** What one `failed` outcome means, in words rather than in its code. */
-function useFailureText(): (code: SyncFailureCode) => string {
+/**
+ * What one `failed` outcome means, in words rather than in its code.
+ *
+ * Takes the provider because two of the codes cannot be worded once for both.
+ * `unreachable` and `provider-error` are raised by the folder engine for a
+ * directory on the user's own disk, so "the provider could not be reached"
+ * and "the provider answered" name a party that does not exist and never
+ * spoke — the same misattribution `ProviderMessage` fixes for the detail
+ * line. Fixing only the detail line left a block reading "The provider
+ * answered with something this app could not use. The filesystem said: …",
+ * which fr-FR, hi-IN and ru-RU each reported independently.
+ *
+ * The provider comes from the **stored** settings, never the draft, for the
+ * reason `OutcomeReport` documents: switching the radio without saving leaves
+ * the backend probing the old provider, so a draft-worded failure would
+ * describe something that did not happen.
+ */
+function useFailureText(
+  provider: SyncProvider | null,
+): (code: SyncFailureCode) => string {
   const { t } = useI18n();
   // Exhaustive with no `default`, like `UndoPreviewDialog.refusalText`: an
   // eleventh code must fail the build here rather than reach a user as a
@@ -518,8 +595,8 @@ function useFailureText(): (code: SyncFailureCode) => string {
       switch (code) {
         case "not-configured":
           return t(
-            "No provider has been set up on this device, or the one chosen has no credential stored.",
-            "No provider has been set up on this device, or the one chosen has no credential stored.",
+            "No provider has been set up on this device, or the one chosen is still missing something it needs: a URL, a username and an app password for Nextcloud, or a folder to write into.",
+            "No provider has been set up on this device, or the one chosen is still missing something it needs: a URL, a username and an app password for Nextcloud, or a folder to write into.",
           );
         case "no-passphrase":
           return t(
@@ -528,19 +605,40 @@ function useFailureText(): (code: SyncFailureCode) => string {
           );
         case "unauthorised":
           return t(
-            "The provider rejected the credential. An expired Google Drive access token looks exactly like this, and has to be pasted again.",
-            "The provider rejected the credential. An expired Google Drive access token looks exactly like this, and has to be pasted again.",
+            "Nextcloud rejected the credential. An app password that has been revoked, or a username that does not go with it, looks exactly like this.",
+            "Nextcloud rejected the credential. An app password that has been revoked, or a username that does not go with it, looks exactly like this.",
           );
         case "unreachable":
-          return t(
-            "The provider could not be reached, so nothing left this device.",
-            "The provider could not be reached, so nothing left this device.",
-          );
+          // "nothing was transferred either way" rather than "nothing left
+          // this device": this code is reported for a failed pull, preview and
+          // conflict resolution as well as a push, so a direction-specific
+          // reassurance answers a question the user did not ask. hi-IN's find.
+          //
+          // The folder wording deliberately does **not** list "a sync client
+          // that has not started" among the causes. id-ID traced why: the
+          // reachability check is `fs::metadata` plus `is_dir`, and a Dropbox
+          // or Syncthing folder stays exactly where it is when the client
+          // quits — so a stopped client never produces this error, and naming
+          // it here would claim a detection this app does not have.
+          return provider === "folder"
+            ? t(
+                "The folder could not be reached, so nothing was transferred either way. It is not there, or it is not a folder — which usually means an unmounted share or an unplugged disk.",
+                "The folder could not be reached, so nothing was transferred either way. It is not there, or it is not a folder — which usually means an unmounted share or an unplugged disk.",
+              )
+            : t(
+                "Nextcloud could not be reached, so nothing was transferred either way.",
+                "Nextcloud could not be reached, so nothing was transferred either way.",
+              );
         case "provider-error":
-          return t(
-            "The provider answered with something this app could not use.",
-            "The provider answered with something this app could not use.",
-          );
+          return provider === "folder"
+            ? t(
+                "The folder could not be used.",
+                "The folder could not be used.",
+              )
+            : t(
+                "Nextcloud answered with something this app could not use.",
+                "Nextcloud answered with something this app could not use.",
+              );
         case "no-remote-blob":
           return t(
             "Nothing has ever been pushed, so there is nothing to pull.",
@@ -568,7 +666,79 @@ function useFailureText(): (code: SyncFailureCode) => string {
           );
       }
     },
-    [t],
+    // `provider` is load-bearing, not incidental: two of the codes word
+    // themselves from it, so omitting it would memoise the wording of
+    // whichever provider was selected first and keep showing it after a
+    // switch — the stale-capture version of the misattribution this function
+    // was just changed to fix.
+    [t, provider],
+  );
+}
+
+/**
+ * A failure's own words, framed by whatever actually produced them.
+ *
+ * The frame is load-bearing and it cannot be one string. Nextcloud's messages
+ * are a server's words, which is why they are labelled as a quotation: an
+ * English sentence inside a Japanese screen has to read as something someone
+ * else said rather than as a gap in the translation. A folder has no provider
+ * to quote — `folder.rs` wraps `std::io::Error` in `SyncError::Provider` at
+ * every one of its failure sites, so every message on that path was produced
+ * by this machine — and "The provider said: Access is denied." names a party
+ * that does not exist.
+ *
+ * A component rather than a helper taking the text, because both call sites
+ * need both literal `t()` calls where `scripts/i18n-coverage.mjs` can see
+ * them: a one-argument wrapper would hide the pair from the scanner, which is
+ * what `test/i18nNoTranslatorAlias.test.ts` exists to refuse.
+ */
+/**
+ * Whether a failure's detail line should be shown at all.
+ *
+ * `unreachable` is the one state in which the provider demonstrably said
+ * nothing — that is what the headline says — and yet `SyncError::Unreachable`
+ * carries a message, which for WebDAV is `reqwest`'s own text. So the block
+ * read "Nextcloud could not be reached…" followed by "The provider said:
+ * error sending request … dns error: failed to lookup address information":
+ * this machine's resolver quoted as the server's words, structurally rather
+ * than in some edge case. Found by the ru-RU translator.
+ *
+ * The folder path is the asymmetry and the reason this is not simply "hide
+ * the message on unreachable": `root_now`'s failures also land in
+ * `Unreachable`, but there the message really is the OS speaking, so "The
+ * filesystem said:" stays true and the detail is worth having. Nothing is
+ * lost by suppressing it for Nextcloud, because the headline already names
+ * the cause.
+ */
+function showsDetail(
+  code: SyncFailureCode,
+  provider: SyncProvider | null,
+): boolean {
+  return code !== "unreachable" || provider === "folder";
+}
+
+function ProviderMessage({
+  provider,
+  message,
+}: {
+  provider: SyncProvider | null;
+  message: string;
+}) {
+  const { t } = useI18n();
+  return provider === "folder" ? (
+    <>
+      {t("The filesystem said: {{message}}", {
+        message,
+        defaultValue: `The filesystem said: ${message}`,
+      })}
+    </>
+  ) : (
+    <>
+      {t("The provider said: {{message}}", {
+        message,
+        defaultValue: `The provider said: ${message}`,
+      })}
+    </>
   );
 }
 
@@ -581,17 +751,29 @@ function useFailureText(): (code: SyncFailureCode) => string {
 function OutcomeReport({
   outcome,
   thisDeviceId,
+  provider,
   verb,
   testId,
 }: {
   outcome: SyncOutcome;
   thisDeviceId: string;
+  /**
+   * The provider that answered, which is the **stored** one and never the
+   * draft: every action reported here runs against what `configure_sync` last
+   * wrote, so a half-switched radio must not relabel someone else's error.
+   *
+   * Read by the `reached` arm and by {@link ProviderMessage}, because what a
+   * connection test proves differs in kind between the two engines — one
+   * probe reads, the other writes — and a single sentence gets it backwards
+   * for one of them.
+   */
+  provider: SyncProvider | null;
   /** What this action claims when it succeeded. */
   verb: "pushed" | "pulled" | "reached" | "resolved";
   testId: string;
 }) {
   const { t } = useI18n();
-  const failureText = useFailureText();
+  const failureText = useFailureText(provider);
   if (outcome.state === "conflict") return null;
 
   const failed = outcome.state === "failed";
@@ -652,23 +834,37 @@ function OutcomeReport({
                 defaultValue: `Settled on generation ${outcome.manifest.generation}.`,
               })}
             </p>
-          ) : (
+          ) : provider === "folder" ? (
+            // What the folder probe actually proved: it staged an empty file
+            // and removed it, so writability is established rather than
+            // assumed. See `FolderEngine::probe`.
             <p>
               {t(
-                "The provider answered and accepted the credential.",
-                "The provider answered and accepted the credential.",
+                "The folder is there, and this app can write into it.",
+                "The folder is there, and this app can write into it.",
+              )}
+            </p>
+          ) : (
+            // And what the WebDAV probe did *not* prove. It is a `PROPFIND`
+            // with `Depth: 0` asking for `resourcetype` alone, so it
+            // establishes that the server answers and the app password
+            // authenticates — and nothing about write access. Making it prove
+            // writability would let one sentence serve both engines and is
+            // arguably better behaviour, but it would start writing to the
+            // user's Nextcloud and so belongs in its own change, not in a
+            // copy fix.
+            <p>
+              {t(
+                "Nextcloud answered and accepted the app password. Whether this app may write there is not something this check can tell you.",
+                "Nextcloud answered and accepted the app password. Whether this app may write there is not something this check can tell you.",
               )}
             </p>
           )}
-          {outcome.state === "failed" && outcome.message !== null ? (
+          {outcome.state === "failed" &&
+          outcome.message !== null &&
+          showsDetail(outcome.code, provider) ? (
             <p className="text-xs break-all text-muted-foreground">
-              {/* The provider's own words, which are not translated and are
-                  labelled as theirs so that an English sentence inside a
-                  Japanese screen reads as a quotation rather than as a gap. */}
-              {t("The provider said: {{message}}", {
-                message: outcome.message,
-                defaultValue: `The provider said: ${outcome.message}`,
-              })}
+              <ProviderMessage provider={provider} message={outcome.message} />
             </p>
           ) : null}
           {outcome.state !== "failed" ? (
@@ -694,6 +890,7 @@ function PullDialog({
   open,
   onOpenChange,
   thisDeviceId,
+  provider,
   previewPull,
   onPull,
   onOutcome,
@@ -702,6 +899,8 @@ function PullDialog({
   open: boolean;
   onOpenChange: (open: boolean) => void;
   thisDeviceId: string;
+  /** The stored provider, so a failure is attributed to what produced it. */
+  provider: SyncProvider | null;
   previewPull: () => Promise<SyncPreviewOutcome>;
   onPull: () => Promise<SyncOutcome>;
   /** Report what the pull answered, so the host can act on a conflict. */
@@ -710,7 +909,7 @@ function PullDialog({
   onPreviewConflict?: (outcome: SyncPreviewOutcome) => void;
 }) {
   const { t } = useI18n();
-  const failureText = useFailureText();
+  const failureText = useFailureText(provider);
   const [preview, setPreview] = useState<SyncPreviewOutcome | null>(null);
   const [previewing, setPreviewing] = useState(false);
   const [previewError, setPreviewError] = useState<string | null>(null);
@@ -811,9 +1010,15 @@ function PullDialog({
               role="alert"
               data-testid="sync-pull-preview-error"
             >
-              {t("The provider's copy could not be opened: {{message}}", {
+              {/* An app-side failure, and only ever that. `settle()` routes
+                  `Failure::Refused` — the one variant carrying the provider's
+                  words — into `Ok(SyncOutcome::Failed)`, which is reported by
+                  `ProviderMessage` further down. A rejection can only be
+                  `Failure::Broken`, so this frame must not imply the provider
+                  spoke: it did not, and may never have been reached. */}
+              {t("This app could not open the provider's copy: {{message}}", {
                 message: previewError,
-                defaultValue: `The provider's copy could not be opened: ${previewError}`,
+                defaultValue: `This app could not open the provider's copy: ${previewError}`,
               })}
             </p>
           ) : null}
@@ -858,12 +1063,13 @@ function PullDialog({
               data-testid="sync-pull-preview-failed"
             >
               <p>{failureText(preview.code)}</p>
-              {preview.message !== null ? (
+              {preview.message !== null &&
+              showsDetail(preview.code, provider) ? (
                 <p className="break-all text-muted-foreground">
-                  {t("The provider said: {{message}}", {
-                    message: preview.message,
-                    defaultValue: `The provider said: ${preview.message}`,
-                  })}
+                  <ProviderMessage
+                    provider={provider}
+                    message={preview.message}
+                  />
                 </p>
               ) : null}
               <p className="text-muted-foreground">
@@ -892,9 +1098,10 @@ function PullDialog({
               role="alert"
               data-testid="sync-pull-error"
             >
-              {t("The pull could not be run: {{message}}", {
+              {/* Same: a rejected invoke, so the words are this app's. */}
+              {t("This app could not run the pull: {{message}}", {
                 message: applyError,
-                defaultValue: `The pull could not be run: ${applyError}`,
+                defaultValue: `This app could not run the pull: ${applyError}`,
               })}
             </p>
           ) : null}
@@ -903,6 +1110,7 @@ function PullDialog({
             <OutcomeReport
               outcome={outcome}
               thisDeviceId={thisDeviceId}
+              provider={provider}
               verb="pulled"
               testId="sync-pull-outcome"
             />
@@ -1032,6 +1240,38 @@ export function SyncSettings({
     }
   }, [draft, settings, sync, credential, passphrase]);
 
+  /**
+   * Open the native picker and put what it chose in the draft.
+   *
+   * Declared up here with the other actions rather than beside the control it
+   * belongs to, because everything below the early returns is past a
+   * conditional and a hook may not live there.
+   *
+   * `null` is a cancellation and is left alone deliberately: someone who
+   * opened the dialog and closed it still wants the folder they already had,
+   * so a cancellation that cleared the path would be the picker destroying
+   * the setting it exists to fill. The draft is updated through the functional
+   * form so the write lands on whatever the draft is when the dialog closes,
+   * which may be seconds after this callback was made.
+   */
+  const chooseFolder = useCallback(async () => {
+    if (settings === null) return;
+    setBusy(true);
+    setActionError(null);
+    try {
+      const picked = await sync.pickFolder();
+      if (picked === null) return;
+      setDraft((previous) => ({
+        ...(previous ?? syncDraftFromSettings(settings)),
+        folderPath: picked,
+      }));
+    } catch (error) {
+      setActionError(errorMessage(error));
+    } finally {
+      setBusy(false);
+    }
+  }, [settings, sync]);
+
   const discard = useCallback(() => {
     if (settings === null) return;
     setDraft(syncDraftFromSettings(settings));
@@ -1071,8 +1311,11 @@ export function SyncSettings({
     return (
       <p className="rounded-xl border border-border/60 bg-card/60 px-4 py-6 text-sm text-muted-foreground">
         {t(
-          "Cloud sync is only available in the desktop app: it reaches the provider directly, which a browser cannot do, and keeps its secrets in the operating system's keyring.",
-          "Cloud sync is only available in the desktop app: it reaches the provider directly, which a browser cannot do, and keeps its secrets in the operating system's keyring.",
+          // "a folder this machine can see", not "on this machine": a network
+          // mount is reachable from here without being here, and the provider
+          // description two rows away offers exactly that case.
+          "Cloud sync is only available in the desktop app: it writes into a folder this machine can see or talks WebDAV to a Nextcloud server, neither of which a browser can do, and it keeps its secrets in the operating system's keyring.",
+          "Cloud sync is only available in the desktop app: it writes into a folder this machine can see or talks WebDAV to a Nextcloud server, neither of which a browser can do, and it keeps its secrets in the operating system's keyring.",
         )}
       </p>
     );
@@ -1146,6 +1389,10 @@ export function SyncSettings({
   );
   const passphraseMissing =
     !settings.passphrasePresent && !syncSecretReplaces(passphrase);
+  // Read off the *draft*, not the stored settings, so that choosing a provider
+  // and saying what it still needs happen in one pass rather than the warning
+  // arriving a save later.
+  const missingField = syncProviderIncomplete(current);
 
   const saveText =
     sync.saveState === "saving"
@@ -1268,15 +1515,21 @@ export function SyncSettings({
               />
               <span className="min-w-0 flex-1 space-y-1">
                 <span className="block text-xs font-medium">
+                  {/* Neither option is ranked over the other. The line that
+                      used to name this one "the better-supported option" was
+                      about the old Drive engine's token expiring, and there is
+                      no token any more — so what is left is the one real
+                      difference, which each description states from its own
+                      side rather than as a verdict. */}
                   {t(
-                    "Nextcloud — the better-supported option",
-                    "Nextcloud — the better-supported option",
+                    "Nextcloud — reached directly over WebDAV",
+                    "Nextcloud — reached directly over WebDAV",
                   )}
                 </span>
                 <span className="block text-xs break-words text-muted-foreground">
                   {t(
-                    "A URL, a username and an app password, which is precisely how Nextcloud expects a third-party client to sign in. Nothing expires behind your back.",
-                    "A URL, a username and an app password, which is precisely how Nextcloud expects a third-party client to sign in. Nothing expires behind your back.",
+                    "A URL, a username and an app password, which is precisely how Nextcloud expects a third-party client to sign in. This app talks to the server directly, so nothing else has to be running on this device.",
+                    "A URL, a username and an app password, which is precisely how Nextcloud expects a third-party client to sign in. This app talks to the server directly, so nothing else has to be running on this device.",
                   )}
                 </span>
               </span>
@@ -1286,21 +1539,30 @@ export function SyncSettings({
                 type="radio"
                 name="sync-provider"
                 className="checkbox-themed mt-1 shrink-0"
-                value="google-drive"
-                checked={provider === "google-drive"}
-                onChange={() => setProvider("google-drive")}
+                value="folder"
+                checked={provider === "folder"}
+                onChange={() => setProvider("folder")}
               />
               <span className="min-w-0 flex-1 space-y-1">
                 <span className="block text-xs font-medium">
+                  {/* Deliberately vague about the carrier. A sync client is
+                      only one of the three cases the description lists, and
+                      naming it in the label presupposed a client that a
+                      network mount and a USB stick do not have — the same
+                      shape of defect as asserting a WebDAV property of both
+                      engines. */}
+                  {/* Em dash, matching the Nextcloud label above: the two are
+                      answers to one question and have to scan as a pair, and
+                      every locale will mirror whatever shape it is handed. */}
                   {t(
-                    "Google Drive — no sign-in button",
-                    "Google Drive — no sign-in button",
+                    "A folder this machine can see — carried by something you already have",
+                    "A folder this machine can see — carried by something you already have",
                   )}
                 </span>
                 <span className="block text-xs break-words text-muted-foreground">
                   {t(
-                    "There is no Sign in with Google here, and that is deliberate: a desktop app cannot keep an OAuth client secret, and this app's source is public, so shipping one and calling it secret would be theatre. You paste an access token you obtained yourself, and because it is an access token it will expire and have to be pasted again.",
-                    "There is no Sign in with Google here, and that is deliberate: a desktop app cannot keep an OAuth client secret, and this app's source is public, so shipping one and calling it secret would be theatre. You paste an access token you obtained yourself, and because it is an access token it will expire and have to be pasted again.",
+                    "Google Drive for desktop, Dropbox, OneDrive, iCloud Drive, Syncthing — or a network mount, or a USB stick. This app writes two files into the folder you choose and something you already trust carries them, so there is no credential here to expire. Whatever carries the folder does have to be working at the time: a sync client running, a share mounted, a disk plugged in.",
+                    "Google Drive for desktop, Dropbox, OneDrive, iCloud Drive, Syncthing — or a network mount, or a USB stick. This app writes two files into the folder you choose and something you already trust carries them, so there is no credential here to expire. Whatever carries the folder does have to be working at the time: a sync client running, a share mounted, a disk plugged in.",
                   )}
                 </span>
               </span>
@@ -1361,28 +1623,143 @@ export function SyncSettings({
             </>
           ) : null}
 
+          {provider === "folder" ? (
+            <>
+              <SettingRow
+                label={t("Folder", "Folder")}
+                description={t(
+                  "Chosen through the system's own folder picker, which is what proved it existed at the moment you chose it. It is not a secret and it is shown back in full, because the whole question this provider asks you to answer is whether the sealed copy is going where you think it is.",
+                  "Chosen through the system's own folder picker, which is what proved it existed at the moment you chose it. It is not a secret and it is shown back in full, because the whole question this provider asks you to answer is whether the sealed copy is going where you think it is.",
+                )}
+                className="items-start"
+              >
+                <div
+                  className="flex min-w-0 flex-col items-start gap-1.5"
+                  data-testid="sync-folder-field"
+                >
+                  {/* Wrapped text rather than a box: the whole path has to be
+                      readable, and an input of any width truncates the end of
+                      a long one — which is precisely the half that says which
+                      folder this is. It is also not typable, because a path
+                      typed by hand is the one setting here that fails
+                      silently: a typo names a folder that does not exist,
+                      which this feature reports as `unreachable` and the user
+                      reads as "my drive is offline". */}
+                  <span
+                    className={
+                      current.folderPath === null
+                        ? "max-w-xs text-xs text-muted-foreground"
+                        : "max-w-xs font-mono text-xs break-all"
+                    }
+                    data-testid="sync-folder-path"
+                  >
+                    {current.folderPath ??
+                      t("No folder chosen yet", "No folder chosen yet")}
+                  </span>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="text-xs"
+                    disabled={busy}
+                    data-testid="sync-pick-folder"
+                    onClick={() => void chooseFolder()}
+                  >
+                    {t("Choose folder…", "Choose folder…")}
+                  </Button>
+                </div>
+              </SettingRow>
+              <div className="space-y-2 py-3 text-xs text-muted-foreground">
+                {/* Neither sentence may name an internal. The user never sees
+                    the word `unreachable` — that is a `SyncFailureCode` — and
+                    a push that succeeded says "Uploaded as generation N", so
+                    "would report success" describes a screen that does not
+                    exist. The three-step consequence is what earns this
+                    paragraph its length and is kept whole. */}
+                <p data-testid="sync-folder-absent-note">
+                  {t(
+                    "A folder that is not there is reported as one that could not be reached, and is never created. A missing folder almost always means an unmounted share or an unplugged disk, and creating it would put the sealed copy on the local disk, underneath where the share should have been: the push would report a new generation, your sync client would never see the bytes, and the mount coming back would hide them again.",
+                    "A folder that is not there is reported as one that could not be reached, and is never created. A missing folder almost always means an unmounted share or an unplugged disk, and creating it would put the sealed copy on the local disk, underneath where the share should have been: the push would report a new generation, your sync client would never see the bytes, and the mount coming back would hide them again.",
+                  )}
+                </p>
+                {/* The two real names, spelled out. They are the one thing on
+                    this screen a user has to recognise in a file listing, and
+                    naming them is also what gives the conflict-copy example
+                    an antecedent — "beside these files" pointed at names that
+                    appeared nowhere. They are `SYNC_BLOB_NAME` and
+                    `SYNC_MANIFEST_NAME`; renaming either means editing this
+                    sentence, which is the cost of keeping a filename
+                    unlocalised and literal rather than interpolated. */}
+                <p data-testid="sync-folder-conflict-copy-note">
+                  {t(
+                    "This app writes better-cloudflare-vault.enc and better-cloudflare-vault.json, plus a timestamped copy of each beside them when you settle a conflict, and a short-lived file while it saves, and it reads those two exact names and no others. A sync client may leave a conflict copy of its own there too, named something like better-cloudflare-vault (1).enc; it is left alone for you to look at rather than adopted — which also means this app cannot tell you one is there.",
+                    "This app writes better-cloudflare-vault.enc and better-cloudflare-vault.json, plus a timestamped copy of each beside them when you settle a conflict, and a short-lived file while it saves, and it reads those two exact names and no others. A sync client may leave a conflict copy of its own there too, named something like better-cloudflare-vault (1).enc; it is left alone for you to look at rather than adopted — which also means this app cannot tell you one is there.",
+                  )}
+                </p>
+              </div>
+            </>
+          ) : null}
+
+          {/* Both engines write both files, so this is deliberately outside
+              the per-provider branches. It began inside the folder one, which
+              inverted it: `src/lib/sync/types.ts` justifies the coarse device
+              label with "this sits unencrypted in someone else's storage" —
+              the Nextcloud case precisely — and `webdav.rs` writes the same
+              `SYNC_MANIFEST_NAME` to the server, so the only disclosure that
+              the manifest is cleartext was shown exclusively to the users
+              whose copy never leaves their own disk. Found by the ja-JP
+              translator, who also noticed the sentence named `deviceLabel`
+              and silently omitted the `deviceId` sitting beside it — which
+              the call-site comment I wrote for this very string already
+              listed, so the reasoning had both and the sentence shipped with
+              one. The id is on screen elsewhere anyway ("{{label}} · {{id}}"),
+              so omitting it protected nothing.
+
+              A privacy disclosure rather than a detail, and its own string
+              rather than a clause on the conflict-copy note, which is already
+              the longest in the feature and the worst for bidi. */}
           {provider !== null ? (
+            <p
+              className="py-3 text-xs text-muted-foreground"
+              data-testid="sync-manifest-privacy-note"
+            >
+              {t(
+                "Of the two files, better-cloudflare-vault.json is a small unencrypted manifest — a generation number, a checksum, a size, when it was written, and a stable id and a coarse name for the device that wrote it, so that two machines can tell which copy is newer and whose it is. Your keys are only ever in better-cloudflare-vault.enc.",
+                "Of the two files, better-cloudflare-vault.json is a small unencrypted manifest — a generation number, a checksum, a size, when it was written, and a stable id and a coarse name for the device that wrote it, so that two machines can tell which copy is newer and whose it is. Your keys are only ever in better-cloudflare-vault.enc.",
+              )}
+            </p>
+          ) : null}
+
+          {provider === null ? (
+            <p className="py-3 text-xs text-muted-foreground">
+              {/* "set it up" left "it" pointing at the provider, so it read
+                  as "choose a provider to set the provider up". What this
+                  block stands in for is the per-provider settings below it,
+                  so that is what the sentence promises. */}
+              {t(
+                "Choose a provider to see what it needs.",
+                "Choose a provider to see what it needs.",
+              )}
+            </p>
+          ) : providerNeedsCredential(provider) ? (
             <SecretField
               id={fieldId("credential")}
               testId="sync-credential-field"
-              label={
-                provider === "nextcloud"
-                  ? t("App password", "App password")
-                  : t("Access token", "Access token")
-              }
-              description={
-                provider === "nextcloud"
-                  ? t(
-                      "Kept in the operating system's keyring, never in this app's settings file, and never read back out to this screen.",
-                      "Kept in the operating system's keyring, never in this app's settings file, and never read back out to this screen.",
-                    )
-                  : t(
-                      "Kept in the operating system's keyring and never read back out to this screen. Drive writes into its own app-data folder, so there is no URL to give.",
-                      "Kept in the operating system's keyring and never read back out to this screen. Drive writes into its own app-data folder, so there is no URL to give.",
-                    )
-              }
+              label={t("App password", "App password")}
+              description={t(
+                "Kept in the operating system's keyring, never in this app's settings file, and never read back out to this screen.",
+                "Kept in the operating system's keyring, never in this app's settings file, and never read back out to this screen.",
+              )}
               present={settings.credentialPresent}
-              presentText={t("Stored on this device", "Stored on this device")}
+              // Named rather than a bare participle. `presentText` is a prop
+              // precisely so it may name its own field, and "Stored on this
+              // device" made every gendered locale agree with a noun the
+              // string never mentions — correct today only because there is
+              // exactly one credential-bearing provider.
+              presentText={t(
+                "A credential is stored on this device",
+                "A credential is stored on this device",
+              )}
               absentText={t(
                 "Nothing is stored for this provider yet.",
                 "Nothing is stored for this provider yet.",
@@ -1392,26 +1769,78 @@ export function SyncSettings({
               disabled={busy}
             />
           ) : (
-            <p className="py-3 text-xs text-muted-foreground">
+            // Not a credential field standing empty. `credentialPresent` is
+            // `false` for a folder and always will be, so rendering the field
+            // would put "Nothing is stored for this provider yet" on screen as
+            // if something were missing, and ask for a secret the backend has
+            // no slot to keep and would never read.
+            <p
+              className="py-3 text-xs text-muted-foreground"
+              data-testid="sync-credential-not-needed"
+            >
               {t(
-                "Choose a provider to set a credential for it.",
-                "Choose a provider to set a credential for it.",
+                "A folder has nothing to authenticate with, so there is no credential to store: access is decided by the folder's own permissions. The passphrase under Encryption still applies — it seals what is written, not the connection.",
+                "A folder has nothing to authenticate with, so there is no credential to store: access is decided by the folder's own permissions. The passphrase under Encryption still applies — it seals what is written, not the connection.",
               )}
             </p>
           )}
 
+          {current.enabled && missingField !== null ? (
+            <p
+              className="pb-3 text-xs text-amber-600 dark:text-amber-400"
+              role="status"
+              data-testid="sync-provider-incomplete"
+            >
+              {/* "as not configured" is gone from all three: `not-configured`
+                  is a `SyncFailureCode` and naming it here leaks an internal
+                  the user never sees. The passphrase sibling below words the
+                  same refusal without it, and all four now match. */}
+              {missingField === "folderPath"
+                ? t(
+                    "Sync is switched on and no folder has been chosen, so every push, pull and conflict resolution will be refused until one is.",
+                    "Sync is switched on and no folder has been chosen, so every push, pull and conflict resolution will be refused until one is.",
+                  )
+                : missingField === "webdavUrl"
+                  ? t(
+                      "Sync is switched on and no WebDAV URL is set, so every push, pull and conflict resolution will be refused until one is.",
+                      "Sync is switched on and no WebDAV URL is set, so every push, pull and conflict resolution will be refused until one is.",
+                    )
+                  : t(
+                      "Sync is switched on and no WebDAV username is set, so every push, pull and conflict resolution will be refused until one is.",
+                      "Sync is switched on and no WebDAV username is set, so every push, pull and conflict resolution will be refused until one is.",
+                    )}
+            </p>
+          ) : null}
+
           <SettingRow
-            label={t("Test connection", "Test connection")}
+            // "Test connection" outlived the thing it named: a local folder
+            // has no connection to test, which is why the description below
+            // was reworded and this label should have moved with it. "Access"
+            // is what both probes are actually about — one reads, one writes,
+            // and both answer "can this device get at the provider".
+            label={t("Test access", "Test access")}
             description={
               dirty
                 ? t(
                     "This tests the settings already stored, not the unsaved changes above. Save first to test what you have just typed.",
                     "This tests the settings already stored, not the unsaved changes above. Save first to test what you have just typed.",
                   )
-                : t(
-                    "Reaches the provider and reports whether the stored credential works. Nothing is uploaded.",
-                    "Reaches the provider and reports whether the stored credential works. Nothing is uploaded.",
-                  )
+                : // What each probe does, because the two differ in kind and a
+                  // sentence covering both gets one of them backwards. The
+                  // folder's probe writes — a zero-byte staging file it then
+                  // removes — which in a folder a sync client is watching is
+                  // an event that client may well propagate, so "nothing is
+                  // uploaded" would be untrue there. Nextcloud's reads, and
+                  // so cannot speak for write access at all.
+                  settings.provider === "folder"
+                  ? t(
+                      "Checks that the folder is there and that this app can write into it, by creating an empty file and removing it again. None of your keys leave this device — though a sync client watching the folder may see that file appear and disappear.",
+                      "Checks that the folder is there and that this app can write into it, by creating an empty file and removing it again. None of your keys leave this device — though a sync client watching the folder may see that file appear and disappear.",
+                    )
+                  : t(
+                      "Asks Nextcloud about the collection and nothing else, which is enough to show that the server answers and the app password works. It does not check that this app may write there. Nothing is uploaded.",
+                      "Asks Nextcloud about the collection and nothing else, which is enough to show that the server answers and the app password works. It does not check that this app may write there. Nothing is uploaded.",
+                    )
             }
           >
             <Button
@@ -1425,7 +1854,7 @@ export function SyncSettings({
                 void runAction(sync.testConnection, setTestOutcome)
               }
             >
-              {t("Test connection", "Test connection")}
+              {t("Test access", "Test access")}
             </Button>
           </SettingRow>
           {/* A connection test has no business returning `conflict` — it
@@ -1438,6 +1867,10 @@ export function SyncSettings({
               <OutcomeReport
                 outcome={testOutcome}
                 thisDeviceId={status.deviceId}
+                // `settings.provider`, not `provider`: the test ran against
+                // what is stored, which is what the description above says and
+                // what the backend actually did. The draft can have moved on.
+                provider={settings.provider}
                 verb="reached"
                 testId="sync-test-outcome"
               />
@@ -1479,7 +1912,10 @@ export function SyncSettings({
               "Kept in the keyring beside the keys themselves, so an automatic push does not have to stop and ask for it.",
             )}
             present={settings.passphrasePresent}
-            presentText={t("Set on this device", "Set on this device")}
+            presentText={t(
+              "A passphrase is set on this device",
+              "A passphrase is set on this device",
+            )}
             absentText={t(
               "No sync passphrase is set, so there is nothing to seal the bundle with.",
               "No sync passphrase is set, so there is nothing to seal the bundle with.",
@@ -1506,9 +1942,14 @@ export function SyncSettings({
               className="pb-3 text-xs text-amber-600 dark:text-amber-400"
               data-testid="sync-passphrase-missing"
             >
+              {/* "a push" understated it. `sync_passphrase` is awaited by
+                  `push`, `pull`, `preview` and `resolve` in
+                  `commands/sync.rs`, so a pull is refused without one too —
+                  and a user reading this while trying to *restore* is in
+                  exactly the case the old wording left out. */}
               {t(
-                "Sync is switched on and no passphrase is set, so a push will be refused until one is.",
-                "Sync is switched on and no passphrase is set, so a push will be refused until one is.",
+                "Sync is switched on and no passphrase is set, so every push, pull and conflict resolution will be refused until one is.",
+                "Sync is switched on and no passphrase is set, so every push, pull and conflict resolution will be refused until one is.",
               )}
             </p>
           ) : null}
@@ -1799,6 +2240,7 @@ export function SyncSettings({
               <OutcomeReport
                 outcome={transfer.outcome}
                 thisDeviceId={status.deviceId}
+                provider={settings.provider}
                 verb={transfer.verb}
                 testId="sync-transfer-outcome"
               />
@@ -1829,6 +2271,7 @@ export function SyncSettings({
             open={pullOpen}
             onOpenChange={setPullOpen}
             thisDeviceId={status.deviceId}
+            provider={settings.provider}
             previewPull={previewPull ?? sync.previewPull}
             onPull={sync.pull}
             onPreviewConflict={(outcome) => {

@@ -96,6 +96,7 @@ export function syncDraftFromSettings(settings: SyncSettings): SyncDraft {
     provider: settings.provider,
     webdavUrl: settings.webdavUrl,
     webdavUsername: settings.webdavUsername,
+    folderPath: settings.folderPath,
     autoPushMinutes: settings.autoPushMinutes,
   };
 }
@@ -106,8 +107,46 @@ export function syncDraftsEqual(a: SyncDraft, b: SyncDraft): boolean {
     a.provider === b.provider &&
     a.webdavUrl === b.webdavUrl &&
     a.webdavUsername === b.webdavUsername &&
+    a.folderPath === b.folderPath &&
     a.autoPushMinutes === b.autoPushMinutes
   );
+}
+
+/**
+ * The field the chosen provider still needs, or `null` when it has them all.
+ *
+ * A mirror of `bc_sync::build_engine`, which refuses with `not-configured`
+ * when the field its provider needs is missing or blank — so this says the
+ * same thing one step earlier, on the screen that could fix it, rather than
+ * leaving the user to discover it as a failed push.
+ *
+ * It is deliberately *not* a Save guard. The backend stores a half-finished
+ * provider happily (`SyncSettings::normalize` only tidies the text), so
+ * refusing the write here would invent a rule the backend does not have and
+ * strand someone who wants to choose Nextcloud now and find their app
+ * password later. What the screen owes them is the warning, not the lock.
+ *
+ * A folder path reaches this list and a credential does not, and the split is
+ * where each one lives: the path is in `Preferences`, which this function is
+ * handed, while a credential is in the keyring, which it never sees. So a
+ * missing app password stays `credentialPresent`'s business.
+ */
+export type SyncMissingField = "webdavUrl" | "webdavUsername" | "folderPath";
+
+export function syncProviderIncomplete(
+  draft: SyncDraft,
+): SyncMissingField | null {
+  const blank = (value: string | null) => value === null || value.trim() === "";
+  switch (draft.provider) {
+    case null:
+      return null;
+    case "nextcloud":
+      if (blank(draft.webdavUrl)) return "webdavUrl";
+      if (blank(draft.webdavUsername)) return "webdavUsername";
+      return null;
+    case "folder":
+      return blank(draft.folderPath) ? "folderPath" : null;
+  }
 }
 
 /**

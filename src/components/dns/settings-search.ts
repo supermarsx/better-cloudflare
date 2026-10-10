@@ -1001,9 +1001,16 @@ const ANCHORLESS_ENTRIES: readonly SettingsSearchEntry[] = [
   //
   // The keywords carry more weight here than elsewhere, because almost nobody
   // looking for this feature knows it is called "sync". They search for the
-  // provider they have ("nextcloud", "google drive"), for what they want to
-  // happen ("backup", "restore", "another computer"), or for the thing they
-  // have lost ("passphrase").
+  // provider they have ("nextcloud", "dropbox"), for what they want to happen
+  // ("backup", "restore", "another computer"), or for the thing they have lost
+  // ("passphrase").
+  //
+  // The second provider is a local folder, so the cloud clients that carry one
+  // are listed by name: someone who syncs through Dropbox has no reason to
+  // guess that "folder" is what this app calls their arrangement. "google
+  // drive" stays for exactly that reason and not as a leftover — Drive for
+  // desktop is one of the clients a folder is carried by — while "access
+  // token" goes, because the engine that needed one is gone.
   {
     id: "sync-provider",
     subtab: "sync",
@@ -1013,12 +1020,21 @@ const ANCHORLESS_ENTRIES: readonly SettingsSearchEntry[] = [
       "cloud",
       "nextcloud",
       "webdav",
+      "folder",
       "google drive",
+      "dropbox",
+      "onedrive",
+      "icloud",
+      "syncthing",
+      "network drive",
+      "usb",
       "app password",
-      "access token",
       "credential",
       "url",
       "username",
+      // The control is now "Test access"; "test connection" stays because it
+      // is what someone who used the earlier build will type.
+      "test access",
       "test connection",
       "backup",
       "another computer",

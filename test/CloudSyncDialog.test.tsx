@@ -73,6 +73,7 @@ function restoringStatus(): SyncStatus {
       provider: "nextcloud",
       webdavUrl: "https://cloud.example.test/remote.php/dav/files/alice/bc",
       webdavUsername: "alice",
+      folderPath: null,
       credentialPresent: true,
       passphrasePresent: true,
       autoPushMinutes: null,

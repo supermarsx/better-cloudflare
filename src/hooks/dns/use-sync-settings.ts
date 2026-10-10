@@ -77,6 +77,19 @@ export interface UseSyncSettingsResult {
   configure: (input: SyncSettingsInput) => Promise<void>;
   /** Reach the endpoint and report whether the stored credential works. */
   testConnection: () => Promise<SyncOutcome>;
+  /**
+   * Open the native folder picker and answer with the chosen absolute path,
+   * or `null` if the user cancelled.
+   *
+   * Not routed through `runAction`, and not reported as an error either. It
+   * stores nothing, so there is no status to re-read, and it answers with a
+   * path rather than a {@link SyncOutcome} — while a rejection here is a
+   * broken host rather than a failed save, so it is rethrown for the caller
+   * to put beside the control the user pressed instead of being written into
+   * `saveState`, where it would read as "could not save" over a draft that
+   * was never sent.
+   */
+  pickFolder: () => Promise<string | null>;
   push: () => Promise<SyncOutcome>;
   /**
    * Open the remote envelope and report what a pull would install. Writes
@@ -235,6 +248,23 @@ export function useSyncSettings(): UseSyncSettingsResult {
     () => runAction(SYNC_COMMANDS.test, NO_ARGS),
     [runAction],
   );
+  /**
+   * The folder picker. A cancellation is `null` and is not a failure: the
+   * user opened a dialog and closed it, which is not something to report and
+   * must not be mistaken for "they chose nothing", because the path they
+   * already had is still the path they want.
+   */
+  const pickFolder = useCallback(async () => {
+    try {
+      return await syncInvoke<typeof SYNC_COMMANDS.pickFolder, string | null>(
+        SYNC_COMMANDS.pickFolder,
+        NO_ARGS,
+      );
+    } catch (pickError) {
+      reportSyncFailure(pickError);
+      throw pickError;
+    }
+  }, []);
   const push = useCallback(
     () => runAction(SYNC_COMMANDS.push, NO_ARGS),
     [runAction],
@@ -284,6 +314,7 @@ export function useSyncSettings(): UseSyncSettingsResult {
     reload,
     configure,
     testConnection,
+    pickFolder,
     push,
     previewPull,
     pull,

@@ -26,6 +26,7 @@ import {
   syncDraftsEqual,
   syncOutcomeManifest,
   syncPanelDirty,
+  syncProviderIncomplete,
   syncSecretClears,
   syncSecretInput,
   syncSecretReplaces,
@@ -61,6 +62,7 @@ function settings(overrides: Partial<SyncSettings> = {}): SyncSettings {
     provider: "nextcloud",
     webdavUrl: "https://cloud.example.test/remote.php/dav/files/alice/bc",
     webdavUsername: "alice",
+    folderPath: null,
     credentialPresent: true,
     passphrasePresent: true,
     autoPushMinutes: null,
@@ -134,9 +136,10 @@ test("clear and replace are reported as what they do", () => {
 test("the payload carries the draft's own fields unchanged", () => {
   const draft: SyncDraft = {
     enabled: false,
-    provider: "google-drive",
+    provider: "folder",
     webdavUrl: null,
     webdavUsername: null,
+    folderPath: "C:/Users/alice/Drive/better-cloudflare",
     autoPushMinutes: 45,
   };
   const input: SyncSettingsInput = syncSettingsInput(
@@ -202,15 +205,17 @@ test("a draft follows every field the contract gives the renderer", () => {
   // and never sends, which nothing else here would notice.
   const stored = settings({
     enabled: false,
-    provider: "google-drive",
+    provider: "folder",
     webdavUrl: null,
     webdavUsername: null,
+    folderPath: "C:/Users/alice/Drive/better-cloudflare",
     autoPushMinutes: 60,
   });
   const draft = syncDraftFromSettings(stored);
   assert.deepEqual(Object.keys(draft).sort(), [
     "autoPushMinutes",
     "enabled",
+    "folderPath",
     "provider",
     "webdavUrl",
     "webdavUsername",
@@ -220,6 +225,66 @@ test("a draft follows every field the contract gives the renderer", () => {
     syncDraftsEqual(draft, { ...draft, autoPushMinutes: 61 }),
     false,
   );
+  // The folder path is the newest field and the one a comparison written
+  // against the old shape would miss, which would make choosing a different
+  // folder a change Save never offered to store.
+  assert.equal(
+    syncDraftsEqual(draft, { ...draft, folderPath: "C:/elsewhere" }),
+    false,
+  );
+});
+
+test("an incomplete provider is named by the field its engine would miss", () => {
+  // A mirror of `bc_sync::build_engine`, which answers `not-configured` when
+  // the field its provider needs is missing or blank. The screen says the same
+  // thing one step earlier, so the warning has to agree with that function
+  // field for field — including the order, because Nextcloud needs both and
+  // naming the second while the first is also empty would send someone to fix
+  // the wrong box.
+  const complete = syncDraftFromSettings(settings());
+  assert.equal(syncProviderIncomplete(complete), null);
+  assert.equal(
+    syncProviderIncomplete({ ...complete, webdavUrl: null }),
+    "webdavUrl",
+  );
+  assert.equal(
+    syncProviderIncomplete({ ...complete, webdavUsername: "   " }),
+    "webdavUsername",
+    "whitespace is not a username: `build_engine` trims before it decides",
+  );
+  assert.equal(
+    syncProviderIncomplete({
+      ...complete,
+      webdavUrl: null,
+      webdavUsername: null,
+    }),
+    "webdavUrl",
+    "the first missing field is the one to name",
+  );
+
+  // A folder needs its path and nothing else — in particular not a credential,
+  // which it has no slot for, and not the WebDAV fields, which it ignores.
+  const folder = syncDraftFromSettings(
+    settings({
+      provider: "folder",
+      webdavUrl: null,
+      webdavUsername: null,
+      folderPath: "C:/Users/alice/Drive/better-cloudflare",
+    }),
+  );
+  assert.equal(syncProviderIncomplete(folder), null);
+  assert.equal(
+    syncProviderIncomplete({ ...folder, folderPath: null }),
+    "folderPath",
+  );
+  assert.equal(
+    syncProviderIncomplete({ ...folder, folderPath: "  " }),
+    "folderPath",
+  );
+
+  // No provider is not an incomplete provider. There is nothing to warn about
+  // yet, and the panel already says "choose a provider" in that state.
+  assert.equal(syncProviderIncomplete({ ...complete, provider: null }), null);
 });
 
 test("a cadence adjustment is reported only when the backend moved it", () => {

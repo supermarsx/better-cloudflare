@@ -1,4 +1,4 @@
-//! Cloud sync for the API key vault, and the six commands the screen drives.
+//! Cloud sync for the API key vault, and the eight commands the screen drives.
 //!
 //! The renderer's half of this is `src/lib/sync/types.ts`, and **that file is
 //! the contract**: every shape returned here is one of its types, spelled the
@@ -33,6 +33,36 @@
 //! and the two `*Present` booleans the screen reads are computed from the
 //! keyring on every [`get_sync_status`] call rather than stored, so they
 //! cannot end up saying "connected" about a credential that is gone.
+//!
+//! # One provider authenticates and one does not
+//!
+//! `SyncProvider::credential_slot` is an `Option`, and that `None` is load
+//! bearing all the way through this module. Nextcloud signs in with a URL, a
+//! username and an app password, which is exactly how Nextcloud expects a
+//! third-party client to connect. A folder does not sign in at all — its
+//! access check is the directory's own permissions — so there is no credential
+//! to store, to read or to clear, and nothing here invents a slot name to put
+//! one in.
+//!
+//! The consequence worth stating is that `credential_present` is **false** for
+//! a folder, permanently, and that is the honest answer rather than a gap:
+//! nothing is stored because nothing is wanted. The screen must not read it as
+//! "not set up yet", which is why the contract exports `providerNeedsCredential`
+//! beside it — see `src/lib/sync/types.ts`. Reporting `true` to make the screen
+//! look right would make the flag mean "configured" for one provider and
+//! "a secret is in the keyring" for the other, and then neither.
+//!
+//! The *passphrase* is unaffected by any of this. It seals the payload rather
+//! than the connection, so it is shared across providers and
+//! `passphrase_present` means the same thing for both: a folder sync still
+//! needs one, and someone who switches provider must still be able to open the
+//! blob they pushed from the other.
+//!
+//! The folder's own setting, `folder_path`, is not a credential and does not go
+//! near the keyring. It is an ordinary non-secret preference beside
+//! `webdav_url`, and it is shown back to the user on purpose — a sync target
+//! they cannot read back is one they cannot verify. It arrives through
+//! [`pick_sync_folder`], which only answers "which folder" and stores nothing.
 //!
 //! # What the KDF parameters in the manifest are for
 //!
@@ -82,6 +112,7 @@
 //! nobody could ever open. A failed archive refuses the whole resolution,
 //! because "I picked wrong" must not be the end of someone's keys.
 
+use std::path::Path;
 use std::sync::OnceLock;
 
 use chrono::{DateTime, Utc};
@@ -265,8 +296,13 @@ pub struct SyncSettingsInput {
     pub provider: Option<bc_sync::SyncProvider>,
     pub webdav_url: Option<String>,
     pub webdav_username: Option<String>,
+    /// The folder to sync through. Not a credential, not secret, and not
+    /// stored by [`pick_sync_folder`] — it arrives here like any other field.
+    pub folder_path: Option<String>,
     pub auto_push_minutes: Option<u32>,
-    /// The app password or Drive token. Never read back out to the renderer.
+    /// The Nextcloud app password. Never read back out to the renderer, and
+    /// ignored for a provider that authenticates with nothing — see
+    /// [`configure_with`].
     pub credential: Option<String>,
     /// The sync passphrase. Never read back out to the renderer.
     pub passphrase: Option<String>,
@@ -286,6 +322,7 @@ impl SyncSettingsInput {
             provider: self.provider,
             webdav_url: self.webdav_url.clone(),
             webdav_username: self.webdav_username.clone(),
+            folder_path: self.folder_path.clone(),
             auto_push_minutes: self.auto_push_minutes,
             last_synced_at: stored.last_synced_at.clone(),
         }
@@ -643,20 +680,31 @@ async fn secret(
     }
 }
 
-/// The credential for the configured provider.
+/// The credential for the configured provider, or nothing where there is none.
 ///
 /// Per provider, not one shared slot: switching provider must not hand a
-/// Nextcloud app password to Google, and switching back must find the old
-/// credential still there. See `SyncProvider::credential_slot`.
+/// Nextcloud app password to something else, and switching back must find the
+/// old credential still there. See `SyncProvider::credential_slot`.
+///
+/// A provider with no slot yields an empty string rather than
+/// `not-configured`, and the distinction is the whole point of the `Option`:
+/// `build_engine` ignores the credential for a folder, so demanding one would
+/// refuse every push to a folder for a secret nothing would ever read. What is
+/// *not* done here is substituting a placeholder for a missing Nextcloud
+/// password — that stays a refusal, because a Nextcloud that cannot
+/// authenticate is a sync that cannot happen.
 async fn credential(
     storage: &Storage,
     settings: &SyncSettings,
 ) -> Result<Zeroizing<String>, Failure> {
-    let slot = settings
+    match settings
         .provider
         .ok_or(SyncError::NotConfigured)?
-        .credential_slot();
-    secret(storage, slot, SyncError::NotConfigured).await
+        .credential_slot()
+    {
+        Some(slot) => secret(storage, slot, SyncError::NotConfigured).await,
+        None => Ok(Zeroizing::new(String::new())),
+    }
 }
 
 async fn sync_passphrase(storage: &Storage) -> Result<Zeroizing<String>, Failure> {
@@ -865,11 +913,19 @@ async fn status(config: &AppConfigStore, storage: &Storage) -> Result<SyncStatus
 }
 
 async fn status_of(storage: &Storage, state: &Persisted) -> SyncStatus {
-    let credential_present = match state.settings.provider {
-        Some(provider) => present(storage, provider.credential_slot()).await,
-        // With no provider chosen there is no credential in question. A slot
-        // left over from a provider the user has switched away from is not a
-        // credential this configuration has.
+    // `None` covers two different situations that have the same answer. With
+    // no provider chosen there is no credential in question — a slot left over
+    // from a provider the user has switched away from is not a credential this
+    // configuration has. With a folder there is no credential at all, and
+    // `false` is the honest reading of "nothing is stored" rather than a gap to
+    // paper over: the screen tells the two apart through
+    // `providerNeedsCredential`, not through this flag. See the module header.
+    let credential_present = match state
+        .settings
+        .provider
+        .and_then(|provider| provider.credential_slot())
+    {
+        Some(slot) => present(storage, slot).await,
         None => false,
     };
     SyncStatus {
@@ -913,11 +969,20 @@ async fn configure_with(
     let state = persisted(config, storage).await?;
     let settings = input.to_settings(&state.settings);
 
-    // Refused before anything is written, rather than written nowhere: a
-    // credential with no provider has no slot to go in, and reporting success
-    // would leave the screen claiming to hold something it dropped.
+    // Where a credential goes, and whether one arriving is a problem.
+    //
+    // Three cases, and the two `None`s are deliberately not treated alike. A
+    // credential with **no provider at all** is refused before anything is
+    // written: the user is mid-configuration, there is no slot to put it in,
+    // and reporting success would leave the screen claiming to hold something
+    // this dropped. A credential for a provider that **authenticates with
+    // nothing** is ignored instead, because the save itself is perfectly
+    // valid — the renderer keeps one credential field for the provider that
+    // has one, and a stale value in it must not refuse a legitimate switch to
+    // a folder. Nothing is written to a slot nothing reads, which is what
+    // makes ignoring it safe rather than lossy.
     let credential_slot = match settings.provider {
-        Some(provider) => Some(provider.credential_slot()),
+        Some(provider) => provider.credential_slot(),
         None => {
             if input
                 .credential
@@ -978,6 +1043,58 @@ async fn probe(config: &AppConfigStore, storage: &Storage) -> Result<SyncProbeOu
     // tell the screen whether there is anything to pull.
     Ok(SyncProbeOutcome::Ok {
         manifest: engine.fetch_manifest().await.ok().flatten(),
+    })
+}
+
+// ── pick_sync_folder ────────────────────────────────────────────────────────
+
+/// Ask the user which folder to sync through, and answer only that.
+///
+/// A picker rather than a text box, because an absolute path typed by hand is
+/// the one setting here that fails silently: a typo names a folder that does
+/// not exist, which this feature reports as `unreachable` and the user reads as
+/// "my drive is offline" rather than "I mistyped it". Picking it proves it
+/// existed at the moment it was chosen.
+///
+/// **This stores nothing.** The path goes back to the renderer and returns
+/// through [`configure_sync`] like any other field, so a folder is persisted in
+/// one place and validated in one place. A picker that saved the setting itself
+/// would commit a provider change the user had not pressed Save on, and would
+/// do it from a command the screen calls while the user is still deciding.
+///
+/// `None` is a cancelled dialog, which is not a failure and must not read as
+/// one: the screen leaves the field as it was.
+#[tauri::command]
+pub async fn pick_sync_folder() -> Result<Option<String>, String> {
+    // A modal dialog sits there for as long as the user browses, so it goes on
+    // a blocking thread rather than on the runtime serving the rest of the UI —
+    // the same reason and the same mechanism as [`seal_off_task`].
+    // `commands::audit` calls the synchronous `rfd` dialogs straight from its
+    // own commands, which holds a runtime worker for the life of the dialog;
+    // that is worth not spreading further.
+    let picked = tauri::async_runtime::spawn_blocking(|| rfd::FileDialog::new().pick_folder())
+        .await
+        .map_err(|error| format!("the folder picker failed: {error}"))?;
+    match picked {
+        Some(path) => picked_path(&path).map(Some),
+        None => Ok(None),
+    }
+}
+
+/// The chosen path, as a settings object can carry it.
+///
+/// A path that is not valid UTF-8 is an error rather than a cancellation.
+/// `Preferences` is JSON and `build_engine` takes a `&str`, so there is no
+/// honest way to persist one — and answering `None` would tell the renderer the
+/// user pressed Cancel when they did not. A lossy conversion would be worse
+/// again: it would store a path that names nothing, and every operation
+/// afterwards would report `unreachable` for a folder sitting right there.
+fn picked_path(path: &Path) -> Result<String, String> {
+    path.to_str().map(str::to_string).ok_or_else(|| {
+        format!(
+            "{} cannot be stored as a sync folder: the path is not valid UTF-8",
+            path.display()
+        )
     })
 }
 
@@ -1386,12 +1503,13 @@ async fn resolve_with(
 /// reaches it, which has happened in this repository before.
 ///
 /// `cfg(test)` like the other modules' lists: it exists to be asserted on, and
-/// a production build that carried it would carry seven unread strings.
+/// a production build that carried it would carry eight unread strings.
 #[cfg(test)]
-pub const COMMAND_NAMES: [&str; 7] = [
+pub const COMMAND_NAMES: [&str; 8] = [
     "get_sync_status",
     "configure_sync",
     "test_sync_connection",
+    "pick_sync_folder",
     "push_sync",
     "preview_sync_pull",
     "pull_sync",
@@ -1591,6 +1709,27 @@ mod tests {
             self
         }
 
+        /// The same install configured for a folder: a real directory, a
+        /// passphrase, and deliberately nothing in any credential slot. The
+        /// path is passed through `configure_sync` rather than written to
+        /// preferences directly, because that is the only route a real folder
+        /// ever arrives by — [`pick_sync_folder`] stores nothing itself.
+        async fn using_folder(self, path: &Path, passphrase: &str) -> Self {
+            configure_with(
+                &self.config,
+                &self.storage,
+                input(json!({
+                    "enabled": true,
+                    "provider": "folder",
+                    "folderPath": path.to_str().expect("a utf-8 test path"),
+                    "passphrase": passphrase,
+                })),
+            )
+            .await
+            .expect("configure a folder device");
+            self
+        }
+
         /// Seal keys at `iterations` rather than at this build's default, so
         /// that a manifest's recorded parameters are provably the ones used.
         async fn sealing_at(self, iterations: u32) -> Self {
@@ -1777,6 +1916,14 @@ mod tests {
             .expect("SYNC_COMMANDS is a const object");
         let mut found = 0;
         for line in block.lines() {
+            // Each entry is `name: "the_command",`, and the doc comment above
+            // one may quote anything — the folder picker's explains that a
+            // mistyped path reads to the user as "my drive is offline" — so
+            // comment lines are skipped rather than read for a command name.
+            let trimmed = line.trim_start();
+            if trimmed.starts_with('*') || trimmed.starts_with("/*") || trimmed.starts_with("//") {
+                continue;
+            }
             let Some(name) = line.split('"').nth(1) else {
                 continue;
             };
@@ -1909,6 +2056,10 @@ mod tests {
         for name in [
             "get_sync_status",
             "test_sync_connection",
+            // The picker included: it answers "which folder" and the answer
+            // comes back through `configure_sync`, so it takes nothing and
+            // stores nothing.
+            "pick_sync_folder",
             "push_sync",
             "preview_sync_pull",
             "pull_sync",
@@ -2805,8 +2956,276 @@ mod tests {
     }
 
     #[test]
-    fn each_provider_keeps_its_own_credential_slot() {
-        assert_eq!(SyncProvider::Nextcloud.credential_slot(), "nextcloud");
-        assert_eq!(SyncProvider::GoogleDrive.credential_slot(), "google-drive");
+    fn only_the_provider_that_authenticates_has_a_slot_to_store_one_in() {
+        assert_eq!(SyncProvider::Nextcloud.credential_slot(), Some("nextcloud"));
+        assert!(SyncProvider::Nextcloud.needs_credential());
+        // The `None` every call site in this module branches on. A slot name
+        // for a folder would be a slot nothing ever reads, and
+        // `credential_present` would become a question with no meaning.
+        assert_eq!(SyncProvider::Folder.credential_slot(), None);
+        assert!(!SyncProvider::Folder.needs_credential());
+    }
+
+    // ── A folder authenticates with nothing ─────────────────────────────
+
+    #[tokio::test]
+    async fn configuring_a_folder_stores_its_path_and_no_credential() {
+        let folder = TestDir::new();
+        let device = Device::new().using_folder(&folder.0, "correct-horse").await;
+
+        let status = status(&device.config, &device.storage)
+            .await
+            .expect("read the status");
+        assert_eq!(
+            status.settings.settings.folder_path.as_deref(),
+            folder.0.to_str(),
+            "a sync target the user cannot read back is one they cannot verify"
+        );
+        assert_eq!(
+            device.stored_settings().await.folder_path.as_deref(),
+            folder.0.to_str(),
+            "and it is a plain preference, so it survives a re-read"
+        );
+        assert!(
+            !status.settings.credential_present,
+            "nothing is stored, because nothing is wanted: the screen tells \
+             that apart from 'not set up' through providerNeedsCredential"
+        );
+        assert!(
+            status.settings.passphrase_present,
+            "the passphrase seals the payload rather than the connection, so a \
+             folder needs one exactly as much as Nextcloud does"
+        );
+        assert_eq!(
+            device
+                .storage
+                .get_sync_secret(PASSPHRASE_SLOT)
+                .await
+                .expect("read it back"),
+            "correct-horse"
+        );
+    }
+
+    /// A credential arriving for a folder is dropped, not filed somewhere.
+    ///
+    /// The renderer keeps one credential field, for the provider that has one,
+    /// and a stale value in it must not refuse a legitimate save. What must not
+    /// happen is the value landing in *some* slot: a secret written where
+    /// nothing reads it is a secret in the keyring that the screen cannot show,
+    /// cannot clear and will not use.
+    #[tokio::test]
+    async fn a_credential_sent_for_a_folder_is_ignored_rather_than_stored() {
+        let folder = TestDir::new();
+        let device = Device::new();
+        let status = configure_with(
+            &device.config,
+            &device.storage,
+            input(json!({
+                "enabled": true,
+                "provider": "folder",
+                "folderPath": folder.0.to_str().expect("a utf-8 test path"),
+                "credential": "an app password the folder has no use for",
+                "passphrase": "correct-horse",
+            })),
+        )
+        .await
+        .expect("a folder save is valid even with a credential in the input");
+
+        assert!(!status.settings.credential_present);
+        // There is only one credential slot in existence, and the two names a
+        // `None` slot could plausibly have been spelled as.
+        for slot in ["nextcloud", "folder", "local-folder"] {
+            assert!(
+                matches!(
+                    device.storage.get_sync_secret(slot).await,
+                    Err(StorageError::NotFound)
+                ),
+                "a credential reached the {slot:?} slot, which nothing reads"
+            );
+        }
+        assert!(
+            status.settings.passphrase_present,
+            "and the shared secret is"
+        );
+    }
+
+    #[tokio::test]
+    async fn switching_to_a_folder_leaves_the_nextcloud_credential_where_it_was() {
+        let folder = TestDir::new();
+        let device = Device::new().configured("correct-horse").await;
+        let status = configure_with(
+            &device.config,
+            &device.storage,
+            input(json!({
+                "enabled": true,
+                "provider": "folder",
+                "folderPath": folder.0.to_str().expect("a utf-8 test path"),
+            })),
+        )
+        .await
+        .expect("switch provider");
+
+        assert!(!status.settings.credential_present, "for this provider");
+        assert_eq!(
+            device
+                .storage
+                .get_sync_secret("nextcloud")
+                .await
+                .expect("the Nextcloud credential is untouched"),
+            "app-password",
+            "switching back must find it there rather than ask for it again"
+        );
+    }
+
+    /// The test that proves the `Option` reaches the operations.
+    ///
+    /// This drives the real [`build_engine`] and the real `FolderEngine`
+    /// through one directory, with **nothing in any credential slot**. A
+    /// `credential` that still demanded one would refuse both halves with
+    /// `not-configured`, which is precisely the defect that cannot be seen from
+    /// a `credential_slot()` unit test.
+    #[tokio::test]
+    async fn a_folder_pushes_and_pulls_with_no_credential_in_the_keyring() {
+        let shared = TestDir::new();
+        let writer = Device::new()
+            .using_folder(&shared.0, "correct-horse")
+            .await
+            .with_key("Production", "bc1:cHJvZHVjdGlvbg==")
+            .await;
+        assert!(
+            matches!(
+                writer.storage.get_sync_secret("nextcloud").await,
+                Err(StorageError::NotFound)
+            ),
+            "the premise: this device has no credential anywhere"
+        );
+
+        let pushed = manifest_of(
+            &settle(push(&writer.config, &writer.storage, at(0)).await).expect("outcome"),
+        );
+        assert_eq!(pushed.generation, 1);
+        assert!(
+            shared.0.join(bc_sync::SYNC_BLOB_NAME).exists()
+                && shared.0.join(bc_sync::SYNC_MANIFEST_NAME).exists(),
+            "both objects land in the folder the user chose"
+        );
+
+        let reader = Device::new().using_folder(&shared.0, "correct-horse").await;
+        let installed = manifest_of(
+            &settle(pull(&reader.config, &reader.storage, None, at(1)).await).expect("outcome"),
+        );
+        assert_eq!(installed.generation, 1);
+        let keys = reader.keys().await;
+        assert_eq!(keys.len(), 1);
+        assert_eq!(keys[0].label, "Production");
+        assert_eq!(keys[0].encrypted_key, "bc1:cHJvZHVjdGlvbg==");
+    }
+
+    /// The engine's rule, asserted from the layer that must not soften it.
+    ///
+    /// A missing folder is almost always an unmounted share or an unplugged
+    /// disk. Creating it would write the vault into a directory shadowing the
+    /// mount point: the push would report success, the user's sync client would
+    /// never see the bytes, and the mount returning would hide them again. So
+    /// the answer is `unreachable`, and nothing in this layer calls
+    /// `create_dir_all` to be helpful.
+    #[tokio::test]
+    async fn a_folder_that_has_vanished_is_unreachable_and_is_not_created() {
+        let parent = TestDir::new();
+        let unmounted = parent.0.join("unmounted-share");
+        let device = Device::new()
+            .using_folder(&unmounted, "correct-horse")
+            .await
+            .with_key("Production", "bc1:cHJvZHVjdGlvbg==")
+            .await;
+
+        let outcome = settle(push(&device.config, &device.storage, at(0)).await).expect("outcome");
+        assert_eq!(code_of(&outcome), "unreachable");
+        assert!(
+            !unmounted.exists(),
+            "recreating a vanished mount writes the vault where the sync \
+             client will never look"
+        );
+        assert_eq!(
+            device.stored_settings().await.last_synced_at,
+            None,
+            "and nothing claims a sync that did not happen"
+        );
+    }
+
+    /// A folder provider with nothing usable to point at is `not-configured`,
+    /// not `unreachable`: there is no target to have been unreachable. The
+    /// relative path is the engine's own refusal, surfacing unsoftened — it
+    /// would otherwise resolve against whatever directory the launcher started
+    /// the app in.
+    #[tokio::test]
+    async fn a_folder_with_no_usable_path_is_not_configured() {
+        let device = Device::new();
+        configure_with(
+            &device.config,
+            &device.storage,
+            input(json!({
+                "enabled": true,
+                "provider": "folder",
+                "passphrase": "correct-horse",
+            })),
+        )
+        .await
+        .expect("save a half-configured folder");
+        assert_eq!(
+            code_of(&settle(push(&device.config, &device.storage, at(0)).await).expect("outcome")),
+            "not-configured"
+        );
+
+        configure_with(
+            &device.config,
+            &device.storage,
+            input(json!({
+                "enabled": true,
+                "provider": "folder",
+                "folderPath": "vault",
+                "passphrase": "correct-horse",
+            })),
+        )
+        .await
+        .expect("save a relative path");
+        assert_eq!(
+            code_of(&settle(push(&device.config, &device.storage, at(0)).await).expect("outcome")),
+            "not-configured"
+        );
+    }
+
+    // ── pick_sync_folder ────────────────────────────────────────────────
+
+    #[test]
+    fn a_picked_path_travels_as_text_and_one_that_cannot_is_an_error() {
+        #[cfg(windows)]
+        let chosen = Path::new(r"C:\Users\alice\Nextcloud\better-cloudflare");
+        #[cfg(not(windows))]
+        let chosen = Path::new("/home/alice/Nextcloud/better-cloudflare");
+        assert_eq!(
+            picked_path(chosen).expect("a path the settings object can carry"),
+            chosen.to_str().expect("utf-8"),
+            "verbatim: the user reads this back to check where their vault goes"
+        );
+
+        // A path `Preferences` could not carry. An error rather than `None`,
+        // which would tell the renderer the user pressed Cancel, and rather
+        // than a lossy conversion, which would store a path naming nothing and
+        // report `unreachable` for a folder sitting right there.
+        #[cfg(windows)]
+        let unstorable = {
+            use std::os::windows::ffi::OsStringExt;
+            // An unpaired surrogate: a legal Windows filename, not UTF-8.
+            std::path::PathBuf::from(std::ffi::OsString::from_wide(&[
+                0x0043, 0x003A, 0x005C, 0xD800,
+            ]))
+        };
+        #[cfg(not(windows))]
+        let unstorable = {
+            use std::os::unix::ffi::OsStringExt;
+            std::path::PathBuf::from(std::ffi::OsString::from_vec(vec![b'/', 0xFF]))
+        };
+        assert!(picked_path(&unstorable).is_err());
     }
 }

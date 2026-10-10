@@ -89,15 +89,38 @@
  * two must not become confusable: an exported settings file dropped on this
  * importer has to be refused as the wrong kind, not merged.
  *
- * # Why there is no "Sign in with Google" button
+ * # The second target is a folder, not a cloud API
  *
- * A desktop OAuth client cannot keep a client secret — it ships inside a
- * binary anyone can unzip, and this repo is public. Shipping one and calling
- * it a secret would be theatre. So the Drive engine takes a credential the
- * user obtains themselves, exactly as `bc-registrar/src/google.rs` already
- * does: it is handed an access token and `bearer_auth`s it, with no flow.
- * Nextcloud has no such problem — URL, username and app password is precisely
- * how Nextcloud expects a third-party client to authenticate.
+ * This started as a Google Drive engine and is better without it. A desktop
+ * OAuth client cannot keep a client secret — it ships inside a binary anyone
+ * can unzip, and this repo is public — so that engine took an access token the
+ * user obtained and pasted themselves, which then expired, and re-pasting it
+ * was the price of the feature working.
+ *
+ * A folder has no credential to expire and covers far more ground: it works
+ * with whatever sync client the user already runs — Google Drive for desktop,
+ * Dropbox, OneDrive, iCloud, Syncthing — and equally with a network mount or a
+ * USB stick. This app writes two files; something the user already trusts
+ * carries them. That is less for this app to be responsible for and more
+ * providers supported than an API client would ever reach.
+ *
+ * It is also the strongest write guard of the two, because a rename within one
+ * filesystem is atomic. Nextcloud comes second on that count — a staged `PUT`
+ * plus a server-side `If-Match` — and is still the better choice when the
+ * machines have no shared folder between them.
+ *
+ * **A folder that has vanished is never recreated**, which is the opposite of
+ * the WebDAV rule and deliberate: a missing local folder usually means an
+ * unmounted share or an unplugged disk, and creating it would write the vault
+ * into a directory shadowing the mount point. The push would report success,
+ * the sync client would never see the bytes, and the mount returning would
+ * hide them again. So it reports `unreachable`. See `bc-sync/src/folder.rs`.
+ *
+ * Nextcloud still authenticates: URL, username and app password is precisely
+ * how Nextcloud expects a third-party client to sign in. A folder does not —
+ * its access check is the directory's own permissions — which is why
+ * {@link SyncSettings.credentialPresent} is meaningful for one provider and
+ * not the other.
  *
  * # Conflicts are refused, not merged
  *
@@ -110,8 +133,21 @@
  * deleted, because "I picked wrong" must not be the end of someone's keys.
  */
 
-/** Which backend a configured sync talks to. */
-export type SyncProvider = "nextcloud" | "google-drive";
+/** Which backend a configured sync writes to. */
+export type SyncProvider = "nextcloud" | "folder";
+
+/**
+ * Whether a provider authenticates, and therefore whether the screen should
+ * ask for a credential at all.
+ *
+ * Derived here rather than inferred from `credentialPresent === false`,
+ * because "nothing is stored" and "nothing is wanted" are different states
+ * and showing the same empty field for both asks the user for a secret that
+ * would never be read. Mirrors `SyncProvider::needs_credential` in Rust.
+ */
+export function providerNeedsCredential(provider: SyncProvider): boolean {
+  return provider === "nextcloud";
+}
 
 /**
  * App-wide sync settings, stored in `Preferences` and therefore **not** secret.
@@ -128,12 +164,27 @@ export type SyncSettings = {
   /**
    * The WebDAV collection URL, e.g.
    * `https://cloud.example.test/remote.php/dav/files/alice/better-cloudflare`.
-   * Unused by Drive, which addresses its own `appDataFolder`.
+   * Unused by the folder provider.
    */
   readonly webdavUrl: string | null;
   /** The Nextcloud account the app password belongs to. Not the password. */
   readonly webdavUsername: string | null;
-  /** True when the keyring holds a provider credential. Never the value. */
+  /**
+   * The absolute path of the configured folder. Unused by Nextcloud.
+   *
+   * Not a credential and not hidden: it is picked through a native dialog and
+   * shown back, because a sync target the user cannot read back is one they
+   * cannot verify — and "is my vault going where I think it is" is the whole
+   * question this provider asks them to answer.
+   */
+  readonly folderPath: string | null;
+  /**
+   * True when the keyring holds a provider credential. Never the value.
+   *
+   * Only meaningful when {@link providerNeedsCredential} is true. A folder
+   * authenticates with nothing, so this stays `false` for it and the screen
+   * must not read that as "not set up yet".
+   */
   readonly credentialPresent: boolean;
   /** True when the keyring holds a sync passphrase. Never the value. */
   readonly passphrasePresent: boolean;
@@ -418,6 +469,18 @@ export const SYNC_COMMANDS = {
   configure: "configure_sync",
   /** Reach the endpoint and report whether the credential works. */
   test: "test_sync_connection",
+  /**
+   * Open a native folder picker and return the chosen absolute path, or
+   * `null` if the user cancelled. Stores nothing — the path reaches
+   * {@link SYNC_COMMANDS.configure} like any other typed field.
+   *
+   * A picker rather than a text box because an absolute path typed by hand is
+   * the one setting here that fails silently: a typo names a folder that does
+   * not exist, which this feature reports as `unreachable` and the user reads
+   * as "my drive is offline". Picking it proves it exists at the moment it is
+   * chosen.
+   */
+  pickFolder: "pick_sync_folder",
   /** Seal and upload, refusing if the remote generation moved. */
   push: "push_sync",
   /** Open the envelope and report what a pull would do. Writes nothing. */
@@ -442,6 +505,7 @@ export const SYNC_COMMANDS = {
 export type SyncCommandArgs = {
   readonly get_sync_status: Record<string, never>;
   readonly test_sync_connection: Record<string, never>;
+  readonly pick_sync_folder: Record<string, never>;
   readonly push_sync: Record<string, never>;
   readonly preview_sync_pull: Record<string, never>;
   readonly pull_sync: Record<string, never>;

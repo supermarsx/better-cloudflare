@@ -28,8 +28,8 @@ pub const MAX_AUTO_PUSH_MINUTES: u32 = 7 * 24 * 60;
 /// The keyring slot the sync passphrase is stored under.
 ///
 /// Shared across providers, unlike a credential: the passphrase seals the
-/// payload, not the connection, so a user who switches from Nextcloud to
-/// Drive must still be able to open the blob they pushed from the other one.
+/// payload, not the connection, so a user who switches from Nextcloud to a
+/// local folder must still be able to open the blob they pushed from the other.
 pub const PASSPHRASE_SLOT: &str = "passphrase";
 
 /// Which backend a configured sync talks to.
@@ -37,24 +37,48 @@ pub const PASSPHRASE_SLOT: &str = "passphrase";
 #[serde(rename_all = "kebab-case")]
 pub enum SyncProvider {
     Nextcloud,
-    GoogleDrive,
+    /// A folder on this machine, which is usually a folder some other sync
+    /// client is already carrying — Google Drive for desktop, Dropbox,
+    /// OneDrive, iCloud, Syncthing — or a network mount or a USB stick.
+    ///
+    /// This replaced a Google Drive API engine. See `folder.rs` for why the
+    /// swap is an improvement rather than a retreat: no token to expire, every
+    /// provider at once, and an atomic rename for a write guard.
+    Folder,
 }
 
 impl SyncProvider {
-    /// The keyring slot this provider's credential is stored under.
+    /// The keyring slot this provider's credential is stored under, or `None`
+    /// for a provider that has no credential.
+    ///
+    /// `Folder` has none, and the `Option` is how that fact reaches every
+    /// caller rather than being re-derived. A folder is reached through the
+    /// filesystem, so there is nothing to authenticate with: the access check
+    /// is the directory's own permissions. Returning an unused slot name
+    /// instead would make `credential_present` a question with no meaning, and
+    /// the screen would ask for a secret that is never read.
     ///
     /// Per-provider rather than one shared slot, so that switching provider
-    /// does not silently hand a Nextcloud app password to Google — and so
-    /// that switching back finds the old credential still there instead of
+    /// does not silently hand a Nextcloud app password to something else — and
+    /// so that switching back finds the old credential still there instead of
     /// asking for it again.
     ///
     /// This is the slot, not the full key: `bc_storage` prefixes it, the same
     /// way `store_vault_secret` prefixes `vault:`.
-    pub fn credential_slot(self) -> &'static str {
+    pub fn credential_slot(self) -> Option<&'static str> {
         match self {
-            Self::Nextcloud => "nextcloud",
-            Self::GoogleDrive => "google-drive",
+            Self::Nextcloud => Some("nextcloud"),
+            Self::Folder => None,
         }
+    }
+
+    /// Whether this provider needs a credential at all.
+    ///
+    /// The screen reads this rather than inferring it from the absence of a
+    /// slot, so "no credential is stored" and "no credential is wanted" are
+    /// different states on screen instead of one ambiguous one.
+    pub fn needs_credential(self) -> bool {
+        self.credential_slot().is_some()
     }
 }
 
@@ -67,6 +91,11 @@ pub struct SyncSettings {
     pub provider: Option<SyncProvider>,
     pub webdav_url: Option<String>,
     pub webdav_username: Option<String>,
+    /// The absolute path of the configured folder. Not secret, and not a
+    /// credential — it is chosen through a native picker and shown back to the
+    /// user, because a sync target they cannot read back is one they cannot
+    /// verify.
+    pub folder_path: Option<String>,
     /// `None` for manual only, which is the default. An automatic upload of a
     /// credential store should be something the user switched on, not
     /// something they find out about.
@@ -82,6 +111,7 @@ impl Default for SyncSettings {
             provider: None,
             webdav_url: None,
             webdav_username: None,
+            folder_path: None,
             auto_push_minutes: None,
             last_synced_at: None,
         }
@@ -94,6 +124,7 @@ impl SyncSettings {
         self.version = SETTINGS_VERSION;
         self.webdav_url = normalize_text(self.webdav_url);
         self.webdav_username = normalize_text(self.webdav_username);
+        self.folder_path = normalize_text(self.folder_path);
         self.auto_push_minutes = self
             .auto_push_minutes
             .map(|minutes| minutes.clamp(MIN_AUTO_PUSH_MINUTES, MAX_AUTO_PUSH_MINUTES));
@@ -179,8 +210,8 @@ mod tests {
     #[test]
     fn provider_names_are_kebab_case_on_the_wire() {
         assert_eq!(
-            serde_json::to_value(SyncProvider::GoogleDrive).unwrap(),
-            serde_json::json!("google-drive")
+            serde_json::to_value(SyncProvider::Folder).unwrap(),
+            serde_json::json!("folder")
         );
         assert_eq!(
             serde_json::to_value(SyncProvider::Nextcloud).unwrap(),
@@ -189,12 +220,27 @@ mod tests {
     }
 
     #[test]
-    fn each_provider_has_its_own_credential_slot() {
-        assert_ne!(
-            SyncProvider::Nextcloud.credential_slot(),
-            SyncProvider::GoogleDrive.credential_slot(),
-            "one shared slot would hand a Nextcloud app password to Google"
-        );
+    fn only_the_provider_that_authenticates_has_a_credential_slot() {
+        // A folder is reached through the filesystem, so there is nothing to
+        // authenticate with and the access check is the directory's own
+        // permissions. Handing it an unused slot name would make
+        // `credential_present` a question with no meaning, and the screen
+        // would ask for a secret nothing ever reads.
+        assert_eq!(SyncProvider::Nextcloud.credential_slot(), Some("nextcloud"));
+        assert_eq!(SyncProvider::Folder.credential_slot(), None);
+
+        assert!(SyncProvider::Nextcloud.needs_credential());
+        assert!(!SyncProvider::Folder.needs_credential());
+    }
+
+    #[test]
+    fn a_folder_path_is_tidied_like_the_other_text_fields() {
+        let settings = SyncSettings {
+            folder_path: Some("   ".into()),
+            ..SyncSettings::default()
+        }
+        .normalize();
+        assert_eq!(settings.folder_path, None, "whitespace is not a path");
     }
 
     #[test]

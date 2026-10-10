@@ -27,6 +27,11 @@ thiserror = "2"
 url = "2"
 
 [dev-dependencies]
+# The folder engine's tests need a real directory: its whole subject is what
+# the filesystem does — an atomic rename, a vanished mount, a staged file that
+# must not survive a refusal — and none of that can be faked behind a trait.
+# Already in the tree via `bc-notify`.
+tempfile = "3"
 # `net` and `io-util` serve the one-shot HTTP stubs the engine tests run
 # against: a generation guard and a redirect bound can only be pinned against
 # a real socket, and a test server is cheaper than a second HTTP dependency.

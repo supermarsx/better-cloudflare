@@ -315,15 +315,19 @@ fn main() {
             // retention. See `commands::history::COMMAND_NAMES`.
             commands::history::list_zone_history,
             commands::history::preview_undo_operation,
-            // Cloud sync for the API key vault. Seven commands, every one of
+            // Cloud sync for the API key vault. Eight commands, every one of
             // them desktop-only by construction: they read the OS keyring and
-            // talk to a provider the web build cannot reach. A pull takes two
-            // of them — it replaces the whole key list, so the step that shows
-            // what it would replace cannot be the step that does it. See
-            // `commands::sync::COMMAND_NAMES`.
+            // reach a provider the web build cannot — a Nextcloud it has no
+            // CORS headers for, or a folder a browser cannot see. A pull takes
+            // two of them — it replaces the whole key list, so the step that
+            // shows what it would replace cannot be the step that does it —
+            // and the folder picker is a third that writes nothing: it answers
+            // "which folder" and the answer returns through `configure_sync`.
+            // See `commands::sync::COMMAND_NAMES`.
             commands::sync::get_sync_status,
             commands::sync::configure_sync,
             commands::sync::test_sync_connection,
+            commands::sync::pick_sync_folder,
             commands::sync::push_sync,
             commands::sync::preview_sync_pull,
             commands::sync::pull_sync,
