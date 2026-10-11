@@ -255,7 +255,7 @@ export function NumberField({
             <label className="flex items-center gap-1.5 text-xs">
               <input
                 type="checkbox"
-                className="h-3.5 w-3.5 accent-primary"
+                className="checkbox-themed"
                 checked={isNever}
                 disabled={disabled}
                 onChange={(event) => {

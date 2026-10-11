@@ -72,6 +72,14 @@ import { useI18n } from "@/hooks/use-i18n";
 import { usePrefersReducedMotion } from "@/hooks/use-prefers-reduced-motion";
 import type { AiLinkNavigation } from "@/lib/ai/links";
 import type { AiAssistantPresentation } from "@/lib/ai/presentation";
+import {
+  AI_SIDEBAR_WIDTH_COARSE_STEP,
+  AI_SIDEBAR_WIDTH_STEP,
+  DEFAULT_AI_SIDEBAR_WIDTH,
+  MAX_AI_SIDEBAR_WIDTH,
+  MIN_AI_SIDEBAR_WIDTH,
+  clampAiSidebarWidth,
+} from "@/lib/ai/sidebar-width";
 import { cn } from "@/lib/utils";
 
 import { AiAssistantPanel, type AiSettingsSection } from "./AiAssistantPanel";
@@ -113,6 +121,21 @@ export interface AiAssistantSurfaceProps {
    * can reach it again.
    */
   onBubblePositionChange?: (position: AiAssistantBubblePosition) => void;
+  /**
+   * The stored dock width in pixels, or `null`/absent for the default.
+   *
+   * Restored rather than controlled, for the reason `bubblePosition` gives: a
+   * drag must not round-trip through the host and into user settings on every
+   * pointer move. A value arriving after mount is adopted, because preference
+   * hydration lands a tick or two after the first render.
+   */
+  sidebarWidth?: number | null;
+  /**
+   * Store a dock width. Called once per gesture — on pointer release, or on the
+   * keypress itself for the arrow keys, since a keypress *is* a finished
+   * gesture — with the already-clamped value.
+   */
+  onSidebarWidthChange?: (width: number) => void;
   /**
    * Forwarded to the panel: the app's MCP tool permissions, which a blocked
    * plan step refused by `mcpGrants` has to point at and which nothing under
@@ -493,6 +516,8 @@ export function AiAssistantSurface({
   onOpenChange,
   bubblePosition,
   onBubblePositionChange,
+  sidebarWidth,
+  onSidebarWidthChange,
   onOpenMcpPermissions,
   onOpenAssistantSettings,
   linkNavigation,
@@ -511,6 +536,138 @@ export function AiAssistantSurface({
   useEffect(() => {
     if (open) setEverOpened(true);
   }, [open]);
+
+  /**
+   * The dock's width while the user is dragging it.
+   *
+   * Local, for the reason the bubble's position is local: a pointer move must
+   * not round-trip through the host and into `localStorage` sixty times a
+   * second. The host hears once per gesture.
+   */
+  const [dockWidth, setDockWidth] = useState(
+    () => clampAiSidebarWidth(sidebarWidth) ?? DEFAULT_AI_SIDEBAR_WIDTH,
+  );
+  /**
+   * The same number, readable from an event handler without going through a
+   * render. `onPointerUp` fires in the same tick as the last `onPointerMove`
+   * when a drag ends on a fast flick, and the state it would read there is the
+   * previous render's.
+   */
+  const dockWidthRef = useRef(dockWidth);
+  const resizingRef = useRef(false);
+
+  // Preference hydration lands a tick or two after mount, so a stored width
+  // arrives as a prop change rather than as the initial value.
+  useEffect(() => {
+    const stored = clampAiSidebarWidth(sidebarWidth);
+    if (stored === null) return;
+    dockWidthRef.current = stored;
+    setDockWidth(stored);
+  }, [sidebarWidth]);
+
+  const applyWidth = useCallback((next: number) => {
+    const clamped = clampAiSidebarWidth(next) ?? DEFAULT_AI_SIDEBAR_WIDTH;
+    dockWidthRef.current = clamped;
+    setDockWidth(clamped);
+    return clamped;
+  }, []);
+
+  /**
+   * Which way is wider.
+   *
+   * Read from the rendered element rather than from `document.dir`, because the
+   * dock can sit inside a subtree with its own `dir` — Radix's
+   * `DirectionProvider` sets a React context, and a consumer may set the
+   * attribute locally. The computed style is the only thing that knows what
+   * actually got painted.
+   */
+  const isRtl = useCallback(() => {
+    const node = containerRef.current;
+    if (node === null) return false;
+    return getComputedStyle(node).direction === "rtl";
+  }, []);
+
+  const handleResizePointerDown = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>) => {
+      // A right- or middle-click is not a drag, matching the bubble's handle.
+      if (event.pointerType === "mouse" && event.button !== 0) return;
+      // Stops the gesture selecting the transcript behind the handle.
+      event.preventDefault();
+      // Capture keeps the moves coming when the pointer outruns the 6px
+      // handle, which it does on any quick drag. Guarded because it is not
+      // universal — jsdom has no pointer capture at all — and a resize that
+      // only works while the pointer stays inside the handle is still better
+      // than a handler that throws on `pointerdown`.
+      if (typeof event.currentTarget.setPointerCapture === "function") {
+        event.currentTarget.setPointerCapture(event.pointerId);
+      }
+      resizingRef.current = true;
+    },
+    [],
+  );
+
+  const handleResizePointerMove = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>) => {
+      if (!resizingRef.current) return;
+      const node = containerRef.current;
+      if (node === null) return;
+      const rect = node.getBoundingClientRect();
+      // The handle is on the dock's inline-start edge, so the far edge is the
+      // fixed one and the width is the distance from the pointer to it.
+      applyWidth(
+        isRtl() ? event.clientX - rect.left : rect.right - event.clientX,
+      );
+    },
+    [applyWidth, isRtl],
+  );
+
+  const handleResizePointerUp = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>) => {
+      if (!resizingRef.current) return;
+      resizingRef.current = false;
+      if (
+        typeof event.currentTarget.hasPointerCapture === "function" &&
+        event.currentTarget.hasPointerCapture(event.pointerId)
+      ) {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      }
+      onSidebarWidthChange?.(dockWidthRef.current);
+    },
+    [onSidebarWidthChange],
+  );
+
+  const handleResizeKeyDown = useCallback(
+    (event: ReactKeyboardEvent<HTMLDivElement>) => {
+      const step = event.shiftKey
+        ? AI_SIDEBAR_WIDTH_COARSE_STEP
+        : AI_SIDEBAR_WIDTH_STEP;
+      // In LTR the dock is on the right, so dragging its start edge leftwards
+      // widens it; in RTL the dock is on the left and the mirror holds.
+      const widen = isRtl() ? "ArrowRight" : "ArrowLeft";
+      const narrow = isRtl() ? "ArrowLeft" : "ArrowRight";
+      let next: number | null = null;
+      if (event.key === widen) next = dockWidthRef.current + step;
+      else if (event.key === narrow) next = dockWidthRef.current - step;
+      else if (event.key === "Home") next = MIN_AI_SIDEBAR_WIDTH;
+      else if (event.key === "End") next = MAX_AI_SIDEBAR_WIDTH;
+      else if (event.key === "Enter" || event.key === " ") {
+        next = DEFAULT_AI_SIDEBAR_WIDTH;
+      }
+      if (next === null) return;
+      event.preventDefault();
+      // The dock's own handler closes the assistant on Escape and traps focus.
+      // Without this, a resize keypress also reaches it.
+      event.stopPropagation();
+      // Applied first, then reported. `onSidebarWidthChange?.(applyWidth(next))`
+      // reads correctly and is wrong: optional *call* short-circuits the entire
+      // call expression, arguments included, so with no host callback the
+      // resize silently did nothing at all. Caught by the two tests here that
+      // deliberately pass no callback.
+      const applied = applyWidth(next);
+      onSidebarWidthChange?.(applied);
+    },
+    [applyWidth, isRtl, onSidebarWidthChange],
+  );
 
   /**
    * On screen *and* mounted.
@@ -570,15 +727,26 @@ export function AiAssistantSurface({
         aria-label={label}
         data-testid="ai-assistant-sidebar"
         data-open={open}
+        data-width={dockWidth}
         hidden={!visible}
         onKeyDown={handleKeyDown}
+        // The dragged width reaches CSS as a variable rather than as an inline
+        // `width`, because it must apply *only* to the wide dock. An inline
+        // width cannot be media-queried, so it would also stretch the narrow
+        // overlay — which is not a dock and whose width is not what the user
+        // was dragging.
+        style={{ "--ai-dock-width": `${dockWidth}px` } as CSSProperties}
         className={cn(
           "min-h-0 flex-col border-l border-border/60 bg-background/95 backdrop-blur-xl",
           // Narrow windows: leave the flow rather than squeeze the workspace
           // into a column too narrow to read a DNS record in.
           "fixed right-0 bottom-0 top-[var(--app-top-inset)] z-40 w-[min(24rem,100vw)] shadow-2xl",
           // Wide windows: a real dock, sized in the row next to the workspace.
-          "lg:static lg:inset-auto lg:z-auto lg:w-[22rem] lg:shrink-0 lg:shadow-none",
+          // `relative` rather than `static`: with `inset-auto` the two lay out
+          // identically, but only a positioned element is a containing block
+          // for the resize handle below. Under `static` the handle would anchor
+          // to whatever ancestor happened to be positioned.
+          "lg:relative lg:inset-auto lg:z-auto lg:w-[var(--ai-dock-width)] lg:shrink-0 lg:shadow-none",
           // `display` is applied only while visible: a Tailwind `flex` utility
           // outranks the user-agent `[hidden] { display: none }` rule, so a
           // permanent one would keep a "hidden" dock on screen.
@@ -586,6 +754,51 @@ export function AiAssistantSurface({
           !reducedMotion && visible && "fade-in",
         )}
       >
+        {/*
+          The resize handle. Only on the wide dock: below `lg` this surface is
+          an overlay at a fixed width, so there is nothing a drag could mean.
+
+          `role="separator"` with a tabindex is the window-splitter pattern —
+          focusable, and carrying the range it moves through, so the width is
+          reachable without a pointer. The visible grip is a child rather than
+          the hit area itself: 1.5rem is a comfortable target and a 1.5rem bar
+          would be a wall down the middle of the window.
+        */}
+        <div
+          role="separator"
+          aria-orientation="vertical"
+          aria-label={t(
+            "Drag or use arrow keys to resize",
+            "Drag or use arrow keys to resize",
+          )}
+          aria-valuenow={dockWidth}
+          aria-valuemin={MIN_AI_SIDEBAR_WIDTH}
+          aria-valuemax={MAX_AI_SIDEBAR_WIDTH}
+          tabIndex={0}
+          data-testid="ai-assistant-sidebar-resize"
+          onPointerDown={handleResizePointerDown}
+          onPointerMove={handleResizePointerMove}
+          onPointerUp={handleResizePointerUp}
+          onPointerCancel={handleResizePointerUp}
+          onKeyDown={handleResizeKeyDown}
+          // A double-click on a splitter restores its default everywhere else,
+          // so it does here too. Applied before reported, for the
+          // short-circuit reason in `handleResizeKeyDown`.
+          onDoubleClick={() => {
+            const applied = applyWidth(DEFAULT_AI_SIDEBAR_WIDTH);
+            onSidebarWidthChange?.(applied);
+          }}
+          className="ui-focus group absolute inset-y-0 start-0 z-10 hidden w-1.5 -translate-x-1/2 cursor-col-resize touch-none lg:block"
+        >
+          <span
+            aria-hidden="true"
+            className={cn(
+              "pointer-events-none absolute inset-y-0 start-1/2 w-px -translate-x-1/2 bg-border/0",
+              "group-hover:bg-primary/60 group-focus-visible:bg-primary/80",
+              !reducedMotion && "transition-colors",
+            )}
+          />
+        </div>
         {panel}
       </aside>
     );

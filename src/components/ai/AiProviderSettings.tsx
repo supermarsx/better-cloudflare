@@ -32,7 +32,8 @@
  * `AiPersonaSettings` does: the list is the context the user needs in order to
  * answer, so hiding it behind an overlay makes the decision harder.
  */
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useMemo, useState } from "react";
+import { ExternalLink } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -40,12 +41,23 @@ import { Label } from "@/components/ui/label";
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
+  SelectLabel,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
 import { Tag } from "@/components/ui/tag";
 import { useI18n } from "@/hooks/use-i18n";
+import {
+  AI_PROVIDER_PRESETS,
+  findAiProviderPreset,
+  providerDraftFromPreset,
+  type AiProviderPreset,
+  type AiProviderPresetCategory,
+} from "@/lib/ai/provider-presets";
+import { openExternalUrl } from "@/lib/external-url";
+import { reportRuntimeError } from "@/lib/errors/runtime-reporting";
 import {
   AI_PROVIDER_LIMITS,
   PROVIDER_PROTOCOL_INFO,
@@ -74,6 +86,58 @@ import { AI_SELECT_CONTENT_CLASS, AI_SELECT_TRIGGER_CLASS } from "./ai-select";
 /** Which form is open, and whether it creates or updates. */
 type Editor =
   { kind: "create" } | { kind: "edit"; id: string; hasApiKey: boolean };
+
+/**
+ * The picker's "no preset" option.
+ *
+ * A non-empty sentinel because Radix treats `""` as "nothing selected" and
+ * refuses it as an item value, and because no preset id can collide with it —
+ * `AI_PROVIDER_ID_PATTERN` admits no `:`.
+ */
+const CUSTOM_PRESET_VALUE = "custom:none";
+
+/**
+ * The presets, grouped for the picker.
+ *
+ * Built once at module scope from the catalogue's own order, which is already
+ * grouped and alphabetical within each group. Derived rather than restated so
+ * adding a preset needs no change here — and a new category that nothing lists
+ * would show up as an empty group rather than as a silently dropped entry,
+ * which `test/providerPresets.test.ts` asserts cannot happen.
+ */
+const PRESET_GROUPS: readonly {
+  category: AiProviderPresetCategory;
+  presets: readonly AiProviderPreset[];
+}[] = (["vendor", "gateway", "local"] as const).map((category) => ({
+  category,
+  presets: AI_PROVIDER_PRESETS.filter((preset) => preset.category === category),
+}));
+
+/**
+ * A group's heading.
+ *
+ * A `switch` with three literal `t()` calls, rather than a `label` field on
+ * `PRESET_GROUPS` — which is how the first draft of this had it, and which
+ * would have shipped three English strings in all twelve locales under a green
+ * coverage report. `scripts/i18n-coverage.mjs` only sees a literal `t(`; a
+ * label reaching `t()` through a variable is invisible to it, in the same way
+ * the zone subtab names and the fourth theme's name were. The scanner's blind
+ * spots all hide strings in the *quiet* direction, so the fix is to not write
+ * the shape, not to extend the scanner again.
+ */
+function presetGroupLabel(
+  category: AiProviderPresetCategory,
+  t: (key: string, fallback: string) => string,
+): string {
+  switch (category) {
+    case "vendor":
+      return t("Vendors", "Vendors");
+    case "gateway":
+      return t("Gateways", "Gateways");
+    case "local":
+      return t("Run it yourself", "Run it yourself");
+  }
+}
 
 export interface AiProviderSettingsProps {
   providers: AiProviderProfile[];
@@ -119,6 +183,15 @@ export function AiProviderSettings({
   const [saved, setSaved] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
+  /**
+   * Which preset the form was filled from, or `CUSTOM_PRESET_VALUE`.
+   *
+   * Remembered rather than derived from the draft: once the user edits a field
+   * the draft no longer matches any preset, and the docs link for the provider
+   * they picked is still the one they want. It is cleared when the editor
+   * closes, not when the draft diverges.
+   */
+  const [presetId, setPresetId] = useState<string>(CUSTOM_PRESET_VALUE);
 
   // A profile the editor was open on can disappear — deleted from another
   // surface, or gone after a refresh. Keeping a form bound to it would send an
@@ -130,6 +203,56 @@ export function AiProviderSettings({
   }, [editor, providers]);
 
   const takenIds = providers.map((profile) => profile.id);
+  const activePreset = useMemo(
+    () =>
+      presetId === CUSTOM_PRESET_VALUE
+        ? undefined
+        : findAiProviderPreset(presetId),
+    [presetId],
+  );
+
+  /**
+   * Fill the form from a preset, or clear it back to a blank custom draft.
+   *
+   * The whole draft is replaced rather than merged. A half-applied preset —
+   * this vendor's URL with the previous one's model — is a profile that looks
+   * configured and cannot work, and it is the shape a merge produces.
+   */
+  const choosePreset = (value: string) => {
+    setPresetId(value);
+    if (value === CUSTOM_PRESET_VALUE) {
+      const fresh = newProviderDraft();
+      setDraft(fresh);
+      setKeyAction(
+        PROVIDER_PROTOCOL_INFO[fresh.protocol].keyExpected ? "replace" : "keep",
+      );
+      setIdTouched(false);
+      return;
+    }
+    const preset = findAiProviderPreset(value);
+    if (preset === undefined) return;
+    setDraft(
+      providerDraftFromPreset(
+        preset,
+        takenIds,
+        newProviderDraft(preset.protocol),
+      ),
+    );
+    setKeyAction(preset.keyExpected ? "replace" : "keep");
+    // The preset supplied the id, so stop deriving one from the label — a
+    // user who then edits the label must not have "openrouter" replaced.
+    setIdTouched(true);
+  };
+
+  const openPresetDocs = (url: string) => {
+    void openExternalUrl(url).catch((error: unknown) =>
+      reportRuntimeError(error, {
+        source: "runtime",
+        label: "Open provider documentation",
+      }),
+    );
+  };
+
   const protocolInfo = PROVIDER_PROTOCOL_INFO[draft.protocol];
   const creating = editor?.kind === "create";
   const storedKey = editor?.kind === "edit" && editor.hasApiKey;
@@ -141,6 +264,10 @@ export function AiProviderSettings({
     setSaved(null);
     setApiKey("");
     setIdTouched(false);
+    // Every open goes through here, so the picker never shows the provider the
+    // *previous* form was filled from. `openCreate` sets its draft before
+    // calling this, which is why the preset is reset here and the draft is not.
+    setPresetId(CUSTOM_PRESET_VALUE);
   };
 
   const openCreate = () => {
@@ -675,6 +802,101 @@ export function AiProviderSettings({
               ? t("Add a provider", "Add a provider")
               : t("Edit provider", "Edit provider")}
           </h4>
+
+          {/*
+            Presets, offered only while creating. On an edit the profile
+            already has an endpoint and a model, and a picker that silently
+            replaced them would be a trap rather than a shortcut — "Duplicate"
+            is the affordance for starting again from an existing profile.
+
+            Above Protocol on purpose: picking a preset sets the protocol, so
+            offering it after would invite the user to choose a protocol and
+            then watch it change.
+          */}
+          {creating ? (
+            <div className="space-y-1">
+              <Label htmlFor="ai-provider-preset">
+                {t(
+                  "Start from a known provider",
+                  "Start from a known provider",
+                )}
+              </Label>
+              <Select value={presetId} onValueChange={choosePreset}>
+                <SelectTrigger
+                  id="ai-provider-preset"
+                  className={cn(AI_SELECT_TRIGGER_CLASS, "h-9")}
+                >
+                  <SelectValue placeholder={t("Custom", "Custom")} />
+                </SelectTrigger>
+                <SelectContent className={AI_SELECT_CONTENT_CLASS}>
+                  {/* `data-value` mirrors `value`, as the preset items below
+                      do — the wire spelling stays visible on the DOM and the
+                      two cannot disagree. */}
+                  <SelectItem
+                    value={CUSTOM_PRESET_VALUE}
+                    data-value={CUSTOM_PRESET_VALUE}
+                  >
+                    {t("Custom", "Custom")}
+                  </SelectItem>
+                  {PRESET_GROUPS.map((group) => (
+                    <SelectGroup key={group.category}>
+                      <SelectLabel>
+                        {presetGroupLabel(group.category, t)}
+                      </SelectLabel>
+                      {group.presets.map((preset) => (
+                        <SelectItem
+                          key={preset.id}
+                          value={preset.id}
+                          data-value={preset.id}
+                        >
+                          {/* A product name, never translated. */}
+                          {preset.label}
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
+                  ))}
+                </SelectContent>
+              </Select>
+              {activePreset !== undefined ? (
+                <div className="space-y-1">
+                  <p className="text-xs text-muted-foreground">
+                    {t(
+                      "Models change over time; check the provider's documentation.",
+                      "Models change over time; check the provider's documentation.",
+                    )}
+                  </p>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-7 gap-1 text-xs"
+                    onClick={() => openPresetDocs(activePreset.docsUrl)}
+                  >
+                    <ExternalLink aria-hidden="true" className="h-3.5 w-3.5" />
+                    {t("Provider documentation", "Provider documentation")}
+                  </Button>
+                  {/*
+                    Shown while the slot is still in the field rather than on
+                    pick, so it disappears exactly when the user has dealt with
+                    it. The backend would refuse the URL anyway; saying so here
+                    saves a round trip and names the part to change.
+                  */}
+                  {activePreset.baseUrlPlaceholder !== undefined &&
+                  draft.baseUrl.includes(activePreset.baseUrlPlaceholder) ? (
+                    <p className="text-xs text-destructive">
+                      {t(
+                        "Replace {{placeholder}} in the base URL with your own value before saving.",
+                        {
+                          placeholder: activePreset.baseUrlPlaceholder,
+                          defaultValue: `Replace ${activePreset.baseUrlPlaceholder} in the base URL with your own value before saving.`,
+                        },
+                      )}
+                    </p>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
 
           <div className="space-y-1">
             <Label htmlFor="ai-provider-protocol">

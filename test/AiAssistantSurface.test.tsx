@@ -186,6 +186,10 @@ interface HarnessProps {
   bubblePosition?: AiAssistantBubblePosition | null;
   /** Observes what the host would be asked to persist, and how often. */
   onBubblePositionChange?: (position: AiAssistantBubblePosition) => void;
+  /** A restored dock width, as the host hands one over after hydration. */
+  sidebarWidth?: number | null;
+  /** Observes the width the host would be asked to persist, and how often. */
+  onSidebarWidthChange?: (width: number) => void;
 }
 
 /**
@@ -202,6 +206,8 @@ function Harness({
   onOpenMcpPermissions,
   bubblePosition,
   onBubblePositionChange,
+  sidebarWidth,
+  onSidebarWidthChange,
 }: HarnessProps) {
   const [open, setOpen] = React.useState(initiallyOpen);
   const [, setTick] = React.useState(0);
@@ -219,6 +225,8 @@ function Harness({
         onOpenChange={setOpen}
         bubblePosition={bubblePosition}
         onBubblePositionChange={onBubblePositionChange}
+        sidebarWidth={sidebarWidth}
+        onSidebarWidthChange={onSidebarWidthChange}
         onOpenMcpPermissions={onOpenMcpPermissions}
       />
     </div>
@@ -449,8 +457,19 @@ test("an open dock holds exactly one panel, wearing the dock's chrome", async ()
   // In the flow at wide widths, out of the flow when the window is narrow —
   // never squeezing the workspace into an unreadable column.
   assert.match(dock.className, /\bfixed\b/);
-  assert.match(dock.className, /\blg:static\b/);
-  assert.match(dock.className, /lg:w-\[22rem\]/);
+  // `lg:relative`, not `lg:static`. With `lg:inset-auto` the two lay out
+  // identically, and the dock needs to be a containing block so its resize
+  // handle anchors to the dock rather than to some positioned ancestor. What
+  // this assertion is really protecting is that the wide dock is *in the flow*,
+  // so either value satisfies the sentence above; `static` would silently
+  // break the handle.
+  assert.match(dock.className, /\blg:relative\b/);
+  assert.doesNotMatch(dock.className, /\blg:(?:fixed|absolute)\b/);
+  // The width is a user preference now, so the class names a variable instead
+  // of a literal `22rem`. 22rem is still what an install that has never been
+  // dragged gets — asserted on the variable's value, not on a class, by "the
+  // dock starts at its historical width" below.
+  assert.match(dock.className, /lg:w-\[var\(--ai-dock-width\)\]/);
   assert.match(dock.className, /\blg:shrink-0\b/);
 });
 
@@ -1165,4 +1184,219 @@ test("the bubble shows the same plan, and reaches the host's MCP screen", async 
   // can change the app's MCP grants, so the assistant can only point there.
   fireEvent.click(screen.getByTestId("ai-plan-step-open-mcp-permissions"));
   assert.deepEqual(opens, [1]);
+});
+
+// ── The dock's width is a user preference, dragged or typed ────────────────
+
+/**
+ * The resize handle, which only the wide dock has.
+ *
+ * Every assertion below reads the CSS variable rather than a `width` style.
+ * That is the mechanism, not an implementation detail worth hiding: the width
+ * must apply to the `lg` dock and *not* to the narrow overlay, an inline
+ * `width` cannot be media-queried, so the number reaches CSS as
+ * `--ai-dock-width` and only the `lg:` rule consumes it. A test asserting an
+ * inline width would pass against a build that also stretched the overlay.
+ */
+function dockHandle(): HTMLElement {
+  return screen.getByTestId("ai-assistant-sidebar-resize");
+}
+
+function dockVariable(): string {
+  return screen
+    .getByTestId("ai-assistant-sidebar")
+    .style.getPropertyValue("--ai-dock-width");
+}
+
+test("the dock starts at its historical width and says what it can be", () => {
+  installBackend();
+  render(<Harness presentation="sidebar" initiallyOpen />);
+
+  // 352px is `lg:w-[22rem]`, the width the dock shipped with. A user who never
+  // drags it must not see the layout move.
+  assert.equal(dockVariable(), "352px");
+
+  const handle = dockHandle();
+  assert.equal(handle.getAttribute("role"), "separator");
+  assert.equal(handle.getAttribute("aria-orientation"), "vertical");
+  assert.equal(handle.getAttribute("aria-valuenow"), "352");
+  assert.equal(handle.getAttribute("aria-valuemin"), "288");
+  assert.equal(handle.getAttribute("aria-valuemax"), "640");
+  // Focusable: the width has to be reachable without a pointer.
+  assert.equal(handle.getAttribute("tabindex"), "0");
+  // Named, so a screen reader announces more than "separator".
+  assert.equal(
+    handle.getAttribute("aria-label"),
+    "Drag or use arrow keys to resize",
+  );
+});
+
+test("a stored width is adopted when it arrives after mount", async () => {
+  installBackend();
+  const view = render(<Harness presentation="sidebar" initiallyOpen />);
+  assert.equal(dockVariable(), "352px");
+
+  // Preference hydration lands a tick or two after the first render, so the
+  // host supplies the stored width as a prop change rather than as the initial
+  // value. Ignoring it would silently discard the user's choice on every boot.
+  view.rerender(
+    <Harness presentation="sidebar" initiallyOpen sidebarWidth={480} />,
+  );
+  await waitFor(() => assert.equal(dockVariable(), "480px"));
+  assert.equal(dockHandle().getAttribute("aria-valuenow"), "480");
+});
+
+test("arrow keys widen and narrow, and persist once per press", () => {
+  installBackend();
+  const widths: number[] = [];
+  render(
+    <Harness
+      presentation="sidebar"
+      initiallyOpen
+      onSidebarWidthChange={(width) => widths.push(width)}
+    />,
+  );
+
+  // The dock is on the right in LTR, so dragging its start edge leftwards
+  // makes it wider. The arrow keys follow the edge, not the width.
+  fireEvent.keyDown(dockHandle(), { key: "ArrowLeft" });
+  assert.equal(dockVariable(), "368px");
+  fireEvent.keyDown(dockHandle(), { key: "ArrowRight" });
+  assert.equal(dockVariable(), "352px");
+
+  // Shift crosses the range without sixteen presses.
+  fireEvent.keyDown(dockHandle(), { key: "ArrowLeft", shiftKey: true });
+  assert.equal(dockVariable(), "416px");
+
+  // A keypress is a finished gesture, so each one persists. A drag is not —
+  // that is asserted separately below.
+  assert.deepEqual(widths, [368, 352, 416]);
+});
+
+test("the width cannot be driven outside the range it advertises", () => {
+  installBackend();
+  const widths: number[] = [];
+  render(
+    <Harness
+      presentation="sidebar"
+      initiallyOpen
+      onSidebarWidthChange={(width) => widths.push(width)}
+    />,
+  );
+
+  // `End` is the maximum, `Home` the minimum, as on any slider.
+  fireEvent.keyDown(dockHandle(), { key: "End" });
+  assert.equal(dockVariable(), "640px");
+  // Already at the maximum: another widen must not exceed it.
+  fireEvent.keyDown(dockHandle(), { key: "ArrowLeft", shiftKey: true });
+  assert.equal(dockVariable(), "640px");
+
+  fireEvent.keyDown(dockHandle(), { key: "Home" });
+  assert.equal(dockVariable(), "288px");
+  fireEvent.keyDown(dockHandle(), { key: "ArrowRight", shiftKey: true });
+  assert.equal(dockVariable(), "288px");
+
+  // What is persisted is always inside the range, so the clamp on the way back
+  // in has nothing to correct.
+  for (const width of widths) {
+    assert.ok(width >= 288 && width <= 640, `persisted ${width}`);
+  }
+});
+
+test("a double-click restores the default", () => {
+  installBackend();
+  const widths: number[] = [];
+  render(
+    <Harness
+      presentation="sidebar"
+      initiallyOpen
+      onSidebarWidthChange={(width) => widths.push(width)}
+    />,
+  );
+
+  fireEvent.keyDown(dockHandle(), { key: "End" });
+  assert.equal(dockVariable(), "640px");
+  fireEvent.doubleClick(dockHandle());
+  assert.equal(dockVariable(), "352px");
+  assert.deepEqual(widths, [640, 352]);
+});
+
+test("a resize keypress does not reach the dock's own key handler", () => {
+  installBackend();
+  render(<Harness presentation="sidebar" initiallyOpen />);
+  const dock = screen.getByTestId("ai-assistant-sidebar");
+  assert.equal(dock.dataset.open, "true");
+
+  // The dock closes on Escape and manages focus, so a resize keypress must
+  // stop before it. Without `stopPropagation` the arrow keys would also be
+  // interpreted by whatever the dock does with a keydown.
+  fireEvent.keyDown(dockHandle(), { key: "ArrowLeft" });
+  assert.equal(dock.dataset.open, "true");
+  assert.equal(dockVariable(), "368px");
+});
+
+test("the arrow keys mirror when the dock is laid out right-to-left", () => {
+  installBackend();
+  render(<Harness presentation="sidebar" initiallyOpen />);
+  const dock = screen.getByTestId("ai-assistant-sidebar");
+
+  // Set on the element rather than on `<html>`: the component reads the
+  // computed direction of what actually rendered, because Radix's
+  // `DirectionProvider` is a React context and a subtree can carry its own
+  // `dir`. jsdom reflects an inline `direction` into `getComputedStyle`.
+  dock.style.direction = "rtl";
+
+  // In RTL the dock sits on the left and its handle on the right edge, so the
+  // key that widens it is the opposite one. Getting this wrong makes the
+  // handle fight the pointer in the shipped RTL locale.
+  fireEvent.keyDown(dockHandle(), { key: "ArrowRight" });
+  assert.equal(dockVariable(), "368px");
+  fireEvent.keyDown(dockHandle(), { key: "ArrowLeft" });
+  assert.equal(dockVariable(), "352px");
+});
+
+test("a drag resizes continuously but persists only on release", () => {
+  installBackend();
+  // The dock's far edge is fixed at 1000; width is the distance from the
+  // pointer to it.
+  stubLayout(
+    { right: 1000, bottom: 800, width: 352, height: 800 },
+    { width: 1400, height: 800 },
+  );
+  const widths: number[] = [];
+  render(
+    <Harness
+      presentation="sidebar"
+      initiallyOpen
+      onSidebarWidthChange={(width) => widths.push(width)}
+    />,
+  );
+
+  const handle = dockHandle();
+  fireEvent.pointerDown(handle, { pointerId: 1, clientX: 648, button: 0 });
+  fireEvent.pointerMove(handle, { pointerId: 1, clientX: 600 });
+  assert.equal(dockVariable(), "400px");
+  fireEvent.pointerMove(handle, { pointerId: 1, clientX: 560 });
+  assert.equal(dockVariable(), "440px");
+
+  // Nothing persisted yet: a pointer move must not reach user settings sixty
+  // times a second.
+  assert.deepEqual(widths, []);
+
+  fireEvent.pointerUp(handle, { pointerId: 1, clientX: 560 });
+  assert.deepEqual(widths, [440]);
+});
+
+test("a move with no button down does not resize", () => {
+  installBackend();
+  stubLayout(
+    { right: 1000, bottom: 800, width: 352, height: 800 },
+    { width: 1400, height: 800 },
+  );
+  render(<Harness presentation="sidebar" initiallyOpen />);
+
+  // Hovering across the handle is not a drag. Without the guard the dock would
+  // resize whenever the pointer passed over it.
+  fireEvent.pointerMove(dockHandle(), { pointerId: 1, clientX: 500 });
+  assert.equal(dockVariable(), "352px");
 });

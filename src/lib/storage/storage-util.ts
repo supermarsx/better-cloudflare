@@ -49,6 +49,16 @@ export interface BrowserSessionSettingsProfile {
    */
   assistantBubbleRight?: number;
   assistantBubbleBottom?: number;
+  /**
+   * How wide the user dragged the docked assistant, in pixels.
+   *
+   * Unlike the bubble's insets above, this one *is* clamped on the way in, by
+   * `clampAiSidebarWidth`. The difference is that the bubble's bounds depend on
+   * the viewport it is drawn into and this does not: the dock's usable range is
+   * a property of the content, so a width outside it is never going to become
+   * valid on a different monitor.
+   */
+  assistantSidebarWidth?: number;
   rewriteCopiedRecordDomains?: boolean;
   mcpServerEnabled?: boolean;
   mcpServerHost?: string;
@@ -336,6 +346,7 @@ const SESSION_PROFILE_SCHEMA = {
   assistantPresentation: ["panel", "sidebar", "bubble"],
   assistantBubbleRight: "number",
   assistantBubbleBottom: "number",
+  assistantSidebarWidth: "number",
   rewriteCopiedRecordDomains: "boolean",
   mcpServerEnabled: "boolean",
   mcpServerHost: "string",

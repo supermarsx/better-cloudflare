@@ -228,7 +228,7 @@ export function NotificationsSettingsKinds({
                       >
                         <input
                           type="checkbox"
-                          className="h-3.5 w-3.5 accent-primary"
+                          className="checkbox-themed"
                           checked={recordChange.fields.includes(field)}
                           disabled={!kind.enabled}
                           onChange={(event) =>

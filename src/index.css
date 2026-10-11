@@ -574,6 +574,25 @@
     padding-left: 1.75rem !important;
   }
 
+  /* `select.tsx` moved its tick to the **end** of the row on 2026-10-11, so it
+     is the one `.ui-entry` consumer whose gutter is trailing rather than
+     leading. The reason is in that file: a select ticks exactly one row and its
+     trigger already names it, so a leading gutter only bought a 20px step
+     between the closed value (`px-3`, 12px) and the open rows (`p-1` + `pl-7`,
+     32px). With the gutter trailing, a row's text starts at the shorthand's own
+     0.5rem, which is the trigger's 12px.
+
+     Logical, because this one is new and has no reason to be physical: the
+     leading overrides above are still `padding-left` only because their call
+     sites are, and converting them is the component sweep's job, not this
+     block's.
+
+     1.75rem matches the leading gutter's width, clearing the 14px indicator
+     that `end-1.5` insets 6px from the end. */
+  .ui-entry.pe-7 {
+    padding-inline-end: 1.75rem !important;
+  }
+
   /* No `.ui-entry` uses `pl-8` any longer; kept for a separate pass rather
      than deleted here, so that a padding fix stays a padding fix. */
   .ui-entry.pl-8 {

@@ -765,3 +765,211 @@ test("the editor closes when the profile it was open on disappears", async () =>
     ),
   );
 });
+
+// ── Presets ────────────────────────────────────────────────────────────────
+
+/**
+ * The preset picker, which is the only way the catalogue is reachable.
+ *
+ * `test/providerPresets.test.ts` proves the twenty-six entries are internally
+ * sound; these prove a user can get at them. The two halves are separate on
+ * purpose — a catalogue nothing renders is the mistake the Collections panel
+ * made, and a picker wired to an unsound catalogue is the mirror of it.
+ */
+
+test("a preset fills the endpoint, the model and the id in one pick", async () => {
+  const harness = renderProviders({ providers: [], defaultProviderId: null });
+
+  fireEvent.click(screen.getByRole("button", { name: "Add a provider" }));
+  await chooseThemedSelectValue(
+    screen.getByLabelText("Start from a known provider"),
+    "groq",
+  );
+
+  // All four fields a user would otherwise have had to look up and type.
+  assert.equal(
+    (screen.getByLabelText("Base URL (optional)") as HTMLInputElement).value,
+    "https://api.groq.com/openai/v1",
+  );
+  assert.equal(
+    (screen.getByLabelText("Model") as HTMLInputElement).value,
+    "llama-3.3-70b-versatile",
+  );
+  assert.equal(
+    (screen.getByLabelText("Name") as HTMLInputElement).value,
+    "Groq",
+  );
+  assert.equal(
+    (screen.getByLabelText("Provider ID") as HTMLInputElement).value,
+    "groq",
+  );
+
+  fireEvent.change(screen.getByLabelText("API key"), {
+    target: { value: "gsk-test" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Save and verify" }));
+  await waitFor(() => assert.equal(harness.saved.length, 1));
+  const saved = lastSaved(harness);
+  assert.equal(saved.baseUrl, "https://api.groq.com/openai/v1");
+  assert.equal(saved.model, "llama-3.3-70b-versatile");
+});
+
+test("a preset for a reference vendor leaves the endpoint to the backend", async () => {
+  renderProviders({ providers: [], defaultProviderId: null });
+
+  fireEvent.click(screen.getByRole("button", { name: "Add a provider" }));
+  await chooseThemedSelectValue(
+    screen.getByLabelText("Start from a known provider"),
+    "openai",
+  );
+
+  // Empty, not `https://api.openai.com/v1`. That URL lives in
+  // `bc-ai-provider/src/config.rs` and a second copy here could drift from it.
+  assert.equal(
+    (screen.getByLabelText("Base URL (optional)") as HTMLInputElement).value,
+    "",
+  );
+});
+
+test("picking a preset switches the protocol with it", async () => {
+  renderProviders({ providers: [], defaultProviderId: null });
+
+  fireEvent.click(screen.getByRole("button", { name: "Add a provider" }));
+  await chooseThemedSelectValue(
+    screen.getByLabelText("Start from a known provider"),
+    "ollama",
+  );
+
+  // Verified by consequence rather than by the trigger's rendered text, which
+  // is how the protocol tests above do it: the Ollama protocol needs no
+  // credential, so the form stops demanding one, and its description appears.
+  assertAbsent(
+    screen.queryByLabelText("API key"),
+    "a required key field for a protocol that needs none",
+  );
+  assert.match(
+    screen.getByTestId("ai-provider-editor").textContent ?? "",
+    /A local Ollama daemon\. No API key is needed/,
+  );
+});
+
+test("a preset whose URL carries a placeholder says so until it is replaced", async () => {
+  renderProviders({ providers: [], defaultProviderId: null });
+
+  fireEvent.click(screen.getByRole("button", { name: "Add a provider" }));
+  await chooseThemedSelectValue(
+    screen.getByLabelText("Start from a known provider"),
+    "cloudflare-workers-ai",
+  );
+
+  // The account id is in the path, so this one cannot be saved as given. The
+  // warning names the exact token to change rather than saying "invalid URL".
+  const warning = await screen.findByText(
+    /Replace <account_id> in the base URL/,
+  );
+  assert.ok(warning.textContent?.includes("<account_id>"));
+
+  // And it goes away when the user deals with it — not on pick, which would
+  // make it a toast rather than a condition.
+  fireEvent.change(screen.getByLabelText("Base URL (optional)"), {
+    target: {
+      value: "https://api.cloudflare.com/client/v4/accounts/abc123/ai/v1",
+    },
+  });
+  await waitFor(() =>
+    assertAbsent(
+      screen.queryByText(/Replace <account_id> in the base URL/),
+      "placeholder warning",
+    ),
+  );
+});
+
+test("choosing Custom clears a preset rather than leaving half of it", async () => {
+  renderProviders({ providers: [], defaultProviderId: null });
+
+  fireEvent.click(screen.getByRole("button", { name: "Add a provider" }));
+  await chooseThemedSelectValue(
+    screen.getByLabelText("Start from a known provider"),
+    "groq",
+  );
+  assert.equal(
+    (screen.getByLabelText("Base URL (optional)") as HTMLInputElement).value,
+    "https://api.groq.com/openai/v1",
+  );
+
+  await chooseThemedSelectValue(
+    screen.getByLabelText("Start from a known provider"),
+    "custom:none",
+  );
+
+  // Every field back to blank. A half-cleared form — Groq's URL with no name —
+  // is a profile that looks configured and cannot work.
+  assert.equal(
+    (screen.getByLabelText("Base URL (optional)") as HTMLInputElement).value,
+    "",
+  );
+  assert.equal((screen.getByLabelText("Name") as HTMLInputElement).value, "");
+});
+
+test("a second profile for the same vendor does not collide", async () => {
+  renderProviders({
+    providers: [
+      {
+        id: "groq",
+        label: "Groq",
+        protocol: "openai",
+        baseUrl: "https://api.groq.com/openai/v1",
+        model: "llama-3.3-70b-versatile",
+        temperature: 0.7,
+        maxTokens: 4096,
+        hasApiKey: true,
+      },
+    ],
+    defaultProviderId: "groq",
+  });
+
+  fireEvent.click(screen.getByRole("button", { name: "Add a provider" }));
+  await chooseThemedSelectValue(
+    screen.getByLabelText("Start from a known provider"),
+    "groq",
+  );
+
+  // The id is suffixed; the label is not, because two profiles called "Groq"
+  // are the user's business and only the id has to be unique.
+  assert.equal(
+    (screen.getByLabelText("Provider ID") as HTMLInputElement).value,
+    "groq-2",
+  );
+  assert.equal(
+    (screen.getByLabelText("Name") as HTMLInputElement).value,
+    "Groq",
+  );
+});
+
+test("the picker is offered when adding and not when editing", async () => {
+  renderProviders({
+    providers: [
+      {
+        id: "groq",
+        label: "Groq",
+        protocol: "openai",
+        baseUrl: "https://api.groq.com/openai/v1",
+        model: "llama-3.3-70b-versatile",
+        temperature: 0.7,
+        maxTokens: 4096,
+        hasApiKey: true,
+      },
+    ],
+    defaultProviderId: "groq",
+  });
+
+  // An edit already has an endpoint and a model. A picker that silently
+  // replaced them would be a trap, so "Duplicate" is the affordance for
+  // starting again from an existing profile.
+  fireEvent.click(screen.getByRole("button", { name: "Edit Groq" }));
+  await screen.findByTestId("ai-provider-editor");
+  assertAbsent(
+    screen.queryByLabelText("Start from a known provider"),
+    "preset picker",
+  );
+});

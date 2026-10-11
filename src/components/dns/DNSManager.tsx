@@ -181,6 +181,7 @@ import {
   isAiAssistantPresentation,
   type AiAssistantPresentation,
 } from "@/lib/ai/presentation";
+import { clampAiSidebarWidth } from "@/lib/ai/sidebar-width";
 import type { AiLinkNavigation, AiZoneTabTarget } from "@/lib/ai/links";
 import { toastAllowed } from "@/lib/notifications/notification-settings";
 import { parseCSVRecords, parseBINDZone } from "@/lib/dns/dns-parsers";
@@ -2281,6 +2282,7 @@ const PORTABLE_PROFILE_PREFERENCE_KEYS = [
   "assistantPresentation",
   "assistantBubbleRight",
   "assistantBubbleBottom",
+  "assistantSidebarWidth",
   "rewriteCopiedRecordDomains",
   "mcpServerEnabled",
   "mcpServerHost",
@@ -2927,6 +2929,17 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     useState<AiAssistantBubblePosition | null>(() =>
       storageManager.getAiAssistantBubblePosition(),
     );
+  /**
+   * How wide the docked assistant was left.
+   *
+   * `null` means never dragged, which is not the same as "dragged to the
+   * default" — the persist block below writes only once there is a width, so
+   * that a fresh profile does not overwrite one stored on a previous launch.
+   * Same arrangement as the bubble's position above.
+   */
+  const [assistantSidebarWidth, setAssistantSidebarWidth] = useState<
+    number | null
+  >(() => storageManager.getAiAssistantSidebarWidth());
   const [assistantOpen, setAssistantOpen] = useState(false);
   /**
    * Translated once, from the shared option list the assistant's own Behaviour
@@ -4018,6 +4031,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
         assistantPresentation,
         assistantBubbleRight: assistantBubblePosition?.right,
         assistantBubbleBottom: assistantBubblePosition?.bottom,
+        assistantSidebarWidth: assistantSidebarWidth ?? undefined,
         mcpServerEnabled,
         mcpServerHost,
         mcpServerPort,
@@ -4065,6 +4079,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       closeTabOnMiddleClick,
       assistantPresentation,
       assistantBubblePosition,
+      assistantSidebarWidth,
       mcpServerEnabled,
       mcpServerHost,
       mcpServerPort,
@@ -4172,6 +4187,15 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
           right: bubbleRight,
           bottom: bubbleBottom,
         });
+      }
+      // One number, so no all-or-nothing rule applies -- and the bounds are
+      // `clampAiSidebarWidth`'s, not this file's, so a profile written on a
+      // build with a different range still restores to something usable.
+      const storedSidebarWidth = clampAiSidebarWidth(
+        profile.assistantSidebarWidth,
+      );
+      if (storedSidebarWidth !== null) {
+        setAssistantSidebarWidth(storedSidebarWidth);
       }
       if (typeof profile.mcpServerEnabled === "boolean") {
         setMcpServerEnabled(profile.mcpServerEnabled);
@@ -7197,6 +7221,10 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
       if (assistantBubblePosition) {
         storageManager.setAiAssistantBubblePosition(assistantBubblePosition);
       }
+      // Same guard, same reason: `null` is "never dragged".
+      if (assistantSidebarWidth !== null) {
+        storageManager.setAiAssistantSidebarWidth(assistantSidebarWidth);
+      }
       storageManager.setMcpServerEnabled(mcpServerEnabled);
       storageManager.setMcpServerHost(mcpServerHost);
       storageManager.setMcpServerPort(mcpServerPort);
@@ -7317,6 +7345,7 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
     closeTabOnMiddleClick,
     assistantPresentation,
     assistantBubblePosition,
+    assistantSidebarWidth,
     mcpServerEnabled,
     mcpServerHost,
     mcpServerPort,
@@ -10881,6 +10910,8 @@ export function DNSManager({ apiKey, email, onLogout }: DNSManagerProps) {
           linkNavigation={assistantLinkNavigation}
           bubblePosition={assistantBubblePosition}
           onBubblePositionChange={setAssistantBubblePosition}
+          sidebarWidth={assistantSidebarWidth}
+          onSidebarWidthChange={setAssistantSidebarWidth}
         />
       }
       commandBar={

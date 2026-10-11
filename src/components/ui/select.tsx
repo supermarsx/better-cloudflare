@@ -150,6 +150,38 @@ const SelectLabel = React.forwardRef<
 ));
 SelectLabel.displayName = SelectPrimitive.Label.displayName;
 
+/**
+ * A row in the list, with its tick at the **end** rather than the start.
+ *
+ * # Why this differs from the menu primitives
+ *
+ * `DropdownMenuCheckboxItem` and the context-menu items keep a leading tick and
+ * a `pl-7` gutter, which is right for them: a checkbox menu shows several ticks
+ * at once and the column is what makes them scannable.
+ *
+ * A select is not that. Exactly one row is ever ticked, and the trigger above
+ * already states which — so a leading gutter buys nothing and costs alignment.
+ * `SelectTrigger` is `px-3`, and the viewport is `p-1`, so a leading `pl-7` put
+ * the closed value at 12px from the control's edge and the open rows at 32px: a
+ * visible 20px step between the two, reported on 2026-10-11 as "this weird left
+ * hand margin". It is most obvious on the topology DNS-server and GEO-provider
+ * selects, which pin `SelectContent` to the trigger width, so the gutter takes
+ * 13% of a 208px row full of labels like `149.112.112.112 (Quad9)`.
+ *
+ * With the tick at the end, a row's text starts at `.ui-entry`'s own 0.5rem,
+ * which lands at 12px — the trigger's figure exactly. Text width is unchanged;
+ * the gutter moved rather than shrank.
+ *
+ * `pe-7`/`end-1.5` are logical, so this follows `dir` without the component
+ * sweep having to come back here. The 28px end gutter clears a 14px indicator
+ * inset 6px from the end, matching the 28px the leading gutter was sized for.
+ *
+ * `.ui-entry`'s `padding` shorthand outranks a Tailwind padding utility (see
+ * the note in `src/index.css`), so `pe-7` only lands because that file carries
+ * a compound `.ui-entry.pe-7` override. `test/documentDirection.test.tsx`
+ * derives the requirement from this file, so dropping the override fails there
+ * rather than silently putting the label back under the tick.
+ */
 const SelectItem = React.forwardRef<
   React.ElementRef<typeof SelectPrimitive.Item>,
   React.ComponentPropsWithoutRef<typeof SelectPrimitive.Item>
@@ -157,18 +189,18 @@ const SelectItem = React.forwardRef<
   <SelectPrimitive.Item
     ref={ref}
     className={cn(
-      "ui-entry relative flex w-full cursor-default select-none items-center pl-7 pr-2 text-sm outline-none data-[disabled]:pointer-events-none data-[disabled]:opacity-50",
+      "ui-entry relative flex w-full cursor-default select-none items-center pe-7 text-sm outline-none data-[disabled]:pointer-events-none data-[disabled]:opacity-50",
       className,
     )}
     {...props}
   >
-    <span className="absolute left-1.5 flex h-3.5 w-3.5 items-center justify-center">
+    <SelectPrimitive.ItemText>{children}</SelectPrimitive.ItemText>
+
+    <span className="absolute end-1.5 flex h-3.5 w-3.5 items-center justify-center">
       <SelectPrimitive.ItemIndicator>
         <Check className="h-4 w-4" />
       </SelectPrimitive.ItemIndicator>
     </span>
-
-    <SelectPrimitive.ItemText>{children}</SelectPrimitive.ItemText>
   </SelectPrimitive.Item>
 ));
 SelectItem.displayName = SelectPrimitive.Item.displayName;

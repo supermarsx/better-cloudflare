@@ -471,8 +471,21 @@ test("the menu gutter override names the class the menus actually use", () => {
   // `ps-7` fails here until `src/index.css` grows a matching
   // `.ui-entry.ps-7`, which is exactly the silent breakage that would
   // otherwise ship.
+  //
+  // Both inline sides are swept, not just the start. `select.tsx` moved its
+  // tick to the end of the row on 2026-10-11, so `pe-7` now carries a gutter
+  // and is defeated by the shorthand in exactly the same way `pl-7` was. A
+  // start-only sweep would have called that file compliant while its labels
+  // ran under the tick — the same false pass this test was written for, one
+  // axis over.
+  const PADDING_PROPERTY: Record<string, string> = {
+    ps: "padding-inline-start",
+    pl: "padding-left",
+    pe: "padding-inline-end",
+    pr: "padding-right",
+  };
   const used = new Set(
-    [...MENU_PRIMITIVES.matchAll(/\b(p[sl])-(\d+)\b/gu)].map(
+    [...MENU_PRIMITIVES.matchAll(/\b(p[slre])-(\d+)\b/gu)].map(
       ([, prefix, step]) => `${prefix}-${step}`,
     ),
   );
@@ -480,7 +493,7 @@ test("the menu gutter override names the class the menus actually use", () => {
 
   for (const utility of used) {
     const [prefix, step] = utility.split("-");
-    const property = prefix === "ps" ? "padding-inline-start" : "padding-left";
+    const property = PADDING_PROPERTY[prefix];
     assert.match(
       APP_CSS,
       new RegExp(

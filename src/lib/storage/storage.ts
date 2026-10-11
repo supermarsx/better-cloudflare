@@ -9,6 +9,7 @@ import {
   normalizeAiAssistantPresentation,
   type AiAssistantPresentation,
 } from "../ai/presentation";
+import { clampAiSidebarWidth } from "../ai/sidebar-width";
 import {
   DEFAULT_MCP_ENABLED_TOOL_IDS,
   MAX_MCP_PERMISSION_SETS,
@@ -1292,6 +1293,34 @@ export class StorageManager {
     return { right, bottom };
   }
 
+  /**
+   * Remember how wide the docked assistant was dragged.
+   *
+   * Clamped here as well as at the handle, because a width also arrives from a
+   * session settings profile and from whatever is in `localStorage`. The two
+   * clamps share `clampAiSidebarWidth`, so they cannot disagree about the
+   * range and produce a width that is accepted on release and changed on the
+   * next launch.
+   */
+  setAiAssistantSidebarWidth(width: number): void {
+    const clamped = clampAiSidebarWidth(width);
+    if (clamped === null) return;
+    this.data.assistantSidebarWidth = clamped;
+    this.save();
+    this.dispatchPreferencesChanged({ assistantSidebarWidth: clamped });
+  }
+
+  /**
+   * The stored dock width, or `null` when the user has never dragged it.
+   *
+   * `null` is not the same answer as the default: the caller writes a width
+   * back only once there is one, so returning the default here would make the
+   * first render persist a width the user never chose.
+   */
+  getAiAssistantSidebarWidth(): number | null {
+    return clampAiSidebarWidth(this.data.assistantSidebarWidth);
+  }
+
   setRewriteCopiedRecordDomains(enabled: boolean): void {
     this.data.rewriteCopiedRecordDomains = enabled;
     this.save();
@@ -2349,6 +2378,7 @@ export class StorageManager {
     delete this.data.assistantPresentation;
     delete this.data.assistantBubbleRight;
     delete this.data.assistantBubbleBottom;
+    delete this.data.assistantSidebarWidth;
     delete this.data.rewriteCopiedRecordDomains;
     delete this.data.mcpServerEnabled;
     delete this.data.mcpServerHost;

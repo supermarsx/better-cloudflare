@@ -25,7 +25,14 @@
  * `DEPENDENCY_TOTALS`, which is a few bytes. Loading it on mount would throw
  * that away for every user who opens About to read the version.
  */
-import { useCallback, useEffect, useId, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { ChevronRight, ExternalLink } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -40,6 +47,7 @@ import {
   type DependencyManifest,
   type DependencyRow,
 } from "@/lib/about/dependencies";
+import { crateUrl, npmPackageUrl } from "@/lib/about/registry-urls";
 import { openExternalUrl } from "@/lib/external-url";
 import { reportRuntimeError } from "@/lib/errors/runtime-reporting";
 
@@ -69,14 +77,53 @@ function Fact({
   );
 }
 
+/**
+ * A dependency's name, linked to its own page when it has one.
+ *
+ * The accessible name is the package name alone, which is the whole point of
+ * the control and needs no translated wrapper — so adding these links costs no
+ * new catalogue entries and no translation round.
+ *
+ * A `null` url renders plain text. That happens when a name does not match its
+ * registry's naming rules (see `registry-urls.ts`), and the fallback is
+ * deliberate: a dead link reads as the registry having lost the package, which
+ * is a worse answer than no link at all.
+ */
+function DependencyName({
+  name,
+  url,
+  onOpen,
+}: {
+  name: string;
+  url: string | null;
+  onOpen: (url: string) => void;
+}) {
+  if (url === null) {
+    return <span className="font-mono text-foreground">{name}</span>;
+  }
+  return (
+    <button
+      type="button"
+      onClick={() => onOpen(url)}
+      className="ui-focus rounded font-mono text-foreground underline-offset-2 hover:text-primary hover:underline"
+    >
+      {name}
+    </button>
+  );
+}
+
 function DependencyTable({
   caption,
   rows,
   emptyText,
+  urlFor,
+  onOpen,
 }: {
   caption: string;
   rows: readonly DependencyRow[];
   emptyText: string;
+  urlFor: (name: string) => string | null;
+  onOpen: (url: string) => void;
 }) {
   return (
     <div className="min-w-0">
@@ -90,7 +137,11 @@ function DependencyTable({
               key={row.name}
               className="flex flex-wrap items-baseline gap-x-2 text-xs"
             >
-              <span className="font-mono text-foreground">{row.name}</span>
+              <DependencyName
+                name={row.name}
+                url={urlFor(row.name)}
+                onOpen={onOpen}
+              />
               <span className="text-muted-foreground">
                 {row.versions.join(", ")}
               </span>
@@ -176,6 +227,30 @@ export function AboutAppInfoCard() {
       }),
     );
   }, []);
+
+  /**
+   * Which crate names this workspace owns, so a crate links to its source
+   * rather than to a crates.io page that does not exist.
+   *
+   * It has to be a lookup rather than a per-row flag because
+   * `directRustDependencies` collapses to `DependencyRow`, which carries no
+   * `workspace` field — and the root crate really does depend on this
+   * workspace's own crates, so "direct" and "workspace" overlap.
+   */
+  const workspaceCrateNames = useMemo(
+    () =>
+      new Set(
+        manifest === null
+          ? []
+          : workspaceCrates(manifest).map((crate) => crate.name),
+      ),
+    [manifest],
+  );
+
+  const crateUrlFor = useCallback(
+    (name: string) => crateUrl(name, workspaceCrateNames.has(name)),
+    [workspaceCrateNames],
+  );
 
   const totals = info?.dependencies ?? null;
   const links = info?.links ?? null;
@@ -332,21 +407,48 @@ export function AboutAppInfoCard() {
                   )}
                   rows={directNpmDependencies(manifest)}
                   emptyText={t("None", "None")}
+                  urlFor={npmPackageUrl}
+                  onOpen={openLink}
                 />
                 <DependencyTable
                   caption={t("Direct crates", "Direct crates")}
                   rows={directRustDependencies(manifest)}
                   emptyText={t("None", "None")}
+                  urlFor={crateUrlFor}
+                  onOpen={openLink}
                 />
                 <div className="min-w-0">
                   <h5 className="mb-1 text-xs font-semibold text-foreground">
                     {t("Crates in this workspace", "Crates in this workspace")}
                   </h5>
-                  <p className="text-xs text-muted-foreground">
-                    {workspaceCrates(manifest)
-                      .map((crate) => crate.name)
-                      .join(", ") || t("None", "None")}
-                  </p>
+                  {/*
+                    Was a comma-joined sentence. It is a list of 22 links now,
+                    so it is marked up as one — but the commas are kept as
+                    separators so the shape a reader already recognises
+                    survives, and so it still wraps as text rather than as a
+                    column of rows.
+                  */}
+                  {workspaceCrates(manifest).length === 0 ? (
+                    <p className="text-xs text-muted-foreground">
+                      {t("None", "None")}
+                    </p>
+                  ) : (
+                    <ul
+                      role="list"
+                      className="flex flex-wrap gap-x-1 text-xs text-muted-foreground"
+                    >
+                      {workspaceCrates(manifest).map((crate, index, all) => (
+                        <li key={crate.name}>
+                          <DependencyName
+                            name={crate.name}
+                            url={crateUrlFor(crate.name)}
+                            onOpen={openLink}
+                          />
+                          {index < all.length - 1 ? "," : null}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
                 </div>
 
                 <div className="min-w-0 border-t border-border/40 pt-3">
@@ -407,9 +509,11 @@ export function AboutAppInfoCard() {
                               key={`${entry.name}@${entry.version}`}
                               className="flex flex-wrap items-baseline gap-x-2 text-xs"
                             >
-                              <span className="font-mono text-foreground">
-                                {entry.name}
-                              </span>
+                              <DependencyName
+                                name={entry.name}
+                                url={npmPackageUrl(entry.name)}
+                                onOpen={openLink}
+                              />
                               <span className="text-muted-foreground">
                                 {entry.version}
                               </span>
@@ -430,9 +534,16 @@ export function AboutAppInfoCard() {
                               key={`${entry.name}@${entry.version}`}
                               className="flex flex-wrap items-baseline gap-x-2 text-xs"
                             >
-                              <span className="font-mono text-foreground">
-                                {entry.name}
-                              </span>
+                              {/*
+                                `entry.workspace` is the discriminator the
+                                manifest already carries, so this list needs no
+                                name lookup — unlike the collapsed rows above.
+                              */}
+                              <DependencyName
+                                name={entry.name}
+                                url={crateUrl(entry.name, entry.workspace)}
+                                onOpen={openLink}
+                              />
                               <span className="text-muted-foreground">
                                 {entry.version}
                               </span>

@@ -246,3 +246,52 @@ test("only a real `false` turns a feature off, on the way out as well as in", as
     "a real false is still a real decision",
   );
 });
+
+test("the dock width round-trips", async () => {
+  storageManager.setAiAssistantSidebarWidth(420);
+  assert.equal(storageManager.getAiAssistantSidebarWidth(), 420);
+});
+
+test("never dragged is not the same answer as dragged to the default", async () => {
+  // The host writes a width back only once there is one. If "never dragged"
+  // returned the default instead of `null`, the first render would persist a
+  // width the user never chose and overwrite one stored on a previous launch.
+  const profile = storageManager as unknown as {
+    data: { assistantSidebarWidth?: number };
+  };
+  delete profile.data.assistantSidebarWidth;
+  assert.equal(storageManager.getAiAssistantSidebarWidth(), null);
+});
+
+test("a width outside the range is clamped, not refused", async () => {
+  // Unlike a bubble inset, the dock's bounds do not depend on the viewport, so
+  // an out-of-range width is never going to become valid on another monitor.
+  // Clamping keeps the user's intent; refusing would silently drop it.
+  storageManager.setAiAssistantSidebarWidth(10_000);
+  assert.equal(storageManager.getAiAssistantSidebarWidth(), 640);
+  storageManager.setAiAssistantSidebarWidth(1);
+  assert.equal(storageManager.getAiAssistantSidebarWidth(), 288);
+});
+
+test("an unusable dock width is refused rather than stored", async () => {
+  storageManager.setAiAssistantSidebarWidth(400);
+  for (const bad of [Number.NaN, Number.POSITIVE_INFINITY]) {
+    storageManager.setAiAssistantSidebarWidth(bad);
+    assert.equal(
+      storageManager.getAiAssistantSidebarWidth(),
+      400,
+      `${String(bad)} displaced a stored width`,
+    );
+  }
+});
+
+test("a stored dock width survives a hand-edited fractional value", async () => {
+  // `localStorage` is hand-editable and a settings profile is JSON, so a
+  // non-integer can arrive. It is rounded rather than rejected: 420.4px is a
+  // width the user plainly meant.
+  const profile = storageManager as unknown as {
+    data: { assistantSidebarWidth?: number };
+  };
+  profile.data.assistantSidebarWidth = 420.4;
+  assert.equal(storageManager.getAiAssistantSidebarWidth(), 420);
+});
